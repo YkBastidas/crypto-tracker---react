@@ -140,7 +140,7 @@ export function Dashboard() {
         <ProgressBar
           current={summary.totalPortfolioValue}
           target={GOAL_TARGET}
-          label="Apartment Goal Progress"
+          label="Goal Progress"
           isPrivate={isPrivate}
         />
       </div>

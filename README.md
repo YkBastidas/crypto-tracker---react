@@ -1,73 +1,82 @@
-# React + TypeScript + Vite
+# 📊 Master Finance Web App — Phase 1: Crypto Tracker
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Una aplicación web moderna, rápida y **Local-First** para gestionar tu portafolio de criptomonedas y fiat sin comprometer tu privacidad.
 
-Currently, two official plugins are available:
+⚠️ **Importante**: Esta es una aplicación en desarrollo. Puedes usarla para llevar un registro de tus finanzas personales. Se recomienda tener un respaldo de tu información ya que futuras actualizaciones pueden romper la compatibilidad con versiones anteriores.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+> **🔒Privacidad Total**: Tus datos nunca salen de tu navegador. Esta app procesa los archivos CSV de forma local y guarda tus configuraciones en el almacenamiento del navegador (`localStorage`).
 
-## React Compiler
+---
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## 🚀 Características Principales
 
-## Expanding the ESLint configuration
+- **Gestión de Portafolio Local**: Sube tu archivo `portfolio.csv` y visualiza tus activos al instante.
+- **Cálculo Automático de DCA**: Entiende tu precio promedio de compra real después de múltiples operaciones.
+- **Sistema de Dual Targets**: Define porcentajes de "Target Buy" y "Target Sell" personalizados por moneda para planificar tus próximas órdenes en el exchange.
+- **Privacidad con un clic**: Modo incógnito integrado para ocultar tus balances sensibles.
+- **Diseño Sleek Dark**: Interfaz optimizada (estilo Exchange Pro) con Tailwind CSS.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+---
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## 📸 Screenshots
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+![Investments & DCA Overview](https://raw.githubusercontent.com/YkBastidas/crypto-tracker---react/refs/heads/main/src/assets/screenshot-investments-1.png)
+_Detalle de las tarjetas de activos con indicadores de compra/venta y configuración de objetivos._
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+![Global Portfolio](https://raw.githubusercontent.com/YkBastidas/crypto-tracker---react/refs/heads/main/src/assets/screenshot-globalportfolio-1.png)
+_Vista general del dashboard con balances globales, progreso de metas e histórico de transacciones._
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+---
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## 🛠️ Tech Stack
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+- **Framework**: React 18 + Vite
+- **Arquitectura**: Feature-Sliced Design (FSD) para escalabilidad.
+- **Estado**: Zustand (Estado global ligero).
+- **Estilos**: Tailwind CSS.
+- **Parsing**: PapaParse (Procesamiento de CSV).
+
+---
+
+## 🏁 Roadmap
+
+- [x] **Fase 1**: Tracker de Cripto y Fiat funcional (Local-First).
+- [ ] **Fase 2**: Integración de Finanzas Personales (Presupuestos, Gastos Diarios).
+- [ ] **Fase 3**: Sincronización opcional en la nube (Supabase) y cuentas de usuario.
+
+---
+
+## 💻 Instalación y Uso
+
+1. Clona el repositorio:
+   ```bash
+   git clone https://github.com/YkBastidas/crypto-tracker---react.git
+   ```
+2. Instala las dependencias:
+   ```bash
+   npm install
+   ```
+3. Inicia el servidor de desarrollo:
+   ```bash
+   npm run dev
+   ```
+4. Abre la aplicación en tu navegador:
+   ```bash
+   http://localhost:5173
+   ```
+
+Para usar la app, simplemente sube un archivo .csv siguiendo el formato de la plantilla incluida en este repositorio.
+
+## 🤝 Contribuciones
+
+¡Las contribuciones son bienvenidas! Si tienes ideas para la Fase 2 o mejoras en la UI, siéntete libre de abrir un Pull Request o un Issue.
+
+## 📜 Licencia
+
+Este proyecto está bajo la Licencia MIT. Consulta el archivo LICENSE para más detalles.
+
+## ☕ Apoya el Proyecto / Support
+
+Si esta herramienta te ayuda a organizar tus finanzas, considera apoyar su desarrollo continuo:
+
+USDT (Network: TRC20): TVgEUS7cyCwfNSeEiDyGgconFXsXMUFWi3

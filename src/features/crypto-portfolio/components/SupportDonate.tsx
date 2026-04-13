@@ -1,7 +1,7 @@
 import { Heart, Copy, Check } from 'lucide-react';
 import { useState } from 'react';
 
-const USDT_ADDRESS = 'TXwZLicjcGsMrEMpXDo4qSGfBR5FBxGPaf';
+const USDT_ADDRESS = 'TVgEUS7cyCwfNSeEiDyGgconFXsXMUFWi3';
 
 export function SupportDonate() {
   const [copied, setCopied] = useState(false);
