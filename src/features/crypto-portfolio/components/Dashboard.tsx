@@ -42,15 +42,15 @@ export function Dashboard() {
   const metricCards = [
     {
       icon: <DollarSign size={20} />,
-      label: 'Fiat Balance',
-      sublabel: 'Idle Cash',
-      value: formatUsd(summary.fiatBalance),
+      label: 'Stablecoins',
+      sublabel: 'Low Risk',
+      value: formatUsd(summary.totalStableValue),
       color: 'text-accent-blue',
     },
     {
       icon: <TrendingUp size={20} />,
       label: 'Crypto Value',
-      sublabel: '',
+      sublabel: 'Volatile',
       value: formatUsd(summary.totalCryptoValue),
       color: 'text-accent-green',
     },

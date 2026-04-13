@@ -4,42 +4,68 @@ import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { formatTokenStr } from '../../../shared/lib/csv';
 import {
   TRANSACTION_TYPES,
-  FIAT_TX_TYPES,
   ZERO_COST_TX_TYPES,
+  EXTERNAL_FLOW_TX_TYPES,
   type TransactionType,
 } from '../types';
 
-const ASSET_OPTIONS = ['BTC', 'ETH', 'SOL', 'WBETH', 'PAXG', 'BNSOL', 'BNB', '0G', 'BEAM'];
+const ASSET_OPTIONS = [
+  'BTC', 'ETH', 'SOL', 'WBETH', 'PAXG', 'BNSOL', 'BNB', '0G', 'BEAM',
+  'USDT', 'USDC', 'DAI',
+];
 
 export function TransactionForm() {
   const addTransaction = usePortfolioStore((s) => s.addTransaction);
-  const [txType, setTxType] = useState<TransactionType>('Deposit Fiat');
+  const [txType, setTxType] = useState<TransactionType>('Buy');
   const [asset, setAsset] = useState('BTC');
   const [tokens, setTokens] = useState('');
   const [usdValue, setUsdValue] = useState('');
+  const [fundedBy, setFundedBy] = useState('USDT');
   const [saving, setSaving] = useState(false);
 
-  const isFiat = FIAT_TX_TYPES.includes(txType);
+  const isExternalFlow = EXTERNAL_FLOW_TX_TYPES.includes(txType);
   const isZeroCost = ZERO_COST_TX_TYPES.includes(txType);
+  const isTrade = txType === 'Buy' || txType === 'Sell';
 
   const handleSave = () => {
-    const tokensNum = isFiat ? 0 : parseFloat(tokens) || 0;
+    const tokensNum = parseFloat(tokens) || 0;
     const usdNum = isZeroCost ? 0 : parseFloat(usdValue) || 0;
 
-    if (!isFiat && tokensNum <= 0) return;
-    if (!isZeroCost && !isFiat && usdNum <= 0) return;
-    if (isFiat && usdNum <= 0) return;
+    // Validation: always require tokens (the asset quantity)
+    if (tokensNum <= 0) return;
+    // Require USD value for non-zero-cost types (Buy, Sell, Deposit, Withdraw)
+    if (!isZeroCost && usdNum <= 0) return;
 
     const now = new Date();
     const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 
+    // 1. Primary transaction
     addTransaction({
       date: dateStr,
       type: txType,
-      asset: isFiat ? 'USD' : asset,
-      tokens: isFiat ? '0.0' : formatTokenStr(tokensNum),
+      asset: asset,
+      tokens: formatTokenStr(tokensNum),
       usdValue: usdNum,
     });
+
+    // 2. Dual Funding Transaction for active Trades (Buy / Sell)
+    if (isTrade && fundedBy !== 'EXTERNAL') {
+      const isBuying = txType === 'Buy';
+      // To fund a Buy, you Sell the funding asset. To fund a Sell, you Buy the funding asset.
+      const pairedType: TransactionType = isBuying ? 'Sell' : 'Buy';
+      
+      // Since it's a stablecoin/fiat equivalent, the token quantity ~ equals the USD value. 
+      // (This works perfectly for USDT/USDC/DAI. For other crypto, you'd need the exchange rate, but keeping it simple for stablecoins)
+      const fundingTokens = usdNum; 
+
+      addTransaction({
+        date: dateStr,
+        type: pairedType,
+        asset: fundedBy,
+        tokens: formatTokenStr(fundingTokens),
+        usdValue: usdNum,
+      });
+    }
 
     setSaving(true);
     setTimeout(() => {
@@ -79,35 +105,56 @@ export function TransactionForm() {
         </select>
       </div>
 
-      {/* Asset Selector (only for crypto) */}
-      {!isFiat && (
+      {/* Asset Selector — always shown, all assets are equal */}
+      <div>
+        <label className={labelClass}>Asset</label>
+        <select
+          value={asset}
+          onChange={(e) => setAsset(e.target.value)}
+          className={`${inputClass} cursor-pointer`}
+        >
+          {ASSET_OPTIONS.map((a) => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Token Quantity — always required */}
+      <div>
+        <label className={labelClass}>
+          {isExternalFlow ? 'Amount (Tokens)' : 'Quantity of Tokens'}
+        </label>
+        <input
+          type="number"
+          min={0}
+          step="0.000000001"
+          value={tokens}
+          onChange={(e) => setTokens(e.target.value)}
+          placeholder="0.00000000"
+          className={`${inputClass} font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`}
+        />
+      </div>
+
+      {/* Funded By (Only for Buy/Sell) */}
+      {isTrade && (
         <div>
-          <label className={labelClass}>Asset Ticker</label>
+          <label className={labelClass}>Funded By / Settled In</label>
           <select
-            value={asset}
-            onChange={(e) => setAsset(e.target.value)}
+            value={fundedBy}
+            onChange={(e) => setFundedBy(e.target.value)}
             className={`${inputClass} cursor-pointer`}
           >
-            {ASSET_OPTIONS.map((a) => (
-              <option key={a} value={a}>{a}</option>
-            ))}
+            <option value="USDT">USDT</option>
+            <option value="USDC">USDC</option>
+            <option value="DAI">DAI</option>
+            <option value="EXTERNAL">External Cash (Bank/Fiat)</option>
           </select>
-        </div>
-      )}
-
-      {/* Token Quantity (only for crypto) */}
-      {!isFiat && (
-        <div>
-          <label className={labelClass}>Quantity of Tokens</label>
-          <input
-            type="number"
-            min={0}
-            step="0.000000001"
-            value={tokens}
-            onChange={(e) => setTokens(e.target.value)}
-            placeholder="0.00000000"
-            className={`${inputClass} font-mono [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none`}
-          />
+          <p className="text-[10px] text-text-muted mt-1 ml-1">
+            {fundedBy !== 'EXTERNAL' 
+              ? `A matched transaction will be created to deduct ${fundedBy}.`
+              : `No internal balance will be deducted.`
+            }
+          </p>
         </div>
       )}
 
@@ -118,9 +165,7 @@ export function TransactionForm() {
         </div>
       ) : (
         <div>
-          <label className={labelClass}>
-            {isFiat ? 'Amount (USD)' : 'Total USD Value of Trade'}
-          </label>
+          <label className={labelClass}>USD Value</label>
           <input
             type="number"
             min={0}

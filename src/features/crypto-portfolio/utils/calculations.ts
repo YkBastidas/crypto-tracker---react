@@ -3,42 +3,52 @@ import type { CoinMappings } from '../../../shared/types';
 
 /**
  * Compute per-coin investment data from raw transactions.
- * Ports the Python DCA/P&L logic 1:1.
+ * Unified model: all tickers (BTC, USDT, etc.) are treated as assets.
  */
 export function computeHoldings(
   transactions: Transaction[],
   coinMappings: CoinMappings,
   livePrices: LivePrices,
   targets: CoinTargets,
+  stablecoins: string[],
 ): CoinHolding[] {
-  // Collect unique crypto tickers (everything except USD)
-  const tickers = [...new Set(
-    transactions
-      .filter((tx) => tx.asset !== 'USD')
-      .map((tx) => tx.asset)
-  )];
+  // Collect ALL unique tickers
+  const tickers = [...new Set(transactions.map((tx) => tx.asset))];
+
+  const stableSet = new Set(stablecoins.map((s) => s.toUpperCase()));
 
   return tickers.map((ticker) => {
     const txs = transactions.filter((tx) => tx.asset === ticker);
+    const isStable = stableSet.has(ticker.toUpperCase());
 
-    const bought = sum(txs, 'Buy Crypto');
+    // Token balance: deposits + buys + earned - withdrawals - sells - gas
+    const deposited = sum(txs, 'Deposit');
+    const bought = sum(txs, 'Buy');
     const earned = sum(txs, 'Earn (Staking)');
-    const sold = sum(txs, 'Sell Crypto');
+    const withdrawn = sum(txs, 'Withdraw');
+    const sold = sum(txs, 'Sell');
     const gas = sum(txs, 'Gas (Fee)');
 
-    const currentTokens = bought + earned - sold - gas;
+    const currentTokens = deposited + bought + earned - withdrawn - sold - gas;
 
-    const totalSpent = sumUsd(txs, 'Buy Crypto');
-    const soldUsd = sumUsd(txs, 'Sell Crypto');
+    // Cost basis: only Buy transactions contribute to cost for volatile assets
+    // For stablecoins, Deposits are effectively "Buys" (inflows) and Withdrawals are "Sells" (outflows)
+    // This perfectly neutralizes P&L to $0 for stablecoins.
+    const totalSpent = sumUsd(txs, 'Buy') + (isStable ? deposited : 0);
+    const soldUsd = sumUsd(txs, 'Sell') + (isStable ? withdrawn : 0);
     const investedUsd = totalSpent - soldUsd;
 
+    // DCA = totalSpent / (bought + earned)  — deposits are not "purchases"
     const totalAcquired = bought + earned;
     const dca = totalAcquired > 0 ? totalSpent / totalAcquired : 0;
 
     const coinGeckoId = coinMappings[ticker.toUpperCase()] ?? null;
-    const livePrice = coinGeckoId
+
+    // For stablecoins, default to $1 if no price data
+    let livePrice = coinGeckoId
       ? (livePrices[coinGeckoId]?.usd ?? 0)
       : 0;
+    if (isStable && livePrice === 0) livePrice = 1;
 
     const currentValue = currentTokens * livePrice;
     const pnl = currentValue - investedUsd;
@@ -49,7 +59,7 @@ export function computeHoldings(
     const targetSellPrice = dca * (1 + t.sell / 100);
 
     let tradeSignal: CoinHolding['tradeSignal'] = 'WATCH';
-    if (livePrice > 0) {
+    if (livePrice > 0 && !isStable) {
       if (livePrice >= targetSellPrice) tradeSignal = 'SELL';
       else if (livePrice <= targetBuyPrice) tradeSignal = 'BUY';
     }
@@ -57,6 +67,7 @@ export function computeHoldings(
     return {
       ticker,
       coinGeckoId,
+      isStablecoin: isStable,
       currentTokens,
       totalSpent,
       soldUsd,
@@ -76,40 +87,48 @@ export function computeHoldings(
 }
 
 /**
- * Compute global portfolio summary from raw transactions + live crypto value.
+ * Compute global portfolio summary from raw transactions + holdings.
+ * Separates volatile crypto from stablecoin value for risk reporting.
  */
 export function computePortfolioSummary(
   transactions: Transaction[],
-  totalCryptoValue: number,
+  holdings: CoinHolding[],
 ): PortfolioSummary {
   const totalDeposits = transactions
-    .filter((tx) => tx.type === 'Deposit Fiat')
+    .filter((tx) => tx.type === 'Deposit')
     .reduce((acc, tx) => acc + tx.usdValue, 0);
 
   const totalWithdrawals = transactions
-    .filter((tx) => tx.type === 'Withdraw Fiat')
+    .filter((tx) => tx.type === 'Withdraw')
     .reduce((acc, tx) => acc + tx.usdValue, 0);
 
-  const cryptoBought = transactions
-    .filter((tx) => tx.type === 'Buy Crypto')
+  const assetsBought = transactions
+    .filter((tx) => tx.type === 'Buy')
     .reduce((acc, tx) => acc + tx.usdValue, 0);
 
-  const cryptoSold = transactions
-    .filter((tx) => tx.type === 'Sell Crypto')
+  const assetsSold = transactions
+    .filter((tx) => tx.type === 'Sell')
     .reduce((acc, tx) => acc + tx.usdValue, 0);
 
-  const fiatBalance = totalDeposits - totalWithdrawals - cryptoBought + cryptoSold;
-  const totalPortfolioValue = fiatBalance + totalCryptoValue;
+  const totalCryptoValue = holdings
+    .filter((h) => !h.isStablecoin)
+    .reduce((acc, h) => acc + h.currentValue, 0);
+
+  const totalStableValue = holdings
+    .filter((h) => h.isStablecoin)
+    .reduce((acc, h) => acc + h.currentValue, 0);
+
+  const totalPortfolioValue = totalCryptoValue + totalStableValue;
   const netFiatInvested = totalDeposits - totalWithdrawals;
   const totalPnl = totalPortfolioValue - netFiatInvested;
 
   return {
     totalDeposits,
     totalWithdrawals,
-    cryptoBought,
-    cryptoSold,
-    fiatBalance,
+    assetsBought,
+    assetsSold,
     totalCryptoValue,
+    totalStableValue,
     totalPortfolioValue,
     netFiatInvested,
     totalPnl,

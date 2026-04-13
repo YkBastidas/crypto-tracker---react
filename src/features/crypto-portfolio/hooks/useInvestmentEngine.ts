@@ -9,39 +9,30 @@ import { getCoinTargets } from '../../../shared/lib/storage';
  * per-coin holdings + global portfolio summary.
  */
 export function useInvestmentEngine() {
-  const { transactions, coinMappings } = usePortfolioStore();
+  const { transactions, coinMappings, stablecoins } = usePortfolioStore();
   const targets = getCoinTargets();
 
   // Derive the list of CoinGecko IDs we need to fetch
-  const cryptoTickers = useMemo(() => {
-    return [...new Set(
-      transactions
-        .filter((tx) => tx.asset !== 'USD')
-        .map((tx) => tx.asset)
-    )];
+  const allTickers = useMemo(() => {
+    return [...new Set(transactions.map((tx) => tx.asset))];
   }, [transactions]);
 
   const coinIds = useMemo(() => {
-    return cryptoTickers
+    return allTickers
       .map((t) => coinMappings[t.toUpperCase()])
       .filter(Boolean) as string[];
-  }, [cryptoTickers, coinMappings]);
+  }, [allTickers, coinMappings]);
 
   const { prices, loading, error, lastFetched, refresh } = useCoinPrices(coinIds);
 
   const holdings = useMemo(
-    () => computeHoldings(transactions, coinMappings, prices, targets),
-    [transactions, coinMappings, prices, targets],
-  );
-
-  const totalCryptoValue = useMemo(
-    () => holdings.reduce((acc, h) => acc + h.currentValue, 0),
-    [holdings],
+    () => computeHoldings(transactions, coinMappings, prices, targets, stablecoins),
+    [transactions, coinMappings, prices, targets, stablecoins],
   );
 
   const summary = useMemo(
-    () => computePortfolioSummary(transactions, totalCryptoValue),
-    [transactions, totalCryptoValue],
+    () => computePortfolioSummary(transactions, holdings),
+    [transactions, holdings],
   );
 
   return {

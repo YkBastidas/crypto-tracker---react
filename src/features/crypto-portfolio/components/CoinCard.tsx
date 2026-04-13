@@ -108,58 +108,64 @@ export function CoinCard({ holding, onTargetChange }: CoinCardProps) {
         </div>
       </div>
 
-      {/* Targets separator */}
-      <div className="mt-4 pt-3 border-t border-white/5 space-y-1 text-sm">
-        <div className="flex justify-between">
-          <span className="text-text-muted">
-            Target Buy <span className="text-accent-red">(-{buyPct}%)</span>
-          </span>
-          <span className="text-accent-red font-medium">
-            {pv(formatUsd(holding.targetBuyPrice))}
-          </span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-text-muted">
-            Target Sell <span className="text-accent-green">(+{sellPct}%)</span>
-          </span>
-          <span className="text-accent-green font-medium">
-            {pv(formatUsd(holding.targetSellPrice))}
-          </span>
-        </div>
-      </div>
+      {!holding.isStablecoin && (
+        <>
+          {/* Targets separator */}
+          <div className="mt-4 pt-3 border-t border-white/5 space-y-1 text-sm">
+            <div className="flex justify-between">
+              <span className="text-text-muted">
+                Target Buy <span className="text-accent-red">(-{buyPct}%)</span>
+              </span>
+              <span className="text-accent-red font-medium">
+                {pv(formatUsd(holding.targetBuyPrice))}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-text-muted">
+                Target Sell <span className="text-accent-green">(+{sellPct}%)</span>
+              </span>
+              <span className="text-accent-green font-medium">
+                {pv(formatUsd(holding.targetSellPrice))}
+              </span>
+            </div>
+          </div>
 
-      {/* Trade Action Button */}
-      <div className="mt-4 flex items-center gap-2">
-        <a
-          href={tradeUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={`
-            flex-1 flex items-center justify-center gap-2
-            px-4 py-2.5 rounded-lg border font-semibold text-sm
-            transition-all duration-200 cursor-pointer no-underline
-            ${signalStyles[holding.tradeSignal]}
-          `}
-        >
-          {signalLabel[holding.tradeSignal]}
-          <ExternalLink size={14} />
-        </a>
-      </div>
+          {/* Trade Action Button */}
+          <div className="mt-4 flex items-center gap-2">
+            <a
+              href={tradeUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`
+                flex-1 flex items-center justify-center gap-2
+                px-4 py-2.5 rounded-lg border font-semibold text-sm
+                transition-all duration-200 cursor-pointer no-underline
+                ${signalStyles[holding.tradeSignal]}
+              `}
+            >
+              {signalLabel[holding.tradeSignal]}
+              <ExternalLink size={14} />
+            </a>
+          </div>
+        </>
+      )}
 
       {/* Target Settings Expander */}
-      <button
-        onClick={() => setShowTargets(!showTargets)}
-        className="
-          mt-3 w-full flex items-center justify-center gap-1
-          text-xs text-text-muted hover:text-text-primary
-          transition-colors cursor-pointer bg-transparent border-none
-        "
-      >
-        🎯 Set Targets
-        {showTargets ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-      </button>
+      {!holding.isStablecoin && (
+        <button
+          onClick={() => setShowTargets(!showTargets)}
+          className="
+            mt-3 w-full flex items-center justify-center gap-1
+            text-xs text-text-muted hover:text-text-primary
+            transition-colors cursor-pointer bg-transparent border-none
+          "
+        >
+          🎯 Set Targets
+          {showTargets ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+        </button>
+      )}
 
-      {showTargets && (
+      {!holding.isStablecoin && showTargets && (
         <div className="mt-2 grid grid-cols-2 gap-3">
           <div>
             <label className="text-xs text-text-muted block mb-1">Buy Drop %</label>

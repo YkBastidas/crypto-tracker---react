@@ -1,9 +1,11 @@
-import type { CoinMappings, CoinTargets } from '../types';
+import type { CoinMappings, CoinTargets, Transaction } from '../types';
 
 const KEYS = {
   TARGETS: 'coin-targets',
   MAPPINGS: 'coin-mappings',
   API_KEY: 'coingecko-api-key',
+  TRANSACTIONS: 'portfolio-transactions',
+  STABLECOINS: 'stablecoin-tickers',
 } as const;
 
 // ── Default coin → CoinGecko ID mappings (ported from coinlist-ids.json) ──
@@ -17,6 +19,9 @@ const DEFAULT_MAPPINGS: CoinMappings = {
   BNB: 'binancecoin',
   '0G': 'zero-gravity',
   BEAM: 'beam-2',
+  USDT: 'tether',
+  USDC: 'usd-coin',
+  DAI: 'dai',
 };
 
 const DEFAULT_TARGETS: CoinTargets = {
@@ -27,6 +32,8 @@ const DEFAULT_TARGETS: CoinTargets = {
   '0G': { buy: 100, sell: 50 },
   BEAM: { buy: 100, sell: 50 },
 };
+
+const DEFAULT_STABLECOINS: string[] = ['USDT', 'USDC', 'DAI'];
 
 // ── Generic helpers ──
 
@@ -43,7 +50,7 @@ function setJson<T>(key: string, value: T): void {
   localStorage.setItem(key, JSON.stringify(value));
 }
 
-// ── Public API ──
+// ── Public API: Coin Mappings ──
 
 export function getCoinMappings(): CoinMappings {
   return getJson(KEYS.MAPPINGS, DEFAULT_MAPPINGS);
@@ -53,6 +60,8 @@ export function saveCoinMappings(mappings: CoinMappings): void {
   setJson(KEYS.MAPPINGS, mappings);
 }
 
+// ── Public API: Targets ──
+
 export function getCoinTargets(): CoinTargets {
   return getJson(KEYS.TARGETS, DEFAULT_TARGETS);
 }
@@ -61,10 +70,32 @@ export function saveCoinTargets(targets: CoinTargets): void {
   setJson(KEYS.TARGETS, targets);
 }
 
+// ── Public API: API Key ──
+
 export function getApiKey(): string {
   return localStorage.getItem(KEYS.API_KEY) ?? '';
 }
 
 export function saveApiKey(key: string): void {
   localStorage.setItem(KEYS.API_KEY, key.trim());
+}
+
+// ── Public API: Transaction Persistence ──
+
+export function getPersistedTransactions(): Transaction[] {
+  return getJson<Transaction[]>(KEYS.TRANSACTIONS, []);
+}
+
+export function persistTransactions(transactions: Transaction[]): void {
+  setJson(KEYS.TRANSACTIONS, transactions);
+}
+
+// ── Public API: Stablecoin Tickers ──
+
+export function getStablecoins(): string[] {
+  return getJson<string[]>(KEYS.STABLECOINS, DEFAULT_STABLECOINS);
+}
+
+export function saveStablecoins(tickers: string[]): void {
+  setJson(KEYS.STABLECOINS, tickers.map((t) => t.toUpperCase().trim()).filter(Boolean));
 }
