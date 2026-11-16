@@ -3,7 +3,7 @@ import { Banknote, CheckCircle2, Coins, Smartphone, Wallet, X } from 'lucide-rea
 import { ENVELOPE_META } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
 import type { EnvelopeId, PaymentMethod, RecurringExpense } from '../types';
-import { formatUsd } from '../utils/calculations';
+import { formatBs, formatUsd } from '../utils/calculations';
 
 interface PayExpenseModalProps {
   expense: RecurringExpense;
@@ -18,21 +18,43 @@ const PAYMENT_OPTIONS: { id: PaymentMethod; label: string; icon: React.ReactNode
 ];
 
 export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
-  const { markExpensePaid } = useBudgetStore();
+  const { markExpensePaid, bcvRate } = useBudgetStore();
   const [amount, setAmount] = useState(String(expense.amountUsd));
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd');
+  const [inputInBs, setInputInBs] = useState(false);
   const [envelopeId, setEnvelopeId] = useState<EnvelopeId>(expense.envelopeId);
   const [logToLedger, setLogToLedger] = useState(true);
 
+  const hasValidRate = Boolean(bcvRate && bcvRate > 0);
+  const effectiveRate = bcvRate ?? 0;
+  const parsedVal = parseFloat(amount) || 0;
+  const computedUsd = inputInBs && hasValidRate ? parsedVal / effectiveRate : parsedVal;
+  const computedBs = inputInBs ? parsedVal : hasValidRate ? parsedVal * effectiveRate : 0;
+
+  const handleSelectMethod = (next: PaymentMethod) => {
+    setPaymentMethod(next);
+    if (next === 'bolivares_pago_movil' && hasValidRate && !inputInBs) {
+      setInputInBs(true);
+      setAmount((parsedVal * effectiveRate).toFixed(2));
+    } else if (next !== 'bolivares_pago_movil' && inputInBs && hasValidRate) {
+      setInputInBs(false);
+      setAmount((parsedVal / effectiveRate).toFixed(2));
+    }
+  };
+
   const handleConfirm = (e: React.FormEvent) => {
     e.preventDefault();
-    const numeric = parseFloat(amount);
-    if (logToLedger && (!Number.isFinite(numeric) || numeric <= 0)) return;
+    if (logToLedger && (!Number.isFinite(parsedVal) || parsedVal <= 0)) return;
 
     markExpensePaid(expense.id, {
       logToLedger,
       paymentMethod,
-      amountUsd: Number.isFinite(numeric) && numeric > 0 ? numeric : expense.amountUsd,
+      amountUsd: Number.isFinite(computedUsd) && computedUsd > 0 ? computedUsd : expense.amountUsd,
+      amountBs:
+        paymentMethod === 'bolivares_pago_movil' && hasValidRate
+          ? Number(computedBs.toFixed(2))
+          : undefined,
+      bcvRateUsed: hasValidRate ? effectiveRate : undefined,
       envelopeId,
     });
     onClose();
@@ -70,7 +92,7 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
                 <button
                   key={opt.id}
                   type="button"
-                  onClick={() => setPaymentMethod(opt.id)}
+                  onClick={() => handleSelectMethod(opt.id)}
                   className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
                     paymentMethod === opt.id
                       ? 'bg-accent-blue/20 border-accent-blue text-accent-blue'
@@ -86,7 +108,30 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs text-text-muted block mb-1.5">Monto pagado ($)</label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs text-text-muted">
+                  Monto ({inputInBs ? 'Bs' : '$'})
+                </label>
+                {hasValidRate && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextInBs = !inputInBs;
+                      setInputInBs(nextInBs);
+                      if (parsedVal > 0) {
+                        setAmount(
+                          nextInBs
+                            ? (parsedVal * effectiveRate).toFixed(2)
+                            : (parsedVal / effectiveRate).toFixed(2),
+                        );
+                      }
+                    }}
+                    className="text-[10px] text-cyan-300 underline bg-transparent border-none cursor-pointer"
+                  >
+                    {inputInBs ? 'En $' : 'En Bs'}
+                  </button>
+                )}
+              </div>
               <input
                 type="number"
                 step="0.01"
@@ -97,6 +142,15 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
                 onChange={(e) => setAmount(e.target.value)}
                 className="w-full px-3 py-2.5 rounded-xl text-base font-bold bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
               />
+              {hasValidRate && (
+                <p className="text-[10px] text-cyan-300 mt-1">
+                  {inputInBs
+                    ? `≈ ${formatUsd(computedUsd)} USD (BCV)`
+                    : paymentMethod === 'bolivares_pago_movil'
+                      ? `≈ ${formatBs(computedBs)} (BCV)`
+                      : ''}
+                </p>
+              )}
             </div>
 
             <div>
@@ -136,7 +190,7 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
             type="submit"
             className="w-full py-3 rounded-xl text-sm font-bold bg-accent-green/20 border border-accent-green/40 text-accent-green hover:bg-accent-green/30 transition-all cursor-pointer"
           >
-            Confirmar Pago ({formatUsd(parseFloat(amount) || 0)})
+            Confirmar Pago ({formatUsd(computedUsd)})
           </button>
         </form>
       </div>

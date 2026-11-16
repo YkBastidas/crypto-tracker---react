@@ -43,6 +43,8 @@ export interface LedgerMovement {
   bucket: AssetBucketId;
   type: MovementType;
   amountUsd: number;
+  amountBs?: number;
+  bcvRateUsed?: number;
   paymentMethod?: PaymentMethod;
   notes?: string;
   quincenaId?: string;
@@ -111,6 +113,7 @@ export interface FundSummary {
   assetType: string;
   notes: string;
   balance: number;
+  balanceBs?: number;
   percentage: number;
 }
 

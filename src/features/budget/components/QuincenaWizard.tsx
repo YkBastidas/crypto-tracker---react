@@ -13,7 +13,7 @@ import { PrivacyValue } from '../../../shared/ui/PrivacyValue';
 import { ENVELOPE_META, PAYMENT_METHOD_LABELS } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
 import type { AllocationMode, EnvelopeId, EnvelopeRule, PaymentMethod } from '../types';
-import { computeQuincenaPreview, formatUsd } from '../utils/calculations';
+import { computeQuincenaPreview, formatBs, formatUsd } from '../utils/calculations';
 
 interface QuincenaWizardProps {
   onCompleteNavigate: () => void;
@@ -32,11 +32,13 @@ export function QuincenaWizard({ onCompleteNavigate }: QuincenaWizardProps) {
     quincenaConfig,
     expenses,
     installments,
+    bcvRate,
     updateQuincenaConfig,
     confirmQuincena,
   } = useBudgetStore();
 
   const [amountInput, setAmountInput] = useState('500');
+  const [inputInBs, setInputInBs] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd');
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [notes, setNotes] = useState('');
@@ -50,7 +52,11 @@ export function QuincenaWizard({ onCompleteNavigate }: QuincenaWizardProps) {
   const [rulesSavedMsg, setRulesSavedMsg] = useState(false);
   const [confirmedSuccess, setConfirmedSuccess] = useState(false);
 
-  const grossAmount = Math.max(0, parseFloat(amountInput) || 0);
+  const hasValidRate = Boolean(bcvRate && bcvRate > 0);
+  const effectiveRate = bcvRate ?? 0;
+  const rawInputVal = Math.max(0, parseFloat(amountInput) || 0);
+  const grossAmount =
+    inputInBs && hasValidRate ? Number((rawInputVal / effectiveRate).toFixed(2)) : rawInputVal;
 
   const preview = useMemo(
     () =>
@@ -168,12 +174,46 @@ export function QuincenaWizard({ onCompleteNavigate }: QuincenaWizardProps) {
             </h3>
 
             <div>
-              <label className="text-xs text-text-muted block mb-1.5">
-                Monto recibido (equivalente USD)
-              </label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs text-text-muted">
+                  Monto recibido ({inputInBs ? 'en Bolívares' : 'equivalente USD'})
+                </label>
+                {hasValidRate && (
+                  <div className="flex rounded-lg overflow-hidden border border-border text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (inputInBs) {
+                          setInputInBs(false);
+                          setAmountInput(grossAmount.toFixed(2));
+                        }
+                      }}
+                      className={`px-2 py-0.5 font-semibold border-none cursor-pointer ${
+                        !inputInBs ? 'bg-accent-blue text-white' : 'bg-bg-input text-text-muted'
+                      }`}
+                    >
+                      USD ($)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!inputInBs) {
+                          setInputInBs(true);
+                          setAmountInput((rawInputVal * effectiveRate).toFixed(2));
+                        }
+                      }}
+                      className={`px-2 py-0.5 font-semibold border-none cursor-pointer ${
+                        inputInBs ? 'bg-cyan-500 text-black' : 'bg-bg-input text-text-muted'
+                      }`}
+                    >
+                      Bs (BCV)
+                    </button>
+                  </div>
+                )}
+              </div>
               <div className="relative">
-                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-text-muted text-lg font-bold">
-                  $
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-text-muted text-base font-bold">
+                  {inputInBs ? 'Bs.' : '$'}
                 </span>
                 <input
                   type="number"
@@ -183,18 +223,28 @@ export function QuincenaWizard({ onCompleteNavigate }: QuincenaWizardProps) {
                   required
                   value={amountInput}
                   onChange={(e) => setAmountInput(e.target.value)}
-                  className="w-full pl-8 pr-4 py-3 rounded-xl text-2xl font-extrabold bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-green"
+                  className="w-full pl-11 pr-4 py-3 rounded-xl text-2xl font-extrabold bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-green"
                 />
               </div>
+              {inputInBs && hasValidRate && (
+                <p className="text-[11px] text-cyan-300 mt-1">
+                  ≈ {formatUsd(grossAmount)} USD según tasa BCV (Bs. {effectiveRate.toFixed(2)}/$)
+                </p>
+              )}
+              {!inputInBs && hasValidRate && paymentMethod === 'bolivares_pago_movil' && (
+                <p className="text-[11px] text-cyan-300 mt-1">
+                  ≈ {formatBs(grossAmount * effectiveRate)} según tasa BCV
+                </p>
+              )}
               <div className="flex gap-2 mt-2">
-                {[300, 500, 750, 1000].map((preset) => (
+                {(inputInBs ? [5000, 10000, 20000, 30000] : [300, 500, 750, 1000]).map((preset) => (
                   <button
                     key={preset}
                     type="button"
                     onClick={() => setAmountInput(String(preset))}
                     className="flex-1 py-1.5 rounded-lg text-xs font-medium bg-bg-input border border-border text-text-muted hover:text-text-primary hover:border-accent-blue cursor-pointer"
                   >
-                    ${preset}
+                    {inputInBs ? `${preset}` : `$${preset}`}
                   </button>
                 ))}
               </div>
@@ -209,7 +259,16 @@ export function QuincenaWizard({ onCompleteNavigate }: QuincenaWizardProps) {
                   <button
                     key={opt.id}
                     type="button"
-                    onClick={() => setPaymentMethod(opt.id)}
+                    onClick={() => {
+                      setPaymentMethod(opt.id);
+                      if (opt.id === 'bolivares_pago_movil' && hasValidRate && !inputInBs) {
+                        setInputInBs(true);
+                        setAmountInput((rawInputVal * effectiveRate).toFixed(2));
+                      } else if (opt.id !== 'bolivares_pago_movil' && inputInBs && hasValidRate) {
+                        setInputInBs(false);
+                        setAmountInput(grossAmount.toFixed(2));
+                      }
+                    }}
                     className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
                       paymentMethod === opt.id
                         ? 'bg-accent-blue/20 border-accent-blue text-accent-blue'

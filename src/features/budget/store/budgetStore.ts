@@ -12,6 +12,7 @@ import type {
   RecurringExpense,
 } from '../types';
 import { advanceDueDate, type QuincenaPreview } from '../utils/calculations';
+import { fetchBcvUsdRate } from '../services/bcvApi';
 
 export interface UndoEntry {
   id: string;
@@ -25,6 +26,8 @@ export interface PayExpenseOptions {
   logToLedger?: boolean;
   paymentMethod?: PaymentMethod;
   amountUsd?: number;
+  amountBs?: number;
+  bcvRateUsed?: number;
   envelopeId?: EnvelopeId;
 }
 
@@ -41,6 +44,14 @@ interface BudgetState {
   quincenaConfig: QuincenaConfig;
   undoEntry: UndoEntry | null;
 
+  // BCV rate state
+  bcvRate: number | null;
+  bcvUpdatedAt: string | null;
+  bcvLoading: boolean;
+  bcvError: string | null;
+  refreshBcvRate: () => Promise<void>;
+  setManualBcvRate: (rate: number) => void;
+
   // Ledger actions
   addMovement: (movement: Omit<LedgerMovement, 'id'>) => void;
   transferBetweenBuckets: (params: {
@@ -51,6 +62,9 @@ interface BudgetState {
     toPaymentMethod?: PaymentMethod;
     amountFrom: number;
     amountTo?: number;
+    amountBsFrom?: number;
+    amountBsTo?: number;
+    bcvRateUsed?: number;
     notes?: string;
   }) => void;
   removeMovement: (id: string) => void;
@@ -114,6 +128,37 @@ export const useBudgetStore = create<BudgetState>()(
       installments: initialSeed.installments,
       quincenaConfig: initialSeed.quincenaConfig,
       undoEntry: null,
+      bcvRate: null,
+      bcvUpdatedAt: null,
+      bcvLoading: false,
+      bcvError: null,
+
+      refreshBcvRate: async () => {
+        set({ bcvLoading: true, bcvError: null });
+        try {
+          const res = await fetchBcvUsdRate();
+          set({
+            bcvRate: res.rate,
+            bcvUpdatedAt: res.updatedAt,
+            bcvLoading: false,
+            bcvError: null,
+          });
+        } catch (err) {
+          set({
+            bcvLoading: false,
+            bcvError: err instanceof Error ? err.message : 'No se pudo obtener tasa BCV',
+          });
+        }
+      },
+
+      setManualBcvRate: (rate) => {
+        if (!Number.isFinite(rate) || rate <= 0) return;
+        set({
+          bcvRate: Number(rate.toFixed(4)),
+          bcvUpdatedAt: new Date().toISOString(),
+          bcvError: null,
+        });
+      },
 
       addMovement: (movement) =>
         set((state) => ({
@@ -129,6 +174,9 @@ export const useBudgetStore = create<BudgetState>()(
         toPaymentMethod,
         amountFrom,
         amountTo,
+        amountBsFrom,
+        amountBsTo,
+        bcvRateUsed,
         notes,
       }) => {
         const cleanFrom = Number(Math.abs(amountFrom).toFixed(2));
@@ -144,6 +192,8 @@ export const useBudgetStore = create<BudgetState>()(
           bucket: fromBucket,
           type: 'Transferencia (Salida)',
           amountUsd: cleanFrom,
+          amountBs: amountBsFrom,
+          bcvRateUsed,
           paymentMethod: fromPaymentMethod,
           notes: `Cambio / Transferencia salida${label}`,
         };
@@ -153,6 +203,8 @@ export const useBudgetStore = create<BudgetState>()(
           bucket: toBucket,
           type: 'Transferencia (Entrada)',
           amountUsd: cleanTo,
+          amountBs: amountBsTo,
+          bcvRateUsed,
           paymentMethod: toPaymentMethod,
           notes: `Cambio / Transferencia entrada${label}`,
         };
@@ -223,6 +275,13 @@ export const useBudgetStore = create<BudgetState>()(
         const quincenaId = makeId('qna');
         const newMovements: LedgerMovement[] = [];
         const noteSuffix = notes?.trim() ? ` (${notes.trim()})` : '';
+        const isBs = paymentMethod === 'bolivares_pago_movil' && Boolean(state.bcvRate && state.bcvRate > 0);
+        const rate = state.bcvRate ?? undefined;
+
+        const toBsFields = (usd: number) =>
+          isBs && rate
+            ? { amountBs: Number((usd * rate).toFixed(2)), bcvRateUsed: rate }
+            : {};
 
         if (preview.totalProvision > 0) {
           newMovements.push({
@@ -231,6 +290,7 @@ export const useBudgetStore = create<BudgetState>()(
             bucket: 'imprescindibles',
             type: 'Ingreso a Sobre',
             amountUsd: preview.totalProvision,
+            ...toBsFields(preview.totalProvision),
             paymentMethod,
             notes: `Provisión quincenal gastos/cuotas${noteSuffix}`,
             quincenaId,
@@ -245,6 +305,7 @@ export const useBudgetStore = create<BudgetState>()(
             bucket: alloc.envelopeId,
             type: 'Ingreso a Sobre',
             amountUsd: alloc.amountUsd,
+            ...toBsFields(alloc.amountUsd),
             paymentMethod,
             notes: `Quincena: ${alloc.name}${noteSuffix}`,
             quincenaId,
@@ -258,6 +319,7 @@ export const useBudgetStore = create<BudgetState>()(
             bucket: 'ahorro_inversion',
             type: 'Ingreso a Sobre',
             amountUsd: preview.unallocated,
+            ...toBsFields(preview.unallocated),
             paymentMethod,
             notes: `Excedente quincenal sin asignar${noteSuffix}`,
             quincenaId,
@@ -300,6 +362,12 @@ export const useBudgetStore = create<BudgetState>()(
         const paymentMethod = options?.paymentMethod ?? 'efectivo_usd';
         const amountUsd = options?.amountUsd ?? target.amountUsd;
         const envelopeId = options?.envelopeId ?? target.envelopeId;
+        const rate = options?.bcvRateUsed ?? state.bcvRate ?? undefined;
+        const amountBs =
+          options?.amountBs ??
+          (paymentMethod === 'bolivares_pago_movil' && rate
+            ? Number((amountUsd * rate).toFixed(2))
+            : undefined);
 
         const todayIso = new Date().toISOString().slice(0, 10);
         const previousDueDate = target.nextDueDate;
@@ -323,6 +391,8 @@ export const useBudgetStore = create<BudgetState>()(
                   bucket: envelopeId,
                   type: movementType,
                   amountUsd: Number(Math.abs(amountUsd).toFixed(2)),
+                  amountBs,
+                  bcvRateUsed: rate,
                   paymentMethod,
                   notes: `Pago: ${target.name}`,
                   linkedExpense: {
@@ -453,6 +523,8 @@ export const useBudgetStore = create<BudgetState>()(
         expenses: state.expenses,
         installments: state.installments,
         quincenaConfig: state.quincenaConfig,
+        bcvRate: state.bcvRate,
+        bcvUpdatedAt: state.bcvUpdatedAt,
       }),
     },
   ),

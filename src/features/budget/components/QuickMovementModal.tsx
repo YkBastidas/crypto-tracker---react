@@ -3,6 +3,7 @@ import { ArrowLeftRight, X, Zap } from 'lucide-react';
 import { ENVELOPE_META, PAYMENT_METHOD_LABELS } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
 import type { AssetBucketId, EnvelopeId, MovementType, PaymentMethod } from '../types';
+import { formatBs, formatUsd } from '../utils/calculations';
 
 export type QuickModalTab = 'movement' | 'transfer';
 
@@ -44,7 +45,12 @@ const MOVEMENT_TYPES: MovementType[] = [
 
 function inferDefaultMethod(bucket: AssetBucketId): PaymentMethod {
   if (bucket === 'banco_bolivares') return 'bolivares_pago_movil';
-  if (bucket === 'binance_usdt' || bucket === 'binance_crypto' || bucket === 'binance_paxg' || bucket === 'binance_usdc') {
+  if (
+    bucket === 'binance_usdt' ||
+    bucket === 'binance_crypto' ||
+    bucket === 'binance_paxg' ||
+    bucket === 'binance_usdc'
+  ) {
     return 'binance_usdt';
   }
   return 'efectivo_usd';
@@ -56,10 +62,15 @@ export function QuickMovementModal({
   initialTab = 'movement',
   onClose,
 }: QuickMovementModalProps) {
-  const { addMovement, transferBetweenBuckets } = useBudgetStore();
+  const { addMovement, transferBetweenBuckets, bcvRate } = useBudgetStore();
   const [tab, setTab] = useState<QuickModalTab>(initialTab);
   const [bucket, setBucket] = useState<AssetBucketId>(initialBucket);
-  const [type, setType] = useState<MovementType>('Gasto en Efectivo');
+  const [type, setType] = useState<MovementType>(() =>
+    initialBucket === 'banco_bolivares' ? 'Ingreso a Sobre' : 'Gasto en Efectivo',
+  );
+  const [inputCurrency, setInputCurrency] = useState<'USD' | 'BS'>(() =>
+    initialBucket === 'banco_bolivares' && bcvRate ? 'BS' : 'USD',
+  );
   const [amount, setAmount] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(() =>
     inferDefaultMethod(initialBucket),
@@ -74,12 +85,53 @@ export function QuickMovementModal({
   const [toMethod, setToMethod] = useState<PaymentMethod>('efectivo_usd');
   const [amountFrom, setAmountFrom] = useState('');
   const [amountTo, setAmountTo] = useState('');
+  const [transferToInBs, setTransferToInBs] = useState(false);
 
   if (!isOpen) return null;
 
+  const hasValidRate = Boolean(bcvRate && bcvRate > 0);
+  const effectiveRate = bcvRate ?? 0;
+
+  const parsedInput = parseFloat(amount) || 0;
+  const computedUsdFromInput =
+    inputCurrency === 'BS' && hasValidRate ? parsedInput / effectiveRate : parsedInput;
+  const computedBsFromInput =
+    inputCurrency === 'BS'
+      ? parsedInput
+      : hasValidRate
+        ? parsedInput * effectiveRate
+        : 0;
+
   const isSameTransferTarget =
-    fromBucket === toBucket &&
-    (!ENVELOPE_SET.has(fromBucket) || fromMethod === toMethod);
+    fromBucket === toBucket && (!ENVELOPE_SET.has(fromBucket) || fromMethod === toMethod);
+
+  const isDestinationBs =
+    toBucket === 'banco_bolivares' ||
+    (ENVELOPE_SET.has(toBucket) && toMethod === 'bolivares_pago_movil');
+
+  const isOriginBs =
+    fromBucket === 'banco_bolivares' ||
+    (ENVELOPE_SET.has(fromBucket) && fromMethod === 'bolivares_pago_movil');
+
+  const handleSelectBucket = (next: AssetBucketId) => {
+    setBucket(next);
+    const inferred = inferDefaultMethod(next);
+    setPaymentMethod(inferred);
+    if (inferred === 'bolivares_pago_movil' && hasValidRate) {
+      setInputCurrency('BS');
+    } else if (inferred !== 'bolivares_pago_movil') {
+      setInputCurrency('USD');
+    }
+  };
+
+  const handleSelectMethod = (next: PaymentMethod) => {
+    setPaymentMethod(next);
+    if (next === 'bolivares_pago_movil' && hasValidRate) {
+      setInputCurrency('BS');
+    } else if (next !== 'bolivares_pago_movil') {
+      setInputCurrency('USD');
+    }
+  };
 
   const handleSelectFromBucket = (next: AssetBucketId) => {
     setFromBucket(next);
@@ -88,19 +140,30 @@ export function QuickMovementModal({
 
   const handleSelectToBucket = (next: AssetBucketId) => {
     setToBucket(next);
-    setToMethod(inferDefaultMethod(next));
+    const nextMethod = inferDefaultMethod(next);
+    setToMethod(nextMethod);
+    setTransferToInBs(nextMethod === 'bolivares_pago_movil' && hasValidRate);
   };
 
   const handleSubmitMovement = (e: React.FormEvent) => {
     e.preventDefault();
-    const numericAmount = parseFloat(amount);
-    if (!Number.isFinite(numericAmount) || numericAmount <= 0) return;
+    if (!Number.isFinite(parsedInput) || parsedInput <= 0) return;
+    if (inputCurrency === 'BS' && !hasValidRate) return;
+
+    const amountUsd = Number(computedUsdFromInput.toFixed(2));
+    const isBsMovement =
+      inputCurrency === 'BS' ||
+      bucket === 'banco_bolivares' ||
+      paymentMethod === 'bolivares_pago_movil';
 
     addMovement({
       date,
       bucket,
       type,
-      amountUsd: Number(numericAmount.toFixed(2)),
+      amountUsd,
+      amountBs:
+        isBsMovement && hasValidRate ? Number(computedBsFromInput.toFixed(2)) : undefined,
+      bcvRateUsed: isBsMovement && hasValidRate ? effectiveRate : undefined,
       paymentMethod,
       notes: notes.trim() || undefined,
     });
@@ -112,9 +175,26 @@ export function QuickMovementModal({
   const handleSubmitTransfer = (e: React.FormEvent) => {
     e.preventDefault();
     const numFrom = parseFloat(amountFrom);
-    const numTo = amountTo.trim() ? parseFloat(amountTo) : numFrom;
-    if (!Number.isFinite(numFrom) || numFrom <= 0 || !Number.isFinite(numTo) || numTo <= 0) return;
+    if (!Number.isFinite(numFrom) || numFrom <= 0) return;
     if (isSameTransferTarget) return;
+
+    const rawTo = amountTo.trim() ? parseFloat(amountTo) : NaN;
+    let finalUsdTo = numFrom;
+    let finalBsTo: number | undefined;
+
+    if (transferToInBs && hasValidRate) {
+      const bsReceived = Number.isFinite(rawTo) && rawTo > 0 ? rawTo : numFrom * effectiveRate;
+      finalBsTo = Number(bsReceived.toFixed(2));
+      finalUsdTo = Number((bsReceived / effectiveRate).toFixed(2));
+    } else {
+      finalUsdTo = Number.isFinite(rawTo) && rawTo > 0 ? rawTo : numFrom;
+      if (isDestinationBs && hasValidRate) {
+        finalBsTo = Number((finalUsdTo * effectiveRate).toFixed(2));
+      }
+    }
+
+    const finalBsFrom =
+      isOriginBs && hasValidRate ? Number((numFrom * effectiveRate).toFixed(2)) : undefined;
 
     transferBetweenBuckets({
       date,
@@ -123,7 +203,10 @@ export function QuickMovementModal({
       fromPaymentMethod: ENVELOPE_SET.has(fromBucket) ? fromMethod : inferDefaultMethod(fromBucket),
       toPaymentMethod: ENVELOPE_SET.has(toBucket) ? toMethod : inferDefaultMethod(toBucket),
       amountFrom: numFrom,
-      amountTo: numTo,
+      amountTo: finalUsdTo,
+      amountBsFrom: finalBsFrom,
+      amountBsTo: finalBsTo,
+      bcvRateUsed: (isOriginBs || isDestinationBs) && hasValidRate ? effectiveRate : undefined,
       notes: notes.trim() || undefined,
     });
     setAmountFrom('');
@@ -184,12 +267,43 @@ export function QuickMovementModal({
 
         {tab === 'movement' ? (
           <form onSubmit={handleSubmitMovement} className="space-y-4">
-            {/* Amount */}
+            {/* Amount + Currency Toggle */}
             <div>
-              <label className="text-xs text-text-muted block mb-1.5">Monto (USD)</label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs text-text-muted">
+                  Monto ({inputCurrency === 'BS' ? 'Bolívares' : 'USD'})
+                </label>
+                <div className="flex rounded-lg overflow-hidden border border-border text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setInputCurrency('USD')}
+                    className={`px-2.5 py-0.5 font-semibold border-none cursor-pointer ${
+                      inputCurrency === 'USD'
+                        ? 'bg-accent-blue text-white'
+                        : 'bg-bg-input text-text-muted'
+                    }`}
+                  >
+                    USD ($)
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!hasValidRate}
+                    onClick={() => setInputCurrency('BS')}
+                    title={hasValidRate ? `Tasa BCV: Bs. ${effectiveRate}` : 'Tasa BCV no disponible'}
+                    className={`px-2.5 py-0.5 font-semibold border-none cursor-pointer disabled:opacity-40 ${
+                      inputCurrency === 'BS'
+                        ? 'bg-cyan-500 text-black'
+                        : 'bg-bg-input text-text-muted'
+                    }`}
+                  >
+                    Bs (BCV)
+                  </button>
+                </div>
+              </div>
+
               <div className="relative">
-                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-text-muted font-semibold">
-                  $
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-text-muted font-semibold text-sm">
+                  {inputCurrency === 'BS' ? 'Bs.' : '$'}
                 </span>
                 <input
                   type="number"
@@ -201,20 +315,35 @@ export function QuickMovementModal({
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
                   placeholder="0.00"
-                  className="w-full pl-8 pr-4 py-3 rounded-xl text-xl font-bold bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
+                  className="w-full pl-10 pr-4 py-3 rounded-xl text-xl font-bold bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
                 />
               </div>
+
+              {inputCurrency === 'BS' && hasValidRate && (
+                <p className="text-[11px] text-cyan-300 mt-1">
+                  ≈ {formatUsd(computedUsdFromInput)} USD según tasa BCV (Bs.{' '}
+                  {effectiveRate.toFixed(2)}/$)
+                </p>
+              )}
+              {inputCurrency === 'USD' && hasValidRate && paymentMethod === 'bolivares_pago_movil' && (
+                <p className="text-[11px] text-cyan-300 mt-1">
+                  ≈ {formatBs(computedBsFromInput)} según tasa BCV
+                </p>
+              )}
+
               <div className="flex gap-2 mt-2">
-                {[5, 10, 20, 50, 100].map((preset) => (
-                  <button
-                    key={preset}
-                    type="button"
-                    onClick={() => setAmount(String(preset))}
-                    className="flex-1 py-1.5 rounded-lg text-xs font-medium bg-bg-input border border-border text-text-muted hover:text-text-primary hover:border-accent-blue cursor-pointer"
-                  >
-                    ${preset}
-                  </button>
-                ))}
+                {(inputCurrency === 'BS' ? [100, 500, 1000, 2500, 5000] : [5, 10, 20, 50, 100]).map(
+                  (preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setAmount(String(preset))}
+                      className="flex-1 py-1.5 rounded-lg text-[11px] font-medium bg-bg-input border border-border text-text-muted hover:text-text-primary hover:border-accent-blue cursor-pointer"
+                    >
+                      {inputCurrency === 'BS' ? `${preset}` : `$${preset}`}
+                    </button>
+                  ),
+                )}
               </div>
             </div>
 
@@ -244,11 +373,7 @@ export function QuickMovementModal({
               <label className="text-xs text-text-muted block mb-1.5">Sobre o Fondo</label>
               <select
                 value={bucket}
-                onChange={(e) => {
-                  const next = e.target.value as EnvelopeId | AssetBucketId;
-                  setBucket(next);
-                  setPaymentMethod(inferDefaultMethod(next));
-                }}
+                onChange={(e) => handleSelectBucket(e.target.value as EnvelopeId | AssetBucketId)}
                 className="w-full px-3 py-2.5 rounded-xl text-sm bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
               >
                 {BUCKET_OPTIONS.map((opt) => (
@@ -265,7 +390,7 @@ export function QuickMovementModal({
                 <label className="text-xs text-text-muted block mb-1.5">Medio / Custodia</label>
                 <select
                   value={paymentMethod}
-                  onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
+                  onChange={(e) => handleSelectMethod(e.target.value as PaymentMethod)}
                   className="w-full px-3 py-2 rounded-xl text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
                 >
                   {(Object.keys(PAYMENT_METHOD_LABELS) as PaymentMethod[]).map((k) => (
@@ -316,6 +441,7 @@ export function QuickMovementModal({
                   setFromMethod('binance_usdt');
                   setToBucket('imprescindibles');
                   setToMethod('efectivo_usd');
+                  setTransferToInBs(false);
                   setNotes('Cambio USDT a USD efectivo');
                 }}
                 className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-blue/10 border border-accent-blue/30 text-accent-blue cursor-pointer"
@@ -329,6 +455,7 @@ export function QuickMovementModal({
                   setFromMethod('binance_usdt');
                   setToBucket('banco_bolivares');
                   setToMethod('bolivares_pago_movil');
+                  setTransferToInBs(hasValidRate);
                   setNotes('Cambio USDT a Bolívares');
                 }}
                 className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-gold/10 border border-accent-gold/30 text-accent-gold cursor-pointer"
@@ -342,6 +469,7 @@ export function QuickMovementModal({
                   setFromMethod('efectivo_usd');
                   setToBucket('banco_bolivares');
                   setToMethod('bolivares_pago_movil');
+                  setTransferToInBs(hasValidRate);
                   setNotes('Cambio efectivo a Bolívares');
                 }}
                 className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-green/10 border border-accent-green/30 text-accent-green cursor-pointer"
@@ -394,7 +522,11 @@ export function QuickMovementModal({
               {ENVELOPE_SET.has(toBucket) && (
                 <select
                   value={toMethod}
-                  onChange={(e) => setToMethod(e.target.value as PaymentMethod)}
+                  onChange={(e) => {
+                    const next = e.target.value as PaymentMethod;
+                    setToMethod(next);
+                    setTransferToInBs(next === 'bolivares_pago_movil' && hasValidRate);
+                  }}
                   className="w-full px-3 py-1.5 rounded-lg text-[11px] bg-bg-input border border-border text-text-muted"
                 >
                   <option value="efectivo_usd">Custodia: Efectivo USD</option>
@@ -426,9 +558,23 @@ export function QuickMovementModal({
                 />
               </div>
               <div>
-                <label className="text-xs text-text-muted block mb-1.5">
-                  Recibido neto (opc.)
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs text-text-muted">
+                    {transferToInBs ? 'Recibido (Bs)' : 'Recibido ($)'}
+                  </label>
+                  {isDestinationBs && hasValidRate && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTransferToInBs((v) => !v);
+                        setAmountTo('');
+                      }}
+                      className="text-[10px] text-cyan-300 underline bg-transparent border-none cursor-pointer"
+                    >
+                      {transferToInBs ? 'En $' : 'En Bs'}
+                    </button>
+                  )}
+                </div>
                 <input
                   type="number"
                   step="0.01"
@@ -436,9 +582,18 @@ export function QuickMovementModal({
                   inputMode="decimal"
                   value={amountTo}
                   onChange={(e) => setAmountTo(e.target.value)}
-                  placeholder={amountFrom || 'Igual'}
+                  placeholder={
+                    transferToInBs && hasValidRate
+                      ? ((parseFloat(amountFrom) || 0) * effectiveRate).toFixed(2)
+                      : amountFrom || 'Igual'
+                  }
                   className="w-full px-3 py-2.5 rounded-xl text-base font-bold bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
                 />
+                {transferToInBs && hasValidRate && amountTo.trim() && (
+                  <p className="text-[10px] text-cyan-300 mt-1">
+                    ≈ {formatUsd((parseFloat(amountTo) || 0) / effectiveRate)} (BCV)
+                  </p>
+                )}
               </div>
             </div>
 

@@ -34,6 +34,13 @@ export function formatUsd(amount: number): string {
   }).format(amount);
 }
 
+export function formatBs(amount: number): string {
+  return `Bs. ${new Intl.NumberFormat('es-VE', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amount)}`;
+}
+
 export function calculateDaysLeft(nextDueDate: string): number {
   const now = new Date();
   const todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -149,7 +156,46 @@ function sumBucketBalance(movements: LedgerMovement[], buckets: AssetBucketId[])
   return total;
 }
 
-export function calculateFundSummaries(movements: LedgerMovement[]): {
+function sumBolivaresBalance(movements: LedgerMovement[], bcvRate: number | null): {
+  balanceBs: number;
+  hasBsData: boolean;
+} {
+  let balanceBs = 0;
+  let hasBsData = false;
+  for (const m of movements) {
+    const isBsBucket =
+      m.bucket === 'banco_bolivares' ||
+      (ENVELOPE_IDS.includes(m.bucket as EnvelopeId) &&
+        m.paymentMethod === 'bolivares_pago_movil');
+    if (!isBsBucket) continue;
+
+    hasBsData = true;
+    const bsVal =
+      typeof m.amountBs === 'number'
+        ? Math.abs(m.amountBs)
+        : bcvRate && bcvRate > 0
+          ? Math.abs(m.amountUsd) * bcvRate
+          : 0;
+
+    if (
+      m.type === 'Gasto en Efectivo' ||
+      m.type === 'Cambio a Bolívares' ||
+      m.type === 'Pago de Cuota' ||
+      m.type === 'Transferencia (Salida)' ||
+      (m.type === 'Ajuste' && m.amountUsd < 0)
+    ) {
+      balanceBs -= bsVal;
+    } else {
+      balanceBs += bsVal;
+    }
+  }
+  return { balanceBs, hasBsData };
+}
+
+export function calculateFundSummaries(
+  movements: LedgerMovement[],
+  bcvRate: number | null = null,
+): {
   funds: FundSummary[];
   totalNetWorth: number;
   envelopes: EnvelopeSummary[];
@@ -159,7 +205,10 @@ export function calculateFundSummaries(movements: LedgerMovement[]): {
   const bolivaresSobres = envelopes.reduce((acc, e) => acc + e.byMethod.bolivares, 0);
   const binanceSobres = envelopes.reduce((acc, e) => acc + e.byMethod.binance, 0);
 
-  const cuentaBolivares = sumBucketBalance(movements, ['banco_bolivares']) + bolivaresSobres;
+  const cuentaBolivaresUsdLedger = sumBucketBalance(movements, ['banco_bolivares']) + bolivaresSobres;
+  const { balanceBs, hasBsData } = sumBolivaresBalance(movements, bcvRate);
+  const cuentaBolivares =
+    hasBsData && bcvRate && bcvRate > 0 ? balanceBs / bcvRate : cuentaBolivaresUsdLedger;
   const inversionesBinance =
     sumBucketBalance(movements, ['binance_crypto', 'binance_usdt', 'binance_paxg']) +
     binanceSobres;
@@ -177,9 +226,10 @@ export function calculateFundSummaries(movements: LedgerMovement[]): {
     {
       id: 'cuenta_bolivares',
       name: 'Cuenta en Bolívares',
-      assetType: 'Banco / Pago Móvil (Eq. USD)',
+      assetType: 'Banco / Pago Móvil',
       notes: 'Saldo operativo para recargas, parking y pagos en Bs',
       balance: cuentaBolivares,
+      balanceBs: hasBsData ? balanceBs : bcvRate && bcvRate > 0 ? cuentaBolivares * bcvRate : 0,
     },
     {
       id: 'inversiones_binance',

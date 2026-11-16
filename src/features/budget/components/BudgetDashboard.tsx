@@ -22,6 +22,7 @@ import type { AssetBucketId, FundId, RecurringExpense } from '../types';
 import {
   calculateDaysLeft,
   calculateFundSummaries,
+  formatBs,
   formatUsd,
 } from '../utils/calculations';
 import { BackupControls } from './BackupControls';
@@ -60,15 +61,15 @@ export function BudgetDashboard({
   onNavigateExpenses,
 }: BudgetDashboardProps) {
   const isPrivate = usePortfolioStore((s) => s.isPrivate);
-  const { movements, expenses, removeMovement } = useBudgetStore();
+  const { movements, expenses, bcvRate, removeMovement } = useBudgetStore();
   const [quickModalOpen, setQuickModalOpen] = useState(false);
   const [quickBucket, setQuickBucket] = useState<AssetBucketId>('imprescindibles');
   const [quickTab, setQuickTab] = useState<QuickModalTab>('movement');
   const [payingExpense, setPayingExpense] = useState<RecurringExpense | null>(null);
 
   const { funds, totalNetWorth, envelopes } = useMemo(
-    () => calculateFundSummaries(movements),
-    [movements],
+    () => calculateFundSummaries(movements, bcvRate),
+    [movements, bcvRate],
   );
 
   const upcomingAlerts = useMemo(() => {
@@ -160,9 +161,21 @@ export function BudgetDashboard({
               </div>
 
               <div>
-                <div className="text-xl font-bold text-text-primary">
-                  <PrivacyValue value={formatUsd(fund.balance)} isPrivate={isPrivate} />
-                </div>
+                {fund.id === 'cuenta_bolivares' ? (
+                  <div>
+                    <div className="text-xl font-bold text-cyan-300">
+                      <PrivacyValue value={formatBs(fund.balanceBs ?? 0)} isPrivate={isPrivate} />
+                    </div>
+                    <p className="text-[11px] text-text-muted mt-0.5">
+                      ≈ <PrivacyValue value={formatUsd(fund.balance)} isPrivate={isPrivate} /> USD
+                      {bcvRate ? ' (BCV)' : ''}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="text-xl font-bold text-text-primary">
+                    <PrivacyValue value={formatUsd(fund.balance)} isPrivate={isPrivate} />
+                  </div>
+                )}
                 <div className="w-full h-1.5 bg-bg-input rounded-full overflow-hidden mt-2">
                   <div
                     className="h-full rounded-full bg-accent-blue transition-all duration-500"
@@ -403,14 +416,21 @@ export function BudgetDashboard({
                   </div>
 
                   <div className="flex items-center gap-2 shrink-0">
-                    <span
-                      className={`font-bold ${
-                        isOutflow ? 'text-accent-red' : 'text-accent-green'
-                      }`}
-                    >
-                      {isOutflow ? '-' : '+'}
-                      <PrivacyValue value={formatUsd(m.amountUsd)} isPrivate={isPrivate} />
-                    </span>
+                    <div className="text-right">
+                      <span
+                        className={`font-bold block ${
+                          isOutflow ? 'text-accent-red' : 'text-accent-green'
+                        }`}
+                      >
+                        {isOutflow ? '-' : '+'}
+                        <PrivacyValue value={formatUsd(m.amountUsd)} isPrivate={isPrivate} />
+                      </span>
+                      {typeof m.amountBs === 'number' && m.amountBs > 0 && (
+                        <span className="text-[10px] text-cyan-300 block">
+                          <PrivacyValue value={formatBs(m.amountBs)} isPrivate={isPrivate} />
+                        </span>
+                      )}
+                    </div>
                     <button
                       type="button"
                       onClick={() => removeMovement(m.id)}

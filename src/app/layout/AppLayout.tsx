@@ -8,6 +8,7 @@ import {
   HelpCircle,
   LayoutDashboard,
   Menu,
+  RefreshCw,
   RotateCcw,
   Sparkles,
   Upload,
@@ -58,10 +59,26 @@ const NAV_ITEMS: { id: AppView; label: string; shortLabel: string; icon: ReactNo
 export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps) {
   const { transactions, isDirty, isPrivate, togglePrivacy, setDirty, loadTransactions } =
     usePortfolioStore();
-  const { undoEntry, undoLastAction, dismissUndo } = useBudgetStore();
+  const {
+    undoEntry,
+    undoLastAction,
+    dismissUndo,
+    bcvRate,
+    bcvUpdatedAt,
+    bcvLoading,
+    bcvError,
+    refreshBcvRate,
+    setManualBcvRate,
+  } = useBudgetStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [bcvPopoverOpen, setBcvPopoverOpen] = useState(false);
+  const [manualRateInput, setManualRateInput] = useState('');
+
+  useEffect(() => {
+    void refreshBcvRate();
+  }, [refreshBcvRate]);
 
   // beforeunload warning for unsaved crypto CSV changes
   useEffect(() => {
@@ -244,6 +261,85 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
                 {isPrivate ? 'Mostrar Montos' : 'Ocultar Montos'}
               </span>
             </button>
+
+            {/* BCV Rate Pill (to the right of Ocultar Montos) */}
+            <div className="relative">
+              <div className="flex items-center rounded-lg bg-bg-card border border-border overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setManualRateInput(bcvRate ? String(bcvRate) : '');
+                    setBcvPopoverOpen((v) => !v);
+                  }}
+                  className="px-2.5 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-bg-input transition-colors cursor-pointer bg-transparent border-none"
+                  title="Tasa Oficial BCV (DolarApi)"
+                >
+                  <span className="text-text-muted font-normal mr-1">BCV:</span>
+                  {bcvRate ? `Bs. ${bcvRate.toFixed(2)}` : bcvLoading ? '...' : '--'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void refreshBcvRate()}
+                  disabled={bcvLoading}
+                  title="Actualizar tasa BCV"
+                  className="px-2 py-1.5 text-text-muted hover:text-text-primary border-l border-border bg-transparent border-t-0 border-r-0 border-b-0 cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw size={12} className={bcvLoading ? 'animate-spin' : ''} />
+                </button>
+              </div>
+
+              {bcvPopoverOpen && (
+                <div className="absolute right-0 mt-2 w-64 bg-bg-card border border-border rounded-xl p-3.5 shadow-2xl z-50 space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-text-primary">Tasa BCV del día</span>
+                    <button
+                      type="button"
+                      onClick={() => setBcvPopoverOpen(false)}
+                      className="text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-text-muted">
+                    {bcvUpdatedAt
+                      ? `Actualizado: ${new Date(bcvUpdatedAt).toLocaleString('es-VE', {
+                          dateStyle: 'short',
+                          timeStyle: 'short',
+                        })}`
+                      : 'Fuente: ve.dolarapi.com'}
+                  </p>
+                  {bcvError && <p className="text-[11px] text-accent-red">{bcvError}</p>}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const val = parseFloat(manualRateInput);
+                      if (Number.isFinite(val) && val > 0) {
+                        setManualBcvRate(val);
+                        setBcvPopoverOpen(false);
+                      }
+                    }}
+                    className="flex gap-1.5 pt-1"
+                  >
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      inputMode="decimal"
+                      value={manualRateInput}
+                      onChange={(e) => setManualRateInput(e.target.value)}
+                      placeholder="Tasa manual Bs/$"
+                      className="flex-1 px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
+                    />
+                    <button
+                      type="submit"
+                      className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-accent-blue/20 border border-accent-blue/40 text-accent-blue cursor-pointer"
+                    >
+                      Fijar
+                    </button>
+                  </form>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
