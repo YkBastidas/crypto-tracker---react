@@ -3,6 +3,7 @@ import {
   CalendarClock,
   Check,
   Layers,
+  Pencil,
   Plus,
   Repeat,
   Trash2,
@@ -15,6 +16,7 @@ import type {
   EnvelopeId,
   ExpenseFrequency,
   InstallmentFrequency,
+  InstallmentPlan,
   PaymentMethod,
   RecurringExpense,
 } from '../types';
@@ -32,15 +34,19 @@ export function ExpensesAndPayments() {
     expenses,
     installments,
     addExpense,
+    updateExpense,
     removeExpense,
     addInstallment,
+    updateInstallment,
     removeInstallment,
     recordInstallmentPayment,
   } = useBudgetStore();
 
   const [expenseFilter, setExpenseFilter] = useState<'all' | 'mensual' | 'anual'>('all');
   const [showAddExpense, setShowAddExpense] = useState(false);
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
   const [showAddInstallment, setShowAddInstallment] = useState(false);
+  const [editingInstallmentId, setEditingInstallmentId] = useState<string | null>(null);
   const [payingExpense, setPayingExpense] = useState<RecurringExpense | null>(null);
   const [installmentMethod, setInstallmentMethod] = useState<PaymentMethod>('efectivo_usd');
 
@@ -96,22 +102,53 @@ export function ExpensesAndPayments() {
       .sort((a, b) => a.daysLeft - b.daysLeft);
   }, [expenses, expenseFilter]);
 
+  const startEditExpense = (item: RecurringExpense) => {
+    setEditingExpenseId(item.id);
+    setExpName(item.name);
+    setExpAmount(String(item.amountUsd));
+    setExpFreq(item.frequency);
+    setExpDate(item.nextDueDate);
+    setExpEnv(item.envelopeId);
+    setShowAddExpense(true);
+  };
+
   const handleCreateExpense = (e: React.FormEvent) => {
     e.preventDefault();
     const amount = parseFloat(expAmount);
     if (!expName.trim() || !Number.isFinite(amount) || amount <= 0) return;
 
-    addExpense({
-      name: expName.trim(),
-      amountUsd: Number(amount.toFixed(2)),
-      frequency: expFreq,
-      nextDueDate: expDate,
-      envelopeId: expEnv,
-      active: true,
-    });
+    if (editingExpenseId) {
+      updateExpense(editingExpenseId, {
+        name: expName.trim(),
+        amountUsd: Number(amount.toFixed(2)),
+        frequency: expFreq,
+        nextDueDate: expDate,
+        envelopeId: expEnv,
+      });
+    } else {
+      addExpense({
+        name: expName.trim(),
+        amountUsd: Number(amount.toFixed(2)),
+        frequency: expFreq,
+        nextDueDate: expDate,
+        envelopeId: expEnv,
+        active: true,
+      });
+    }
+    setEditingExpenseId(null);
     setExpName('');
     setExpAmount('');
     setShowAddExpense(false);
+  };
+
+  const startEditInstallment = (plan: InstallmentPlan) => {
+    setEditingInstallmentId(plan.id);
+    setInstName(plan.name);
+    setInstAmount(String(plan.installmentAmount));
+    setInstFreq(plan.frequency);
+    setInstCap(plan.maxCap ? String(plan.maxCap) : '');
+    setInstNotes(plan.notes ?? '');
+    setShowAddInstallment(true);
   };
 
   const handleCreateInstallment = (e: React.FormEvent) => {
@@ -120,15 +157,26 @@ export function ExpensesAndPayments() {
     if (!instName.trim() || !Number.isFinite(amount) || amount <= 0) return;
     const cap = instCap.trim() ? parseFloat(instCap) : null;
 
-    addInstallment({
-      name: instName.trim(),
-      installmentAmount: Number(amount.toFixed(2)),
-      frequency: instFreq,
-      maxCap: cap && Number.isFinite(cap) && cap > 0 ? cap : null,
-      paidTotal: 0,
-      paymentsCount: 0,
-      notes: instNotes.trim() || undefined,
-    });
+    if (editingInstallmentId) {
+      updateInstallment(editingInstallmentId, {
+        name: instName.trim(),
+        installmentAmount: Number(amount.toFixed(2)),
+        frequency: instFreq,
+        maxCap: cap && Number.isFinite(cap) && cap > 0 ? cap : null,
+        notes: instNotes.trim() || undefined,
+      });
+    } else {
+      addInstallment({
+        name: instName.trim(),
+        installmentAmount: Number(amount.toFixed(2)),
+        frequency: instFreq,
+        maxCap: cap && Number.isFinite(cap) && cap > 0 ? cap : null,
+        paidTotal: 0,
+        paymentsCount: 0,
+        notes: instNotes.trim() || undefined,
+      });
+    }
+    setEditingInstallmentId(null);
     setInstName('');
     setInstAmount('');
     setInstCap('');
@@ -200,7 +248,12 @@ export function ExpensesAndPayments() {
             </div>
             <button
               type="button"
-              onClick={() => setShowAddExpense((v) => !v)}
+              onClick={() => {
+                setEditingExpenseId(null);
+                setExpName('');
+                setExpAmount('');
+                setShowAddExpense((v) => !v);
+              }}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-green/15 border border-accent-green/40 text-accent-green hover:bg-accent-green/25 cursor-pointer"
             >
               <Plus size={14} /> Nuevo
@@ -346,6 +399,14 @@ export function ExpensesAndPayments() {
                     </button>
                     <button
                       type="button"
+                      onClick={() => startEditExpense(item)}
+                      title="Editar gasto"
+                      className="p-1.5 rounded-lg text-text-muted hover:text-accent-blue bg-transparent border-none cursor-pointer"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => removeExpense(item.id)}
                       title="Eliminar gasto"
                       className="p-1.5 rounded-lg text-text-muted hover:text-accent-red bg-transparent border-none cursor-pointer"
@@ -374,7 +435,14 @@ export function ExpensesAndPayments() {
 
           <button
             type="button"
-            onClick={() => setShowAddInstallment((v) => !v)}
+            onClick={() => {
+              setEditingInstallmentId(null);
+              setInstName('');
+              setInstAmount('');
+              setInstCap('');
+              setInstNotes('');
+              setShowAddInstallment((v) => !v);
+            }}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-gold/15 border border-accent-gold/40 text-accent-gold hover:bg-accent-gold/25 cursor-pointer shrink-0"
           >
             <Plus size={14} /> Nueva Cuota
@@ -478,14 +546,24 @@ export function ExpensesAndPayments() {
                     </p>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => removeInstallment(plan.id)}
-                    title="Eliminar cuota"
-                    className="p-1 text-text-muted hover:text-accent-red bg-transparent border-none cursor-pointer"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => startEditInstallment(plan)}
+                      title="Editar cuota"
+                      className="p-1 text-text-muted hover:text-accent-blue bg-transparent border-none cursor-pointer"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeInstallment(plan.id)}
+                      title="Eliminar cuota"
+                      className="p-1 text-text-muted hover:text-accent-red bg-transparent border-none cursor-pointer"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
 
                 {hasCap ? (

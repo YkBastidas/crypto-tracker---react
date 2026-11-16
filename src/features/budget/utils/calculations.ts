@@ -1,6 +1,7 @@
 import { ENVELOPE_META } from '../data/defaultSeed';
 import type {
   AssetBucketId,
+  CustomAccount,
   EnvelopeId,
   EnvelopeRule,
   EnvelopeSummary,
@@ -192,9 +193,42 @@ function sumBolivaresBalance(movements: LedgerMovement[], bcvRate: number | null
   return { balanceBs, hasBsData };
 }
 
+function sumCustomBsBalance(
+  movements: LedgerMovement[],
+  bucketId: AssetBucketId,
+  bcvRate: number | null,
+): { balanceBs: number; hasBsData: boolean } {
+  let balanceBs = 0;
+  let hasBsData = false;
+  for (const m of movements) {
+    if (m.bucket !== bucketId) continue;
+    hasBsData = true;
+    const bsVal =
+      typeof m.amountBs === 'number'
+        ? Math.abs(m.amountBs)
+        : bcvRate && bcvRate > 0
+          ? Math.abs(m.amountUsd) * bcvRate
+          : 0;
+
+    if (
+      m.type === 'Gasto en Efectivo' ||
+      m.type === 'Cambio a Bolívares' ||
+      m.type === 'Pago de Cuota' ||
+      m.type === 'Transferencia (Salida)' ||
+      (m.type === 'Ajuste' && m.amountUsd < 0)
+    ) {
+      balanceBs -= bsVal;
+    } else {
+      balanceBs += bsVal;
+    }
+  }
+  return { balanceBs, hasBsData };
+}
+
 export function calculateFundSummaries(
   movements: LedgerMovement[],
   bcvRate: number | null = null,
+  customAccounts: CustomAccount[] = [],
 ): {
   funds: FundSummary[];
   totalNetWorth: number;
@@ -253,6 +287,39 @@ export function calculateFundSummaries(
       balance: billeteraBtc,
     },
   ];
+
+  for (const acct of customAccounts) {
+    const usdLedger = sumBucketBalance(movements, [acct.id]);
+    if (acct.currency === 'VES') {
+      const bsInfo = sumCustomBsBalance(movements, acct.id, bcvRate);
+      const usdVal =
+        bsInfo.hasBsData && bcvRate && bcvRate > 0 ? bsInfo.balanceBs / bcvRate : usdLedger;
+      rawFunds.push({
+        id: acct.id,
+        name: acct.name,
+        assetType: acct.subtitle || 'Cuenta en Bolívares',
+        notes: acct.subtitle || 'Cuenta personalizada en Bs',
+        balance: usdVal,
+        balanceBs: bsInfo.hasBsData
+          ? bsInfo.balanceBs
+          : bcvRate && bcvRate > 0
+            ? usdVal * bcvRate
+            : 0,
+        isCustom: true,
+        currency: 'VES',
+      });
+    } else {
+      rawFunds.push({
+        id: acct.id,
+        name: acct.name,
+        assetType: acct.subtitle || 'Cuenta en Dólares (USD)',
+        notes: acct.subtitle || 'Cuenta personalizada en USD',
+        balance: usdLedger,
+        isCustom: true,
+        currency: 'USD',
+      });
+    }
+  }
 
   const totalNetWorth = rawFunds.reduce((acc, f) => acc + f.balance, 0);
 

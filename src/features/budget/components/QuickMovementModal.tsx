@@ -2,7 +2,13 @@ import { useMemo, useState } from 'react';
 import { ArrowLeftRight, MinusCircle, PlusCircle, SlidersHorizontal, X, Zap } from 'lucide-react';
 import { ENVELOPE_META, PAYMENT_METHOD_LABELS } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
-import type { AssetBucketId, EnvelopeId, MovementType, PaymentMethod } from '../types';
+import type {
+  AssetBucketId,
+  CustomAccount,
+  EnvelopeId,
+  MovementType,
+  PaymentMethod,
+} from '../types';
 import {
   calculateFundSummaries,
   formatBs,
@@ -55,8 +61,17 @@ const OUTFLOW_TYPES: MovementType[] = [
   'Pago de Cuota',
 ];
 
-function inferDefaultMethod(bucket: AssetBucketId): PaymentMethod {
-  if (bucket === 'banco_bolivares') return 'bolivares_pago_movil';
+function isBsBucketOrAccount(bucket: AssetBucketId, customAccounts: CustomAccount[]): boolean {
+  if (bucket === 'banco_bolivares') return true;
+  const acct = customAccounts.find((a) => a.id === bucket);
+  return acct?.currency === 'VES';
+}
+
+function inferDefaultMethod(
+  bucket: AssetBucketId,
+  customAccounts: CustomAccount[],
+): PaymentMethod {
+  if (isBsBucketOrAccount(bucket, customAccounts)) return 'bolivares_pago_movil';
   if (
     bucket === 'binance_usdt' ||
     bucket === 'binance_crypto' ||
@@ -65,6 +80,8 @@ function inferDefaultMethod(bucket: AssetBucketId): PaymentMethod {
   ) {
     return 'binance_usdt';
   }
+  const custom = customAccounts.find((a) => a.id === bucket);
+  if (custom) return 'otro';
   return 'efectivo_usd';
 }
 
@@ -72,14 +89,16 @@ function getBucketBalance(
   bucket: AssetBucketId,
   movements: ReturnType<typeof useBudgetStore.getState>['movements'],
   bcvRate: number | null,
+  customAccounts: CustomAccount[],
 ): { usd: number; bs: number } {
   if (ENVELOPE_SET.has(bucket)) {
-    const { envelopes } = calculateFundSummaries(movements, bcvRate);
+    const { envelopes } = calculateFundSummaries(movements, bcvRate, customAccounts);
     const found = envelopes.find((e) => e.id === bucket);
     const usd = found?.available ?? 0;
     return { usd, bs: bcvRate ? usd * bcvRate : 0 };
   }
 
+  const isBsBucket = isBsBucketOrAccount(bucket, customAccounts);
   let usd = 0;
   let bs = 0;
   for (const m of movements) {
@@ -91,7 +110,7 @@ function getBucketBalance(
       m.type === 'Transferencia (Salida)';
     const sign = isOut ? -1 : 1;
     usd += sign * (m.type === 'Ajuste' ? m.amountUsd : Math.abs(m.amountUsd));
-    if (bucket === 'banco_bolivares') {
+    if (isBsBucket) {
       const mBs =
         typeof m.amountBs === 'number'
           ? Math.abs(m.amountBs)
@@ -102,9 +121,11 @@ function getBucketBalance(
       bs += bsSign * mBs;
     }
   }
+  const effectiveUsd =
+    isBsBucket && bcvRate && bcvRate > 0 ? bs / bcvRate : usd;
   return {
-    usd: Number(usd.toFixed(2)),
-    bs: bucket === 'banco_bolivares' ? Number(bs.toFixed(2)) : bcvRate ? Number((usd * bcvRate).toFixed(2)) : 0,
+    usd: Number(effectiveUsd.toFixed(2)),
+    bs: isBsBucket ? Number(bs.toFixed(2)) : bcvRate ? Number((usd * bcvRate).toFixed(2)) : 0,
   };
 }
 
@@ -115,17 +136,18 @@ export function QuickMovementModal({
   initialDirection = 'out',
   onClose,
 }: QuickMovementModalProps) {
-  const { movements, addMovement, transferBetweenBuckets, bcvRate } = useBudgetStore();
+  const { movements, customAccounts, addMovement, transferBetweenBuckets, bcvRate } =
+    useBudgetStore();
   const [tab, setTab] = useState<QuickModalTab>(initialTab);
   const [direction, setDirection] = useState<MovementDirection>(initialDirection);
   const [bucket, setBucket] = useState<AssetBucketId>(initialBucket);
   const [outflowType, setOutflowType] = useState<MovementType>('Gasto en Efectivo');
   const [inputCurrency, setInputCurrency] = useState<'USD' | 'BS'>(() =>
-    initialBucket === 'banco_bolivares' && bcvRate ? 'BS' : 'USD',
+    isBsBucketOrAccount(initialBucket, customAccounts) && bcvRate ? 'BS' : 'USD',
   );
   const [amount, setAmount] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(() =>
-    inferDefaultMethod(initialBucket),
+    inferDefaultMethod(initialBucket, customAccounts),
   );
   const [notes, setNotes] = useState('');
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -139,9 +161,20 @@ export function QuickMovementModal({
   const [amountTo, setAmountTo] = useState('');
   const [transferToInBs, setTransferToInBs] = useState(false);
 
+  const bucketOptions = useMemo(
+    () => [
+      ...BUCKET_OPTIONS,
+      ...customAccounts.map((a) => ({
+        id: a.id as AssetBucketId,
+        label: `Cuenta: ${a.name} (${a.currency})`,
+      })),
+    ],
+    [customAccounts],
+  );
+
   const currentBucketBalance = useMemo(
-    () => getBucketBalance(bucket, movements, bcvRate),
-    [bucket, movements, bcvRate],
+    () => getBucketBalance(bucket, movements, bcvRate, customAccounts),
+    [bucket, movements, bcvRate, customAccounts],
   );
 
   if (!isOpen) return null;
@@ -176,16 +209,16 @@ export function QuickMovementModal({
     fromBucket === toBucket && (!ENVELOPE_SET.has(fromBucket) || fromMethod === toMethod);
 
   const isDestinationBs =
-    toBucket === 'banco_bolivares' ||
+    isBsBucketOrAccount(toBucket, customAccounts) ||
     (ENVELOPE_SET.has(toBucket) && toMethod === 'bolivares_pago_movil');
 
   const isOriginBs =
-    fromBucket === 'banco_bolivares' ||
+    isBsBucketOrAccount(fromBucket, customAccounts) ||
     (ENVELOPE_SET.has(fromBucket) && fromMethod === 'bolivares_pago_movil');
 
   const handleSelectBucket = (next: AssetBucketId) => {
     setBucket(next);
-    const inferred = inferDefaultMethod(next);
+    const inferred = inferDefaultMethod(next, customAccounts);
     setPaymentMethod(inferred);
     if (inferred === 'bolivares_pago_movil' && hasValidRate) {
       setInputCurrency('BS');
@@ -205,12 +238,12 @@ export function QuickMovementModal({
 
   const handleSelectFromBucket = (next: AssetBucketId) => {
     setFromBucket(next);
-    setFromMethod(inferDefaultMethod(next));
+    setFromMethod(inferDefaultMethod(next, customAccounts));
   };
 
   const handleSelectToBucket = (next: AssetBucketId) => {
     setToBucket(next);
-    const nextMethod = inferDefaultMethod(next);
+    const nextMethod = inferDefaultMethod(next, customAccounts);
     setToMethod(nextMethod);
     setTransferToInBs(nextMethod === 'bolivares_pago_movil' && hasValidRate);
   };
@@ -221,7 +254,7 @@ export function QuickMovementModal({
 
     const isBsMovement =
       inputCurrency === 'BS' ||
-      bucket === 'banco_bolivares' ||
+      isBsBucketOrAccount(bucket, customAccounts) ||
       paymentMethod === 'bolivares_pago_movil';
 
     if (direction === 'set_balance') {
@@ -305,8 +338,12 @@ export function QuickMovementModal({
       date,
       fromBucket,
       toBucket,
-      fromPaymentMethod: ENVELOPE_SET.has(fromBucket) ? fromMethod : inferDefaultMethod(fromBucket),
-      toPaymentMethod: ENVELOPE_SET.has(toBucket) ? toMethod : inferDefaultMethod(toBucket),
+      fromPaymentMethod: ENVELOPE_SET.has(fromBucket)
+        ? fromMethod
+        : inferDefaultMethod(fromBucket, customAccounts),
+      toPaymentMethod: ENVELOPE_SET.has(toBucket)
+        ? toMethod
+        : inferDefaultMethod(toBucket, customAccounts),
       amountFrom: numFrom,
       amountTo: finalUsdTo,
       amountBsFrom: finalBsFrom,
@@ -423,7 +460,7 @@ export function QuickMovementModal({
                 onChange={(e) => handleSelectBucket(e.target.value as EnvelopeId | AssetBucketId)}
                 className="w-full px-3 py-2.5 rounded-xl text-sm bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
               >
-                {BUCKET_OPTIONS.map((opt) => (
+                {bucketOptions.map((opt) => (
                   <option key={opt.id} value={opt.id}>
                     {opt.label}
                   </option>
@@ -674,7 +711,7 @@ export function QuickMovementModal({
                 onChange={(e) => handleSelectFromBucket(e.target.value as AssetBucketId)}
                 className="w-full px-3 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
               >
-                {BUCKET_OPTIONS.map((opt) => (
+                {bucketOptions.map((opt) => (
                   <option key={opt.id} value={opt.id}>
                     {opt.label}
                   </option>
@@ -701,7 +738,7 @@ export function QuickMovementModal({
                 onChange={(e) => handleSelectToBucket(e.target.value as AssetBucketId)}
                 className="w-full px-3 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
               >
-                {BUCKET_OPTIONS.map((opt) => (
+                {bucketOptions.map((opt) => (
                   <option key={opt.id} value={opt.id}>
                     {opt.label}
                   </option>

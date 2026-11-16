@@ -1,9 +1,21 @@
+export type CustomAccountId = `acct_${string}`;
+export type AccountCurrency = 'USD' | 'VES';
+
+export interface CustomAccount {
+  id: CustomAccountId;
+  name: string;
+  currency: AccountCurrency;
+  subtitle?: string;
+  createdAt: string;
+}
+
 export type FundId =
   | 'efectivo_sobres'
   | 'cuenta_bolivares'
   | 'inversiones_binance'
   | 'fondo_emergencia'
-  | 'billetera_btc';
+  | 'billetera_btc'
+  | CustomAccountId;
 
 export type EnvelopeId =
   | 'ahorro_inversion'
@@ -19,7 +31,8 @@ export type AssetBucketId =
   | 'binance_usdt'
   | 'binance_paxg'
   | 'binance_usdc'
-  | 'wallet_btc';
+  | 'wallet_btc'
+  | CustomAccountId;
 
 export type PaymentMethod =
   | 'efectivo_usd'
@@ -105,6 +118,7 @@ export interface BudgetSnapshot {
   expenses: RecurringExpense[];
   installments: InstallmentPlan[];
   quincenaConfig: QuincenaConfig;
+  customAccounts?: CustomAccount[];
 }
 
 export interface FundSummary {
@@ -115,6 +129,8 @@ export interface FundSummary {
   balance: number;
   balanceBs?: number;
   percentage: number;
+  isCustom?: boolean;
+  currency?: AccountCurrency;
 }
 
 export interface EnvelopeSummary {

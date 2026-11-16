@@ -2,8 +2,11 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { createDefaultSeed } from '../data/defaultSeed';
 import type {
+  AccountCurrency,
   AssetBucketId,
   BudgetSnapshot,
+  CustomAccount,
+  CustomAccountId,
   EnvelopeId,
   InstallmentPlan,
   LedgerMovement,
@@ -20,6 +23,7 @@ export interface UndoEntry {
   movements: LedgerMovement[];
   expenses: RecurringExpense[];
   installments: InstallmentPlan[];
+  customAccounts: CustomAccount[];
 }
 
 export interface PayExpenseOptions {
@@ -29,6 +33,7 @@ export interface PayExpenseOptions {
   amountBs?: number;
   bcvRateUsed?: number;
   envelopeId?: EnvelopeId;
+  bucketOverride?: AssetBucketId;
 }
 
 export interface PayInstallmentOptions {
@@ -41,8 +46,22 @@ interface BudgetState {
   movements: LedgerMovement[];
   expenses: RecurringExpense[];
   installments: InstallmentPlan[];
+  customAccounts: CustomAccount[];
   quincenaConfig: QuincenaConfig;
   undoEntry: UndoEntry | null;
+
+  // Custom accounts
+  addCustomAccount: (params: {
+    name: string;
+    currency: AccountCurrency;
+    subtitle?: string;
+    initialBalance?: number;
+  }) => CustomAccountId;
+  updateCustomAccount: (
+    id: CustomAccountId,
+    patch: Partial<Pick<CustomAccount, 'name' | 'currency' | 'subtitle'>>,
+  ) => void;
+  removeCustomAccount: (id: CustomAccountId) => void;
 
   // BCV rate state
   bcvRate: number | null;
@@ -109,7 +128,7 @@ const initialSeed = createDefaultSeed();
 
 function createUndoSnapshot(
   label: string,
-  state: Pick<BudgetState, 'movements' | 'expenses' | 'installments'>,
+  state: Pick<BudgetState, 'movements' | 'expenses' | 'installments' | 'customAccounts'>,
 ): UndoEntry {
   return {
     id: makeId('undo'),
@@ -117,6 +136,7 @@ function createUndoSnapshot(
     movements: state.movements,
     expenses: state.expenses,
     installments: state.installments,
+    customAccounts: state.customAccounts,
   };
 }
 
@@ -126,12 +146,92 @@ export const useBudgetStore = create<BudgetState>()(
       movements: initialSeed.movements,
       expenses: initialSeed.expenses,
       installments: initialSeed.installments,
+      customAccounts: [],
       quincenaConfig: initialSeed.quincenaConfig,
       undoEntry: null,
       bcvRate: null,
       bcvUpdatedAt: null,
       bcvLoading: false,
       bcvError: null,
+
+      addCustomAccount: ({ name, currency, subtitle, initialBalance }) => {
+        const state = get();
+        const id = `acct_${Date.now()}_${Math.random().toString(36).slice(2, 6)}` as CustomAccountId;
+        const cleanName = name.trim();
+        const account: CustomAccount = {
+          id,
+          name: cleanName,
+          currency,
+          subtitle: subtitle?.trim() || (currency === 'VES' ? 'Cuenta en Bolívares' : 'Cuenta en Dólares (USD)'),
+          createdAt: new Date().toISOString(),
+        };
+
+        const initAmt = Number((initialBalance ?? 0).toFixed(2));
+        let nextMovements = state.movements;
+        if (initAmt > 0) {
+          const rate = state.bcvRate ?? undefined;
+          const amountUsd =
+            currency === 'VES' && rate && rate > 0
+              ? Number((initAmt / rate).toFixed(2))
+              : initAmt;
+          nextMovements = [
+            {
+              id: makeId('mov'),
+              date: new Date().toISOString().slice(0, 10),
+              bucket: id,
+              type: 'Ingreso a Sobre',
+              amountUsd,
+              amountBs: currency === 'VES' ? initAmt : undefined,
+              bcvRateUsed: currency === 'VES' ? rate : undefined,
+              paymentMethod: currency === 'VES' ? 'bolivares_pago_movil' : 'otro',
+              notes: `Saldo inicial: ${cleanName}`,
+            },
+            ...state.movements,
+          ];
+        }
+
+        set({
+          customAccounts: [...state.customAccounts, account],
+          movements: nextMovements,
+        });
+        return id;
+      },
+
+      updateCustomAccount: (id, patch) =>
+        set((state) => {
+          const target = state.customAccounts.find((a) => a.id === id);
+          if (!target) return state;
+          const cleanName = patch.name !== undefined ? patch.name.trim() : target.name;
+          if (!cleanName) return state;
+          return {
+            undoEntry: createUndoSnapshot(`Cuenta editada: ${cleanName}`, state),
+            customAccounts: state.customAccounts.map((a) =>
+              a.id === id
+                ? {
+                    ...a,
+                    ...patch,
+                    name: cleanName,
+                    subtitle:
+                      patch.subtitle !== undefined
+                        ? patch.subtitle.trim() || undefined
+                        : a.subtitle,
+                  }
+                : a,
+            ),
+          };
+        }),
+
+      removeCustomAccount: (id) =>
+        set((state) => {
+          const target = state.customAccounts.find((a) => a.id === id);
+          return {
+            undoEntry: target
+              ? createUndoSnapshot(`Cuenta eliminada: ${target.name}`, state)
+              : state.undoEntry,
+            customAccounts: state.customAccounts.filter((a) => a.id !== id),
+            movements: state.movements.filter((m) => m.bucket !== id),
+          };
+        }),
 
       refreshBcvRate: async () => {
         set({ bcvLoading: true, bcvError: null });
@@ -259,6 +359,7 @@ export const useBudgetStore = create<BudgetState>()(
           movements: entry.movements,
           expenses: entry.expenses,
           installments: entry.installments,
+          customAccounts: entry.customAccounts,
           undoEntry: null,
         });
       },
@@ -362,6 +463,7 @@ export const useBudgetStore = create<BudgetState>()(
         const paymentMethod = options?.paymentMethod ?? 'efectivo_usd';
         const amountUsd = options?.amountUsd ?? target.amountUsd;
         const envelopeId = options?.envelopeId ?? target.envelopeId;
+        const targetBucket: AssetBucketId = options?.bucketOverride ?? envelopeId;
         const rate = options?.bcvRateUsed ?? state.bcvRate ?? undefined;
         const amountBs =
           options?.amountBs ??
@@ -388,7 +490,7 @@ export const useBudgetStore = create<BudgetState>()(
                 {
                   id: makeId('mov'),
                   date: todayIso,
-                  bucket: envelopeId,
+                  bucket: targetBucket,
                   type: movementType,
                   amountUsd: Number(Math.abs(amountUsd).toFixed(2)),
                   amountBs,
@@ -470,13 +572,14 @@ export const useBudgetStore = create<BudgetState>()(
       },
 
       exportSnapshot: () => {
-        const { movements, expenses, installments, quincenaConfig } = get();
+        const { movements, expenses, installments, customAccounts, quincenaConfig } = get();
         return {
           version: 1,
           exportedAt: new Date().toISOString(),
           movements,
           expenses,
           installments,
+          customAccounts,
           quincenaConfig,
         };
       },
@@ -495,6 +598,7 @@ export const useBudgetStore = create<BudgetState>()(
           movements: snapshot.movements,
           expenses: snapshot.expenses,
           installments: snapshot.installments,
+          customAccounts: Array.isArray(snapshot.customAccounts) ? snapshot.customAccounts : [],
           quincenaConfig: snapshot.quincenaConfig,
           undoEntry: null,
         });
@@ -503,7 +607,7 @@ export const useBudgetStore = create<BudgetState>()(
 
       resetToSeed: () => {
         const seed = createDefaultSeed();
-        set({ ...seed, undoEntry: null });
+        set({ ...seed, customAccounts: [], undoEntry: null });
       },
 
       clearAllData: () => {
@@ -511,6 +615,7 @@ export const useBudgetStore = create<BudgetState>()(
           movements: [],
           expenses: [],
           installments: [],
+          customAccounts: [],
           quincenaConfig: initialSeed.quincenaConfig,
           undoEntry: null,
         });
@@ -522,6 +627,7 @@ export const useBudgetStore = create<BudgetState>()(
         movements: state.movements,
         expenses: state.expenses,
         installments: state.installments,
+        customAccounts: state.customAccounts,
         quincenaConfig: state.quincenaConfig,
         bcvRate: state.bcvRate,
         bcvUpdatedAt: state.bcvUpdatedAt,

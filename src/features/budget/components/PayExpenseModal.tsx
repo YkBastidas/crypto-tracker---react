@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Banknote, CheckCircle2, Coins, Smartphone, Wallet, X } from 'lucide-react';
 import { ENVELOPE_META } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
-import type { EnvelopeId, PaymentMethod, RecurringExpense } from '../types';
+import type { AssetBucketId, EnvelopeId, PaymentMethod, RecurringExpense } from '../types';
 import { formatBs, formatUsd } from '../utils/calculations';
 
 interface PayExpenseModalProps {
@@ -18,9 +18,10 @@ const PAYMENT_OPTIONS: { id: PaymentMethod; label: string; icon: React.ReactNode
 ];
 
 export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
-  const { markExpensePaid, bcvRate } = useBudgetStore();
+  const { markExpensePaid, customAccounts, bcvRate } = useBudgetStore();
   const [amount, setAmount] = useState(String(expense.amountUsd));
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd');
+  const [customBucketId, setCustomBucketId] = useState<AssetBucketId | null>(null);
   const [inputInBs, setInputInBs] = useState(false);
   const [envelopeId, setEnvelopeId] = useState<EnvelopeId>(expense.envelopeId);
   const [logToLedger, setLogToLedger] = useState(true);
@@ -32,6 +33,7 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
   const computedBs = inputInBs ? parsedVal : hasValidRate ? parsedVal * effectiveRate : 0;
 
   const handleSelectMethod = (next: PaymentMethod) => {
+    setCustomBucketId(null);
     setPaymentMethod(next);
     if (next === 'bolivares_pago_movil' && hasValidRate && !inputInBs) {
       setInputInBs(true);
@@ -56,6 +58,7 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
           : undefined,
       bcvRateUsed: hasValidRate ? effectiveRate : undefined,
       envelopeId,
+      bucketOverride: customBucketId ?? undefined,
     });
     onClose();
   };
@@ -94,7 +97,7 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
                   type="button"
                   onClick={() => handleSelectMethod(opt.id)}
                   className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
-                    paymentMethod === opt.id
+                    !customBucketId && paymentMethod === opt.id
                       ? 'bg-accent-blue/20 border-accent-blue text-accent-blue'
                       : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
                   }`}
@@ -104,6 +107,32 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
                 </button>
               ))}
             </div>
+            {customAccounts.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {customAccounts.map((acct) => {
+                  const selected = customBucketId === acct.id;
+                  return (
+                    <button
+                      key={acct.id}
+                      type="button"
+                      onClick={() => {
+                        const targetMethod: PaymentMethod =
+                          acct.currency === 'VES' ? 'bolivares_pago_movil' : 'otro';
+                        handleSelectMethod(targetMethod);
+                        setCustomBucketId(acct.id);
+                      }}
+                      className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border cursor-pointer ${
+                        selected
+                          ? 'bg-accent-green/20 border-accent-green text-accent-green'
+                          : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                      }`}
+                    >
+                      {acct.name} ({acct.currency})
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">

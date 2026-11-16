@@ -11,6 +11,7 @@ import {
   Plus,
   PlusCircle,
   ShieldCheck,
+  SlidersHorizontal,
   Smartphone,
   Trash2,
   Wallet,
@@ -20,7 +21,13 @@ import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { PrivacyValue } from '../../../shared/ui/PrivacyValue';
 import { ENVELOPE_META, PAYMENT_METHOD_LABELS } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
-import type { AssetBucketId, FundId, RecurringExpense } from '../types';
+import type {
+  AssetBucketId,
+  CustomAccount,
+  CustomAccountId,
+  FundId,
+  RecurringExpense,
+} from '../types';
 import {
   calculateDaysLeft,
   calculateFundSummaries,
@@ -28,6 +35,7 @@ import {
   formatUsd,
 } from '../utils/calculations';
 import { BackupControls } from './BackupControls';
+import { CreateAccountModal } from './CreateAccountModal';
 import { PayExpenseModal } from './PayExpenseModal';
 import {
   QuickMovementModal,
@@ -40,7 +48,10 @@ interface BudgetDashboardProps {
   onNavigateExpenses: () => void;
 }
 
-const FUND_DEFAULT_BUCKET: Record<FundId, AssetBucketId> = {
+type BuiltinFundId = Exclude<FundId, CustomAccountId>;
+type BuiltinBucketId = Exclude<AssetBucketId, CustomAccountId>;
+
+const FUND_DEFAULT_BUCKET: Record<BuiltinFundId, AssetBucketId> = {
   efectivo_sobres: 'imprescindibles',
   cuenta_bolivares: 'banco_bolivares',
   inversiones_binance: 'binance_usdt',
@@ -48,7 +59,7 @@ const FUND_DEFAULT_BUCKET: Record<FundId, AssetBucketId> = {
   billetera_btc: 'wallet_btc',
 };
 
-const FUND_ICONS: Record<FundId, React.ReactNode> = {
+const FUND_ICONS: Record<BuiltinFundId, React.ReactNode> = {
   efectivo_sobres: <Wallet size={18} className="text-accent-green" />,
   cuenta_bolivares: <Smartphone size={18} className="text-cyan-400" />,
   inversiones_binance: <Landmark size={18} className="text-accent-blue" />,
@@ -56,7 +67,7 @@ const FUND_ICONS: Record<FundId, React.ReactNode> = {
   billetera_btc: <Bitcoin size={18} className="text-orange-400" />,
 };
 
-const BUCKET_LABELS: Record<AssetBucketId, string> = {
+const BUCKET_LABELS: Record<BuiltinBucketId, string> = {
   ahorro_inversion: ENVELOPE_META.ahorro_inversion.name,
   imprescindibles: ENVELOPE_META.imprescindibles.name,
   disfrute: ENVELOPE_META.disfrute.name,
@@ -75,8 +86,11 @@ export function BudgetDashboard({
   onNavigateExpenses,
 }: BudgetDashboardProps) {
   const isPrivate = usePortfolioStore((s) => s.isPrivate);
-  const { movements, expenses, bcvRate, removeMovement } = useBudgetStore();
+  const { movements, expenses, customAccounts, bcvRate, removeMovement, removeCustomAccount } =
+    useBudgetStore();
   const [quickModalOpen, setQuickModalOpen] = useState(false);
+  const [createAccountOpen, setCreateAccountOpen] = useState(false);
+  const [editingAccount, setEditingAccount] = useState<CustomAccount | null>(null);
   const [quickBucket, setQuickBucket] = useState<AssetBucketId>('imprescindibles');
   const [quickTab, setQuickTab] = useState<QuickModalTab>('movement');
   const [quickDirection, setQuickDirection] = useState<MovementDirection>('out');
@@ -84,9 +98,17 @@ export function BudgetDashboard({
   const [payingExpense, setPayingExpense] = useState<RecurringExpense | null>(null);
 
   const { funds, totalNetWorth, envelopes } = useMemo(
-    () => calculateFundSummaries(movements, bcvRate),
-    [movements, bcvRate],
+    () => calculateFundSummaries(movements, bcvRate, customAccounts),
+    [movements, bcvRate, customAccounts],
   );
+
+  const bucketLabelMap = useMemo(() => {
+    const map: Record<string, string> = { ...BUCKET_LABELS };
+    for (const acct of customAccounts) {
+      map[acct.id] = acct.name;
+    }
+    return map;
+  }, [customAccounts]);
 
   const upcomingAlerts = useMemo(() => {
     return expenses
@@ -120,7 +142,7 @@ export function BudgetDashboard({
               <PrivacyValue value={formatUsd(totalNetWorth)} isPrivate={isPrivate} />
             </div>
             <p className="text-xs text-text-muted mt-1">
-              Distribuido en 5 fondos (Efectivo, Bolívares, Binance, Emergencia y BTC)
+              Distribuido en {funds.length} fondos y cuentas activas
             </p>
           </div>
 
@@ -157,71 +179,123 @@ export function BudgetDashboard({
         </div>
       </div>
 
-      {/* 5 Fondos */}
+      {/* Fondos y Cuentas */}
       <section>
-        <h2 className="text-sm font-bold uppercase tracking-wider text-text-muted mb-3">
-          Resumen por Fondos
-        </h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-text-muted">
+            Resumen por Fondos y Cuentas
+          </h2>
+          <button
+            type="button"
+            onClick={() => {
+              setEditingAccount(null);
+              setCreateAccountOpen(true);
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-blue/15 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/25 cursor-pointer"
+          >
+            <Plus size={14} /> Crear Cuenta
+          </button>
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3.5">
-          {funds.map((fund) => (
-            <div
-              key={fund.id}
-              className="bg-bg-card border border-border rounded-xl p-4 flex flex-col justify-between gap-3"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-2 rounded-lg bg-bg-input border border-border shrink-0">
-                    {FUND_ICONS[fund.id]}
-                  </div>
-                  <div className="min-w-0">
-                    <h3 className="text-sm font-bold text-text-primary leading-tight">
-                      {fund.name}
-                    </h3>
-                    <p className="text-[11px] text-text-muted truncate">{fund.assetType}</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <span className="text-xs font-semibold text-text-muted">
-                    {fund.percentage.toFixed(1)}%
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      openQuickModal(FUND_DEFAULT_BUCKET[fund.id], 'movement', 'set_balance')
-                    }
-                    title={`Editar o ingresar saldo en ${fund.name}`}
-                    className="p-1 rounded-md bg-bg-input border border-border text-text-muted hover:text-text-primary hover:border-accent-blue cursor-pointer"
-                  >
-                    <Pencil size={12} />
-                  </button>
-                </div>
-              </div>
+          {funds.map((fund) => {
+            const targetBucket: AssetBucketId = fund.isCustom
+              ? (fund.id as CustomAccountId)
+              : FUND_DEFAULT_BUCKET[fund.id as BuiltinFundId];
+            const iconNode = fund.isCustom ? (
+              fund.currency === 'VES' ? (
+                <Smartphone size={18} className="text-cyan-400" />
+              ) : (
+                <Landmark size={18} className="text-accent-green" />
+              )
+            ) : (
+              FUND_ICONS[fund.id as BuiltinFundId]
+            );
+            const isBsDisplay = fund.id === 'cuenta_bolivares' || fund.currency === 'VES';
 
-              <div>
-                {fund.id === 'cuenta_bolivares' ? (
-                  <div>
-                    <div className="text-xl font-bold text-cyan-300">
-                      <PrivacyValue value={formatBs(fund.balanceBs ?? 0)} isPrivate={isPrivate} />
+            return (
+              <div
+                key={fund.id}
+                className="bg-bg-card border border-border rounded-xl p-4 flex flex-col justify-between gap-3"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="p-2 rounded-lg bg-bg-input border border-border shrink-0">
+                      {iconNode}
                     </div>
-                    <p className="text-[11px] text-text-muted mt-0.5">
-                      ≈ <PrivacyValue value={formatUsd(fund.balance)} isPrivate={isPrivate} /> USD
-                      {bcvRate ? ' (BCV)' : ''}
-                    </p>
+                    <div className="min-w-0">
+                      <h3 className="text-sm font-bold text-text-primary leading-tight truncate">
+                        {fund.name}
+                      </h3>
+                      <p className="text-[11px] text-text-muted truncate">{fund.assetType}</p>
+                    </div>
                   </div>
-                ) : (
-                  <div className="text-xl font-bold text-text-primary">
-                    <PrivacyValue value={formatUsd(fund.balance)} isPrivate={isPrivate} />
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span className="text-xs font-semibold text-text-muted">
+                      {fund.percentage.toFixed(1)}%
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => openQuickModal(targetBucket, 'movement', 'set_balance')}
+                      title={`Ajustar saldo en ${fund.name}`}
+                      className="p-1 rounded-md bg-bg-input border border-border text-text-muted hover:text-text-primary hover:border-accent-blue cursor-pointer"
+                    >
+                      <SlidersHorizontal size={12} />
+                    </button>
+                    {fund.isCustom && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const found = customAccounts.find((a) => a.id === fund.id);
+                            if (found) {
+                              setEditingAccount(found);
+                              setCreateAccountOpen(true);
+                            }
+                          }}
+                          title={`Editar cuenta ${fund.name}`}
+                          className="p-1 rounded-md bg-bg-input border border-border text-text-muted hover:text-accent-gold hover:border-accent-gold/40 cursor-pointer"
+                        >
+                          <Pencil size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeCustomAccount(fund.id as CustomAccountId)}
+                          title={`Eliminar cuenta ${fund.name}`}
+                          className="p-1 rounded-md bg-bg-input border border-border text-text-muted hover:text-accent-red hover:border-accent-red/40 cursor-pointer"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </>
+                    )}
                   </div>
-                )}
-                <div className="w-full h-1.5 bg-bg-input rounded-full overflow-hidden mt-2">
-                  <div
-                    className="h-full rounded-full bg-accent-blue transition-all duration-500"
-                    style={{ width: `${Math.min(100, Math.max(0, fund.percentage))}%` }}
-                  />
+                </div>
+
+                <div>
+                  {isBsDisplay ? (
+                    <div>
+                      <div className="text-xl font-bold text-cyan-300">
+                        <PrivacyValue value={formatBs(fund.balanceBs ?? 0)} isPrivate={isPrivate} />
+                      </div>
+                      <p className="text-[11px] text-text-muted mt-0.5">
+                        ≈ <PrivacyValue value={formatUsd(fund.balance)} isPrivate={isPrivate} /> USD
+                        {bcvRate ? ' (BCV)' : ''}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="text-xl font-bold text-text-primary">
+                      <PrivacyValue value={formatUsd(fund.balance)} isPrivate={isPrivate} />
+                    </div>
+                  )}
+                  <div className="w-full h-1.5 bg-bg-input rounded-full overflow-hidden mt-2">
+                    <div
+                      className="h-full rounded-full bg-accent-blue transition-all duration-500"
+                      style={{ width: `${Math.min(100, Math.max(0, fund.percentage))}%` }}
+                    />
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 
@@ -458,7 +532,7 @@ export function BudgetDashboard({
                         {m.notes || m.type}
                       </p>
                       <p className="text-[11px] text-text-muted">
-                        {m.date} · {BUCKET_LABELS[m.bucket] ?? m.bucket}
+                        {m.date} · {bucketLabelMap[m.bucket] ?? m.bucket}
                         {m.paymentMethod ? ` · ${PAYMENT_METHOD_LABELS[m.paymentMethod]}` : ''}
                       </p>
                     </div>
@@ -521,6 +595,17 @@ export function BudgetDashboard({
           key={payingExpense.id}
           expense={payingExpense}
           onClose={() => setPayingExpense(null)}
+        />
+      )}
+
+      {createAccountOpen && (
+        <CreateAccountModal
+          key={editingAccount?.id ?? 'new'}
+          editingAccount={editingAccount}
+          onClose={() => {
+            setCreateAccountOpen(false);
+            setEditingAccount(null);
+          }}
         />
       )}
     </div>
