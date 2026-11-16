@@ -7,7 +7,9 @@ import {
   Bitcoin,
   CheckCircle2,
   Landmark,
+  Pencil,
   Plus,
+  PlusCircle,
   ShieldCheck,
   Smartphone,
   Trash2,
@@ -27,12 +29,24 @@ import {
 } from '../utils/calculations';
 import { BackupControls } from './BackupControls';
 import { PayExpenseModal } from './PayExpenseModal';
-import { QuickMovementModal, type QuickModalTab } from './QuickMovementModal';
+import {
+  QuickMovementModal,
+  type MovementDirection,
+  type QuickModalTab,
+} from './QuickMovementModal';
 
 interface BudgetDashboardProps {
   onNavigateQuincena: () => void;
   onNavigateExpenses: () => void;
 }
+
+const FUND_DEFAULT_BUCKET: Record<FundId, AssetBucketId> = {
+  efectivo_sobres: 'imprescindibles',
+  cuenta_bolivares: 'banco_bolivares',
+  inversiones_binance: 'binance_usdt',
+  fondo_emergencia: 'emergencias',
+  billetera_btc: 'wallet_btc',
+};
 
 const FUND_ICONS: Record<FundId, React.ReactNode> = {
   efectivo_sobres: <Wallet size={18} className="text-accent-green" />,
@@ -65,6 +79,8 @@ export function BudgetDashboard({
   const [quickModalOpen, setQuickModalOpen] = useState(false);
   const [quickBucket, setQuickBucket] = useState<AssetBucketId>('imprescindibles');
   const [quickTab, setQuickTab] = useState<QuickModalTab>('movement');
+  const [quickDirection, setQuickDirection] = useState<MovementDirection>('out');
+  const [showAllMovements, setShowAllMovements] = useState(false);
   const [payingExpense, setPayingExpense] = useState<RecurringExpense | null>(null);
 
   const { funds, totalNetWorth, envelopes } = useMemo(
@@ -83,9 +99,11 @@ export function BudgetDashboard({
   const openQuickModal = (
     bucket: AssetBucketId = 'imprescindibles',
     tab: QuickModalTab = 'movement',
+    direction: MovementDirection = 'out',
   ) => {
     setQuickBucket(bucket);
     setQuickTab(tab);
+    setQuickDirection(direction);
     setQuickModalOpen(true);
   };
 
@@ -106,25 +124,32 @@ export function BudgetDashboard({
             </p>
           </div>
 
-          <div className="flex flex-wrap gap-2.5">
+          <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => openQuickModal('imprescindibles', 'movement')}
-              className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-accent-gold/15 border border-accent-gold/40 text-accent-gold hover:bg-accent-gold/25 transition-all cursor-pointer"
+              onClick={() => openQuickModal('imprescindibles', 'movement', 'out')}
+              className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-accent-gold/15 border border-accent-gold/40 text-accent-gold hover:bg-accent-gold/25 transition-all cursor-pointer"
             >
               <Zap size={15} /> Gasto Rápido
             </button>
             <button
               type="button"
-              onClick={() => openQuickModal('binance_usdt', 'transfer')}
-              className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-accent-blue/15 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/25 transition-all cursor-pointer"
+              onClick={() => openQuickModal('banco_bolivares', 'movement', 'in')}
+              className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-cyan-500/15 border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/25 transition-all cursor-pointer"
             >
-              <ArrowLeftRight size={15} /> Cambiar / Transferir
+              <PlusCircle size={15} /> Ingreso / Saldo
+            </button>
+            <button
+              type="button"
+              onClick={() => openQuickModal('binance_usdt', 'transfer', 'out')}
+              className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-accent-blue/15 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/25 transition-all cursor-pointer"
+            >
+              <ArrowLeftRight size={15} /> Cambiar
             </button>
             <button
               type="button"
               onClick={onNavigateQuincena}
-              className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-accent-green/15 border border-accent-green/40 text-accent-green hover:bg-accent-green/25 transition-all cursor-pointer"
+              className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-accent-green/15 border border-accent-green/40 text-accent-green hover:bg-accent-green/25 transition-all cursor-pointer"
             >
               <Plus size={15} /> Registrar Quincena
             </button>
@@ -155,9 +180,21 @@ export function BudgetDashboard({
                     <p className="text-[11px] text-text-muted truncate">{fund.assetType}</p>
                   </div>
                 </div>
-                <span className="text-xs font-semibold text-text-muted shrink-0">
-                  {fund.percentage.toFixed(1)}%
-                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="text-xs font-semibold text-text-muted">
+                    {fund.percentage.toFixed(1)}%
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      openQuickModal(FUND_DEFAULT_BUCKET[fund.id], 'movement', 'set_balance')
+                    }
+                    title={`Editar o ingresar saldo en ${fund.name}`}
+                    className="p-1 rounded-md bg-bg-input border border-border text-text-muted hover:text-text-primary hover:border-accent-blue cursor-pointer"
+                  >
+                    <Pencil size={12} />
+                  </button>
+                </div>
               </div>
 
               <div>
@@ -373,7 +410,18 @@ export function BudgetDashboard({
       <section className="bg-bg-card border border-border rounded-xl p-4 sm:p-5">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-bold text-text-primary">Últimos Movimientos del Ledger</h2>
-          <span className="text-xs text-text-muted">{movements.length} registros</span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-text-muted">{movements.length} registros</span>
+            {movements.length > 15 && (
+              <button
+                type="button"
+                onClick={() => setShowAllMovements((v) => !v)}
+                className="text-xs text-accent-blue hover:underline bg-transparent border-none cursor-pointer"
+              >
+                {showAllMovements ? 'Ver recientes' : 'Ver todos'}
+              </button>
+            )}
+          </div>
         </div>
 
         {movements.length === 0 ? (
@@ -381,13 +429,14 @@ export function BudgetDashboard({
             Aún no hay movimientos. Registra tu primera quincena o un gasto rápido.
           </p>
         ) : (
-          <div className="divide-y divide-border max-h-80 overflow-y-auto pr-1">
-            {movements.slice(0, 15).map((m) => {
+          <div className="divide-y divide-border max-h-96 overflow-y-auto pr-1">
+            {(showAllMovements ? movements : movements.slice(0, 15)).map((m) => {
               const isOutflow =
                 m.type === 'Gasto en Efectivo' ||
                 m.type === 'Cambio a Bolívares' ||
                 m.type === 'Pago de Cuota' ||
-                m.type === 'Transferencia (Salida)';
+                m.type === 'Transferencia (Salida)' ||
+                (m.type === 'Ajuste' && m.amountUsd < 0);
 
               return (
                 <div
@@ -423,11 +472,18 @@ export function BudgetDashboard({
                         }`}
                       >
                         {isOutflow ? '-' : '+'}
-                        <PrivacyValue value={formatUsd(m.amountUsd)} isPrivate={isPrivate} />
+                        <PrivacyValue
+                          value={formatUsd(Math.abs(m.amountUsd))}
+                          isPrivate={isPrivate}
+                        />
                       </span>
-                      {typeof m.amountBs === 'number' && m.amountBs > 0 && (
+                      {typeof m.amountBs === 'number' && Math.abs(m.amountBs) > 0 && (
                         <span className="text-[10px] text-cyan-300 block">
-                          <PrivacyValue value={formatBs(m.amountBs)} isPrivate={isPrivate} />
+                          {isOutflow ? '-' : '+'}
+                          <PrivacyValue
+                            value={formatBs(Math.abs(m.amountBs))}
+                            isPrivate={isPrivate}
+                          />
                         </span>
                       )}
                     </div>
@@ -451,10 +507,11 @@ export function BudgetDashboard({
 
       {quickModalOpen && (
         <QuickMovementModal
-          key={`${quickBucket}-${quickTab}`}
+          key={`${quickBucket}-${quickTab}-${quickDirection}`}
           isOpen={quickModalOpen}
           initialBucket={quickBucket}
           initialTab={quickTab}
+          initialDirection={quickDirection}
           onClose={() => setQuickModalOpen(false)}
         />
       )}

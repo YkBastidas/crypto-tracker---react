@@ -1,16 +1,22 @@
-import { useState } from 'react';
-import { ArrowLeftRight, X, Zap } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { ArrowLeftRight, MinusCircle, PlusCircle, SlidersHorizontal, X, Zap } from 'lucide-react';
 import { ENVELOPE_META, PAYMENT_METHOD_LABELS } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
 import type { AssetBucketId, EnvelopeId, MovementType, PaymentMethod } from '../types';
-import { formatBs, formatUsd } from '../utils/calculations';
+import {
+  calculateFundSummaries,
+  formatBs,
+  formatUsd,
+} from '../utils/calculations';
 
 export type QuickModalTab = 'movement' | 'transfer';
+export type MovementDirection = 'out' | 'in' | 'set_balance';
 
 interface QuickMovementModalProps {
   isOpen: boolean;
   initialBucket?: AssetBucketId;
   initialTab?: QuickModalTab;
+  initialDirection?: MovementDirection;
   onClose: () => void;
 }
 
@@ -19,6 +25,14 @@ const ENVELOPE_SET = new Set<AssetBucketId>([
   'imprescindibles',
   'disfrute',
   'crecimiento_personal',
+]);
+
+const INVESTMENT_BUCKETS = new Set<AssetBucketId>([
+  'binance_usdt',
+  'binance_crypto',
+  'binance_paxg',
+  'binance_usdc',
+  'wallet_btc',
 ]);
 
 const BUCKET_OPTIONS: { id: AssetBucketId; label: string }[] = [
@@ -35,11 +49,9 @@ const BUCKET_OPTIONS: { id: AssetBucketId; label: string }[] = [
   { id: 'wallet_btc', label: 'Billetera BTC' },
 ];
 
-const MOVEMENT_TYPES: MovementType[] = [
+const OUTFLOW_TYPES: MovementType[] = [
   'Gasto en Efectivo',
   'Cambio a Bolívares',
-  'Ingreso a Sobre',
-  'Barrido a Inversión',
   'Pago de Cuota',
 ];
 
@@ -56,18 +68,58 @@ function inferDefaultMethod(bucket: AssetBucketId): PaymentMethod {
   return 'efectivo_usd';
 }
 
+function getBucketBalance(
+  bucket: AssetBucketId,
+  movements: ReturnType<typeof useBudgetStore.getState>['movements'],
+  bcvRate: number | null,
+): { usd: number; bs: number } {
+  if (ENVELOPE_SET.has(bucket)) {
+    const { envelopes } = calculateFundSummaries(movements, bcvRate);
+    const found = envelopes.find((e) => e.id === bucket);
+    const usd = found?.available ?? 0;
+    return { usd, bs: bcvRate ? usd * bcvRate : 0 };
+  }
+
+  let usd = 0;
+  let bs = 0;
+  for (const m of movements) {
+    if (m.bucket !== bucket) continue;
+    const isOut =
+      m.type === 'Gasto en Efectivo' ||
+      m.type === 'Cambio a Bolívares' ||
+      m.type === 'Pago de Cuota' ||
+      m.type === 'Transferencia (Salida)';
+    const sign = isOut ? -1 : 1;
+    usd += sign * (m.type === 'Ajuste' ? m.amountUsd : Math.abs(m.amountUsd));
+    if (bucket === 'banco_bolivares') {
+      const mBs =
+        typeof m.amountBs === 'number'
+          ? Math.abs(m.amountBs)
+          : bcvRate
+            ? Math.abs(m.amountUsd) * bcvRate
+            : 0;
+      const bsSign = m.type === 'Ajuste' && m.amountUsd < 0 ? -1 : sign;
+      bs += bsSign * mBs;
+    }
+  }
+  return {
+    usd: Number(usd.toFixed(2)),
+    bs: bucket === 'banco_bolivares' ? Number(bs.toFixed(2)) : bcvRate ? Number((usd * bcvRate).toFixed(2)) : 0,
+  };
+}
+
 export function QuickMovementModal({
   isOpen,
   initialBucket = 'imprescindibles',
   initialTab = 'movement',
+  initialDirection = 'out',
   onClose,
 }: QuickMovementModalProps) {
-  const { addMovement, transferBetweenBuckets, bcvRate } = useBudgetStore();
+  const { movements, addMovement, transferBetweenBuckets, bcvRate } = useBudgetStore();
   const [tab, setTab] = useState<QuickModalTab>(initialTab);
+  const [direction, setDirection] = useState<MovementDirection>(initialDirection);
   const [bucket, setBucket] = useState<AssetBucketId>(initialBucket);
-  const [type, setType] = useState<MovementType>(() =>
-    initialBucket === 'banco_bolivares' ? 'Ingreso a Sobre' : 'Gasto en Efectivo',
-  );
+  const [outflowType, setOutflowType] = useState<MovementType>('Gasto en Efectivo');
   const [inputCurrency, setInputCurrency] = useState<'USD' | 'BS'>(() =>
     initialBucket === 'banco_bolivares' && bcvRate ? 'BS' : 'USD',
   );
@@ -87,19 +139,37 @@ export function QuickMovementModal({
   const [amountTo, setAmountTo] = useState('');
   const [transferToInBs, setTransferToInBs] = useState(false);
 
+  const currentBucketBalance = useMemo(
+    () => getBucketBalance(bucket, movements, bcvRate),
+    [bucket, movements, bcvRate],
+  );
+
   if (!isOpen) return null;
 
   const hasValidRate = Boolean(bcvRate && bcvRate > 0);
   const effectiveRate = bcvRate ?? 0;
 
-  const parsedInput = parseFloat(amount) || 0;
+  const parsedInput = parseFloat(amount);
+  const safeParsed = Number.isFinite(parsedInput) ? parsedInput : 0;
   const computedUsdFromInput =
-    inputCurrency === 'BS' && hasValidRate ? parsedInput / effectiveRate : parsedInput;
+    inputCurrency === 'BS' && hasValidRate ? safeParsed / effectiveRate : safeParsed;
   const computedBsFromInput =
     inputCurrency === 'BS'
-      ? parsedInput
+      ? safeParsed
       : hasValidRate
-        ? parsedInput * effectiveRate
+        ? safeParsed * effectiveRate
+        : 0;
+
+  // Delta calculation for set_balance mode
+  const setBalanceDeltaUsd =
+    inputCurrency === 'BS' && hasValidRate
+      ? Number(((safeParsed - currentBucketBalance.bs) / effectiveRate).toFixed(2))
+      : Number((safeParsed - currentBucketBalance.usd).toFixed(2));
+  const setBalanceDeltaBs =
+    inputCurrency === 'BS'
+      ? Number((safeParsed - currentBucketBalance.bs).toFixed(2))
+      : hasValidRate
+        ? Number((setBalanceDeltaUsd * effectiveRate).toFixed(2))
         : 0;
 
   const isSameTransferTarget =
@@ -147,25 +217,60 @@ export function QuickMovementModal({
 
   const handleSubmitMovement = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!Number.isFinite(parsedInput) || parsedInput <= 0) return;
     if (inputCurrency === 'BS' && !hasValidRate) return;
 
-    const amountUsd = Number(computedUsdFromInput.toFixed(2));
     const isBsMovement =
       inputCurrency === 'BS' ||
       bucket === 'banco_bolivares' ||
       paymentMethod === 'bolivares_pago_movil';
 
+    if (direction === 'set_balance') {
+      if (!Number.isFinite(parsedInput) || parsedInput < 0) return;
+      if (Math.abs(setBalanceDeltaUsd) < 0.01 && Math.abs(setBalanceDeltaBs) < 0.01) {
+        onClose();
+        return;
+      }
+
+      addMovement({
+        date,
+        bucket,
+        type: 'Ajuste',
+        amountUsd: setBalanceDeltaUsd,
+        amountBs: isBsMovement && hasValidRate ? setBalanceDeltaBs : undefined,
+        bcvRateUsed: isBsMovement && hasValidRate ? effectiveRate : undefined,
+        paymentMethod,
+        notes:
+          notes.trim() ||
+          `Ajuste de saldo (${inputCurrency === 'BS' ? formatBs(safeParsed) : formatUsd(safeParsed)})`,
+      });
+      setAmount('');
+      setNotes('');
+      onClose();
+      return;
+    }
+
+    if (!Number.isFinite(parsedInput) || parsedInput <= 0) return;
+
+    const amountUsd = Number(computedUsdFromInput.toFixed(2));
+    const finalType: MovementType =
+      direction === 'in'
+        ? INVESTMENT_BUCKETS.has(bucket)
+          ? 'Barrido a Inversión'
+          : 'Ingreso a Sobre'
+        : outflowType;
+
     addMovement({
       date,
       bucket,
-      type,
+      type: finalType,
       amountUsd,
       amountBs:
         isBsMovement && hasValidRate ? Number(computedBsFromInput.toFixed(2)) : undefined,
       bcvRateUsed: isBsMovement && hasValidRate ? effectiveRate : undefined,
       paymentMethod,
-      notes: notes.trim() || undefined,
+      notes:
+        notes.trim() ||
+        (direction === 'in' ? 'Ingreso / Saldo inicial' : undefined),
     });
     setAmount('');
     setNotes('');
@@ -239,7 +344,7 @@ export function QuickMovementModal({
           </button>
         </div>
 
-        {/* Mode Switcher */}
+        {/* Top Mode Switcher */}
         <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-bg-input border border-border mb-4">
           <button
             type="button"
@@ -267,11 +372,82 @@ export function QuickMovementModal({
 
         {tab === 'movement' ? (
           <form onSubmit={handleSubmitMovement} className="space-y-4">
+            {/* Direction Selector: Gasto vs Ingreso vs Fijar Saldo */}
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setDirection('out')}
+                className={`flex items-center justify-center gap-1 py-2 px-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                  direction === 'out'
+                    ? 'bg-accent-red/15 border-accent-red/50 text-accent-red'
+                    : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                }`}
+              >
+                <MinusCircle size={13} /> Gasto
+              </button>
+              <button
+                type="button"
+                onClick={() => setDirection('in')}
+                className={`flex items-center justify-center gap-1 py-2 px-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                  direction === 'in'
+                    ? 'bg-accent-green/15 border-accent-green/50 text-accent-green'
+                    : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                }`}
+              >
+                <PlusCircle size={13} /> Ingreso
+              </button>
+              <button
+                type="button"
+                onClick={() => setDirection('set_balance')}
+                className={`flex items-center justify-center gap-1 py-2 px-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                  direction === 'set_balance'
+                    ? 'bg-accent-blue/20 border-accent-blue/50 text-accent-blue'
+                    : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                }`}
+              >
+                <SlidersHorizontal size={13} /> Fijar Saldo
+              </button>
+            </div>
+
+            {/* Envelope / Bucket first so currency auto-adapts */}
+            <div>
+              <label className="text-xs text-text-muted block mb-1.5">
+                {direction === 'out'
+                  ? 'Sale de (Sobre o Fondo)'
+                  : direction === 'in'
+                    ? 'Entra a (Sobre o Fondo)'
+                    : 'Fondo o Sobre a ajustar'}
+              </label>
+              <select
+                value={bucket}
+                onChange={(e) => handleSelectBucket(e.target.value as EnvelopeId | AssetBucketId)}
+                className="w-full px-3 py-2.5 rounded-xl text-sm bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
+              >
+                {BUCKET_OPTIONS.map((opt) => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              {direction === 'set_balance' && (
+                <p className="text-[11px] text-text-muted mt-1">
+                  Saldo actual registrado:{' '}
+                  <strong className="text-text-primary">
+                    {inputCurrency === 'BS'
+                      ? formatBs(currentBucketBalance.bs)
+                      : formatUsd(currentBucketBalance.usd)}
+                  </strong>
+                </p>
+              )}
+            </div>
+
             {/* Amount + Currency Toggle */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="text-xs text-text-muted">
-                  Monto ({inputCurrency === 'BS' ? 'Bolívares' : 'USD'})
+                  {direction === 'set_balance'
+                    ? `Nuevo saldo exacto (${inputCurrency === 'BS' ? 'Bs' : 'USD'})`
+                    : `Monto (${inputCurrency === 'BS' ? 'Bolívares' : 'USD'})`}
                 </label>
                 <div className="flex rounded-lg overflow-hidden border border-border text-[11px]">
                   <button
@@ -308,7 +484,7 @@ export function QuickMovementModal({
                 <input
                   type="number"
                   step="0.01"
-                  min="0.01"
+                  min={direction === 'set_balance' ? '0' : '0.01'}
                   inputMode="decimal"
                   autoFocus
                   required
@@ -330,59 +506,55 @@ export function QuickMovementModal({
                   ≈ {formatBs(computedBsFromInput)} según tasa BCV
                 </p>
               )}
+              {direction === 'set_balance' && amount.trim() !== '' && (
+                <p className="text-[11px] text-accent-gold mt-1">
+                  Ajuste automático:{' '}
+                  {setBalanceDeltaUsd >= 0 ? '+' : ''}
+                  {formatUsd(setBalanceDeltaUsd)}
+                  {inputCurrency === 'BS' ? ` (${setBalanceDeltaBs >= 0 ? '+' : ''}${formatBs(setBalanceDeltaBs)})` : ''}
+                </p>
+              )}
 
-              <div className="flex gap-2 mt-2">
-                {(inputCurrency === 'BS' ? [100, 500, 1000, 2500, 5000] : [5, 10, 20, 50, 100]).map(
-                  (preset) => (
+              {direction !== 'set_balance' && (
+                <div className="flex gap-2 mt-2">
+                  {(inputCurrency === 'BS' ? [100, 500, 1000, 2500, 5000] : [5, 10, 20, 50, 100]).map(
+                    (preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setAmount(String(preset))}
+                        className="flex-1 py-1.5 rounded-lg text-[11px] font-medium bg-bg-input border border-border text-text-muted hover:text-text-primary hover:border-accent-blue cursor-pointer"
+                      >
+                        {inputCurrency === 'BS' ? `${preset}` : `$${preset}`}
+                      </button>
+                    ),
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Outflow subtype only when direction === 'out' */}
+            {direction === 'out' && (
+              <div>
+                <label className="text-xs text-text-muted block mb-1.5">Tipo de egreso</label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  {OUTFLOW_TYPES.map((t) => (
                     <button
-                      key={preset}
+                      key={t}
                       type="button"
-                      onClick={() => setAmount(String(preset))}
-                      className="flex-1 py-1.5 rounded-lg text-[11px] font-medium bg-bg-input border border-border text-text-muted hover:text-text-primary hover:border-accent-blue cursor-pointer"
+                      onClick={() => setOutflowType(t)}
+                      className={`px-2 py-2 rounded-lg text-[11px] font-medium border text-center transition-all cursor-pointer ${
+                        outflowType === t
+                          ? 'bg-accent-blue/20 border-accent-blue text-accent-blue'
+                          : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                      }`}
                     >
-                      {inputCurrency === 'BS' ? `${preset}` : `$${preset}`}
+                      {t}
                     </button>
-                  ),
-                )}
+                  ))}
+                </div>
               </div>
-            </div>
-
-            {/* Type chips */}
-            <div>
-              <label className="text-xs text-text-muted block mb-1.5">Tipo de movimiento</label>
-              <div className="grid grid-cols-2 gap-2">
-                {MOVEMENT_TYPES.map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    onClick={() => setType(t)}
-                    className={`px-3 py-2 rounded-lg text-xs font-medium border text-left transition-all cursor-pointer ${
-                      type === t
-                        ? 'bg-accent-blue/20 border-accent-blue text-accent-blue'
-                        : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
-                    }`}
-                  >
-                    {t}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Envelope / Bucket */}
-            <div>
-              <label className="text-xs text-text-muted block mb-1.5">Sobre o Fondo</label>
-              <select
-                value={bucket}
-                onChange={(e) => handleSelectBucket(e.target.value as EnvelopeId | AssetBucketId)}
-                className="w-full px-3 py-2.5 rounded-xl text-sm bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
-              >
-                {BUCKET_OPTIONS.map((opt) => (
-                  <option key={opt.id} value={opt.id}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            )}
 
             {/* Method + Date */}
             <div className="grid grid-cols-2 gap-3">
@@ -418,16 +590,32 @@ export function QuickMovementModal({
                 type="text"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                placeholder="Ej. Mercado, recarga, parking..."
+                placeholder={
+                  direction === 'in'
+                    ? 'Ej. Saldo inicial, bono, venta...'
+                    : direction === 'set_balance'
+                      ? 'Ej. Cuadre de saldo real'
+                      : 'Ej. Mercado, recarga, parking...'
+                }
                 className="w-full px-3 py-2.5 rounded-xl text-sm bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
               />
             </div>
 
             <button
               type="submit"
-              className="w-full py-3 rounded-xl text-sm font-bold bg-accent-green/20 border border-accent-green/40 text-accent-green hover:bg-accent-green/30 transition-all cursor-pointer"
+              className={`w-full py-3 rounded-xl text-sm font-bold border transition-all cursor-pointer ${
+                direction === 'in'
+                  ? 'bg-accent-green/20 border-accent-green/40 text-accent-green hover:bg-accent-green/30'
+                  : direction === 'set_balance'
+                    ? 'bg-accent-blue/20 border-accent-blue/40 text-accent-blue hover:bg-accent-blue/30'
+                    : 'bg-accent-gold/20 border-accent-gold/40 text-accent-gold hover:bg-accent-gold/30'
+              }`}
             >
-              Guardar Movimiento
+              {direction === 'in'
+                ? 'Guardar Ingreso / Saldo'
+                : direction === 'set_balance'
+                  ? 'Aplicar Ajuste de Saldo'
+                  : 'Guardar Gasto'}
             </button>
           </form>
         ) : (
