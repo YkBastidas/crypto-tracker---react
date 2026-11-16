@@ -17,6 +17,7 @@ const ENVELOPE_IDS: EnvelopeId[] = [
   'imprescindibles',
   'disfrute',
   'crecimiento_personal',
+  'provisiones_anuales',
 ];
 
 const OUTFLOW_TYPES = new Set([
@@ -121,7 +122,11 @@ export function getInstallmentArrears(plan: InstallmentPlan): {
 
 export function calculateMonthlyEssentials(expenses: RecurringExpense[]): number {
   const total = expenses
-    .filter((e) => e.active && e.envelopeId === 'imprescindibles')
+    .filter(
+      (e) =>
+        e.active &&
+        (e.envelopeId === 'imprescindibles' || e.envelopeId === 'provisiones_anuales'),
+    )
     .reduce((acc, e) => {
       if (e.frequency === 'anual') return acc + e.amountUsd / 12;
       if (e.frequency === 'quincenal') return acc + e.amountUsd * 2;
@@ -158,6 +163,7 @@ export function calculateEnvelopeSummaries(movements: LedgerMovement[]): Envelop
     imprescindibles: { assigned: 0, spent: 0, byMethod: { efectivo: 0, binance: 0, bolivares: 0 } },
     disfrute: { assigned: 0, spent: 0, byMethod: { efectivo: 0, binance: 0, bolivares: 0 } },
     crecimiento_personal: { assigned: 0, spent: 0, byMethod: { efectivo: 0, binance: 0, bolivares: 0 } },
+    provisiones_anuales: { assigned: 0, spent: 0, byMethod: { efectivo: 0, binance: 0, bolivares: 0 } },
   };
 
   for (const m of movements) {
@@ -397,6 +403,8 @@ export function calculateFundSummaries(
 
 export interface QuincenaPreview {
   grossAmount: number;
+  monthlyExpensesProvision: number;
+  annualExpensesProvision: number;
   expensesProvision: number;
   installmentsProvision: number;
   totalProvision: number;
@@ -429,9 +437,19 @@ export function computeQuincenaPreview(params: {
     installments,
   } = params;
 
-  const expensesProvision = autoProvisionExpenses
-    ? expenses.reduce((acc, e) => acc + getExpenseBiweeklyQuota(e), 0)
+  const monthlyExpensesProvision = autoProvisionExpenses
+    ? expenses
+        .filter((e) => e.frequency !== 'anual')
+        .reduce((acc, e) => acc + getExpenseBiweeklyQuota(e), 0)
     : 0;
+
+  const annualExpensesProvision = autoProvisionExpenses
+    ? expenses
+        .filter((e) => e.frequency === 'anual')
+        .reduce((acc, e) => acc + getExpenseBiweeklyQuota(e), 0)
+    : 0;
+
+  const expensesProvision = monthlyExpensesProvision + annualExpensesProvision;
 
   const installmentsProvision = autoProvisionInstallments
     ? installments.reduce((acc, p) => acc + getInstallmentBiweeklyQuota(p), 0)
@@ -468,6 +486,8 @@ export function computeQuincenaPreview(params: {
 
   return {
     grossAmount,
+    monthlyExpensesProvision: Number(monthlyExpensesProvision.toFixed(2)),
+    annualExpensesProvision: Number(annualExpensesProvision.toFixed(2)),
     expensesProvision: Number(expensesProvision.toFixed(2)),
     installmentsProvision: Number(installmentsProvision.toFixed(2)),
     totalProvision,

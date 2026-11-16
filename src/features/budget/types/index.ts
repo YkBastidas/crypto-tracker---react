@@ -21,7 +21,8 @@ export type EnvelopeId =
   | 'ahorro_inversion'
   | 'imprescindibles'
   | 'disfrute'
-  | 'crecimiento_personal';
+  | 'crecimiento_personal'
+  | 'provisiones_anuales';
 
 export type AssetBucketId =
   | EnvelopeId

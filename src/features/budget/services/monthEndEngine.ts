@@ -20,7 +20,51 @@ export interface MonthEndSimulationInput {
   emergencyTarget: number;
   disfruteMaxCap: number;
   imprescindiblesReserve?: number;
+  annualProvisionsTopUp?: number;
   date?: string;
+}
+
+export interface AnnualProvisionItem {
+  id: string;
+  name: string;
+  amountUsd: number;
+  daysLeft: number;
+  quincenasLeft: number;
+  requiredToday: number;
+}
+
+export interface AnnualProvisionsTargetSummary {
+  targetToday: number;
+  items: AnnualProvisionItem[];
+}
+
+export function computeAnnualProvisionsTargetToday(
+  expenses: RecurringExpense[],
+): AnnualProvisionsTargetSummary {
+  const items: AnnualProvisionItem[] = [];
+  for (const exp of expenses) {
+    if (!exp.active || exp.frequency !== 'anual') continue;
+    const daysLeft = calculateDaysLeft(exp.nextDueDate);
+    const quincenasLeft =
+      daysLeft <= 0 ? 0 : Math.min(24, Math.floor(daysLeft / 15));
+    const biweeklyQuota = exp.amountUsd / 24;
+    const requiredToday = round2(
+      Math.max(0, exp.amountUsd - quincenasLeft * biweeklyQuota),
+    );
+    if (requiredToday > 0) {
+      items.push({
+        id: exp.id,
+        name: exp.name,
+        amountUsd: exp.amountUsd,
+        daysLeft,
+        quincenasLeft,
+        requiredToday,
+      });
+    }
+  }
+  items.sort((a, b) => a.daysLeft - b.daysLeft);
+  const targetToday = round2(items.reduce((acc, i) => acc + i.requiredToday, 0));
+  return { targetToday, items };
 }
 
 export interface UpcomingEssentialItem {
@@ -134,6 +178,7 @@ export function simulateMonthEndRollover(
     emergencyTarget,
     disfruteMaxCap,
     imprescindiblesReserve = 0,
+    annualProvisionsTopUp = 0,
     date = new Date().toISOString().slice(0, 10),
   } = input;
 
@@ -144,6 +189,7 @@ export function simulateMonthEndRollover(
   const disBalance = getBal('disfrute');
   const creBalance = getBal('crecimiento_personal');
   const ahoBalance = getBal('ahorro_inversion');
+  const provBalance = getBal('provisiones_anuales');
 
   const initialEmergency = round2(emergencyBalance);
   const target = round2(Math.max(0, emergencyTarget));
@@ -180,13 +226,14 @@ export function simulateMonthEndRollover(
   let disRolled = 0;
   let disSwept = 0;
   let creRolled = 0;
+  let sweptToAnnual = 0;
   let sweptToEmergency = 0;
   let sweptToInvestment = 0;
 
-  // 1. IMPRESCINDIBLES (SWEEP_ALL con reserva sugerida opcional para gastos previos a quincena)
+  // 1. IMPRESCINDIBLES (SWEEP_ALL con reserva sugerida opcional + fondeo de Sinking Fund anual)
   if (impBalance > 0) {
     const protectedReserve = round2(Math.min(impBalance, Math.max(0, imprescindiblesReserve)));
-    const sweepableImp = round2(Math.max(0, impBalance - protectedReserve));
+    let sweepableImp = round2(Math.max(0, impBalance - protectedReserve));
     impRolled = protectedReserve;
     impSwept = sweepableImp;
 
@@ -198,6 +245,21 @@ export function simulateMonthEndRollover(
         protectedReserve,
         'Reserva protegida en Imprescindibles para gastos próximos',
       );
+    }
+
+    if (sweepableImp > 0 && annualProvisionsTopUp > 0) {
+      const toAnnual = round2(Math.min(sweepableImp, annualProvisionsTopUp));
+      if (toAnnual > 0) {
+        pushMov(
+          'SWEEP',
+          'imprescindibles',
+          'provisiones_anuales',
+          toAnnual,
+          'Fondear déficit de Provisiones Anuales (vencimientos cercanos)',
+        );
+        sweptToAnnual = round2(sweptToAnnual + toAnnual);
+        sweepableImp = round2(sweepableImp - toAnnual);
+      }
     }
 
     if (sweepableImp > 0) {
@@ -341,6 +403,17 @@ export function simulateMonthEndRollover(
     creRolled = creBalance;
   }
 
+  // 3.5 PROVISIONES ANUALES (SINKING FUND - ACCUMULATE)
+  if (provBalance > 0) {
+    pushMov(
+      'ROLLOVER',
+      'provisiones_anuales',
+      'provisiones_anuales',
+      provBalance,
+      '100% protegido en Provisiones Anuales (Sinking Fund)',
+    );
+  }
+
   // 4. AHORRO E INVERSION (INVESTMENT_POOL) & FONDO DE EMERGENCIA (TARGET_VAULT)
   if (ahoBalance > 0) {
     pushMov(
@@ -396,6 +469,17 @@ export function simulateMonthEndRollover(
       newBalance: creBalance,
     },
     {
+      id: 'provisiones_anuales',
+      name: ENVELOPE_META.provisiones_anuales.name,
+      rolloverRule: 'ACCUMULATE',
+      maxCap: null,
+      previousBalance: provBalance,
+      rolledOverAmount: provBalance,
+      sweptOutAmount: 0,
+      receivedSweepAmount: sweptToAnnual,
+      newBalance: round2(provBalance + sweptToAnnual),
+    },
+    {
       id: 'ahorro_inversion',
       name: ENVELOPE_META.ahorro_inversion.name,
       rolloverRule: 'INVESTMENT_POOL',
@@ -419,11 +503,12 @@ export function simulateMonthEndRollover(
     },
   ];
 
-  const totalSwept = round2(sweptToEmergency + sweptToInvestment);
+  const totalSwept = round2(sweptToAnnual + sweptToEmergency + sweptToInvestment);
   const totalRolledOver = round2(
     Math.max(0, impRolled) +
       Math.max(0, disRolled) +
       Math.max(0, creRolled) +
+      Math.max(0, provBalance) +
       Math.max(0, ahoBalance),
   );
 

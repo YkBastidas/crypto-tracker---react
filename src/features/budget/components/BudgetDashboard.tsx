@@ -79,6 +79,7 @@ const BUCKET_LABELS: Record<BuiltinBucketId, string> = {
   imprescindibles: ENVELOPE_META.imprescindibles.name,
   disfrute: ENVELOPE_META.disfrute.name,
   crecimiento_personal: ENVELOPE_META.crecimiento_personal.name,
+  provisiones_anuales: ENVELOPE_META.provisiones_anuales.name,
   banco_bolivares: 'Cuenta en Bolívares',
   emergencias: 'Fondo Emergencia (Efectivo)',
   binance_usdc: 'Fondo Emergencia (USDC)',

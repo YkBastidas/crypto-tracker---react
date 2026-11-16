@@ -435,16 +435,33 @@ export const useBudgetStore = create<BudgetState>()(
             ? { amountBs: Number((usd * rate).toFixed(2)), bcvRateUsed: rate }
             : {};
 
-        if (preview.totalProvision > 0) {
+        const monthlyAndInstallments = Number(
+          (preview.monthlyExpensesProvision + preview.installmentsProvision).toFixed(2),
+        );
+        if (monthlyAndInstallments > 0) {
           newMovements.push({
             id: makeId('mov'),
             date,
             bucket: 'imprescindibles',
             type: 'Ingreso a Sobre',
-            amountUsd: preview.totalProvision,
-            ...toBsFields(preview.totalProvision),
+            amountUsd: monthlyAndInstallments,
+            ...toBsFields(monthlyAndInstallments),
             paymentMethod,
-            notes: `Provisión quincenal gastos/cuotas${noteSuffix}`,
+            notes: `Provisión quincenal gastos mensuales/cuotas${noteSuffix}`,
+            quincenaId,
+          });
+        }
+
+        if (preview.annualExpensesProvision > 0) {
+          newMovements.push({
+            id: makeId('mov'),
+            date,
+            bucket: 'provisiones_anuales',
+            type: 'Ingreso a Sobre',
+            amountUsd: preview.annualExpensesProvision,
+            ...toBsFields(preview.annualExpensesProvision),
+            paymentMethod,
+            notes: `Sinking Fund gastos anuales${noteSuffix}`,
             quincenaId,
           });
         }

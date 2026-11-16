@@ -23,7 +23,9 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd');
   const [customBucketId, setCustomBucketId] = useState<AssetBucketId | null>(null);
   const [inputInBs, setInputInBs] = useState(false);
-  const [envelopeId, setEnvelopeId] = useState<EnvelopeId>(expense.envelopeId);
+  const [envelopeId, setEnvelopeId] = useState<EnvelopeId>(() =>
+    expense.frequency === 'anual' ? 'provisiones_anuales' : expense.envelopeId,
+  );
   const [logToLedger, setLogToLedger] = useState(true);
 
   const hasValidRate = Boolean(bcvRate && bcvRate > 0);

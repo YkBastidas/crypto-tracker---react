@@ -438,13 +438,25 @@ export function QuincenaWizard({ onCompleteNavigate }: QuincenaWizardProps) {
             {(autoProvisionExpenses || autoProvisionInstallments) && (
               <div className="bg-bg-input/60 border border-border rounded-xl p-3 space-y-1.5 text-xs">
                 <div className="flex justify-between">
-                  <span className="text-text-muted">Provisión gastos fijos (M/A):</span>
+                  <span className="text-text-muted">Mensuales/quinc. (→ Imprescind.):</span>
                   <span className="font-semibold text-text-primary">
-                    <PrivacyValue value={formatUsd(preview.expensesProvision)} isPrivate={isPrivate} />
+                    <PrivacyValue
+                      value={formatUsd(preview.monthlyExpensesProvision)}
+                      isPrivate={isPrivate}
+                    />
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-text-muted">Provisión cuotas activas:</span>
+                  <span className="text-text-muted">Anuales (→ Prov. Anuales):</span>
+                  <span className="font-semibold text-teal-300">
+                    <PrivacyValue
+                      value={formatUsd(preview.annualExpensesProvision)}
+                      isPrivate={isPrivate}
+                    />
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-text-muted">Cuotas por pagar (→ Imprescind.):</span>
                   <span className="font-semibold text-text-primary">
                     <PrivacyValue
                       value={formatUsd(preview.installmentsProvision)}
@@ -453,7 +465,7 @@ export function QuincenaWizard({ onCompleteNavigate }: QuincenaWizardProps) {
                   </span>
                 </div>
                 <div className="flex justify-between pt-1.5 border-t border-border font-bold">
-                  <span className="text-accent-gold">Total Provisión (Imprescindibles):</span>
+                  <span className="text-accent-gold">Total Provisionado:</span>
                   <span className="text-accent-gold">
                     <PrivacyValue value={formatUsd(preview.totalProvision)} isPrivate={isPrivate} />
                   </span>

@@ -11,6 +11,7 @@ import {
 import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { PrivacyValue } from '../../../shared/ui/PrivacyValue';
 import {
+  computeAnnualProvisionsTargetToday,
   computeDisfruteMaxCap,
   computeImprescindiblesSuggestedReserve,
   getDefaultNextPaydayDate,
@@ -48,6 +49,10 @@ export function MonthEndRolloverModal({
     () => Math.max(0, envelopes.find((e) => e.id === 'imprescindibles')?.available ?? 0),
     [envelopes],
   );
+  const provCurrentBalance = useMemo(
+    () => Math.max(0, envelopes.find((e) => e.id === 'provisiones_anuales')?.available ?? 0),
+    [envelopes],
+  );
 
   const [nextPaydayDate, setNextPaydayDate] = useState(() => getDefaultNextPaydayDate());
 
@@ -61,9 +66,20 @@ export function MonthEndRolloverModal({
     [expenses, installments, nextPaydayDate],
   );
 
+  const annualTargetSummary = useMemo(
+    () => computeAnnualProvisionsTargetToday(expenses),
+    [expenses],
+  );
+  const annualGap = Math.max(0, Number((annualTargetSummary.targetToday - provCurrentBalance).toFixed(2)));
+
   const [impReserveInput, setImpReserveInput] = useState(() =>
     String(Math.min(impCurrentBalance, reserveSuggestion.upcomingBeforePayday)),
   );
+  const [annualTopUpInput, setAnnualTopUpInput] = useState(() => {
+    const initialImpReserve = Math.min(impCurrentBalance, reserveSuggestion.upcomingBeforePayday);
+    const initialSweepable = Math.max(0, impCurrentBalance - initialImpReserve);
+    return String(Number(Math.min(initialSweepable, annualGap).toFixed(2)));
+  });
 
   const defaultDisCap = useMemo(
     () => computeDisfruteMaxCap(quincenaConfig, 500),
@@ -74,6 +90,7 @@ export function MonthEndRolloverModal({
 
   const parsedCap = Math.max(0, parseFloat(disCapInput) || 500);
   const parsedImpReserve = Math.max(0, parseFloat(impReserveInput) || 0);
+  const parsedAnnualTopUp = Math.max(0, parseFloat(annualTopUpInput) || 0);
 
   const simulation = useMemo(
     () =>
@@ -83,9 +100,18 @@ export function MonthEndRolloverModal({
         emergencyTarget,
         disfruteMaxCap: parsedCap,
         imprescindiblesReserve: parsedImpReserve,
+        annualProvisionsTopUp: parsedAnnualTopUp,
         date,
       }),
-    [envelopes, emergencyBalance, emergencyTarget, parsedCap, parsedImpReserve, date],
+    [
+      envelopes,
+      emergencyBalance,
+      emergencyTarget,
+      parsedCap,
+      parsedImpReserve,
+      parsedAnnualTopUp,
+      date,
+    ],
   );
 
   const handleConfirm = () => {
@@ -272,6 +298,64 @@ export function MonthEndRolloverModal({
               </div>
             </div>
           </div>
+
+          {/* Fondeo sugerido de Provisiones Anuales */}
+          {annualGap > 0 && (
+            <div className="bg-teal-500/5 border border-teal-500/30 rounded-xl p-3.5 space-y-2">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                <h4 className="text-xs font-bold text-teal-300">
+                  Déficit en Provisiones Anuales (Sinking Fund)
+                </h4>
+                <span className="text-[11px] text-text-muted">
+                  Meta acumulada hoy:{' '}
+                  <strong className="text-teal-300">
+                    <PrivacyValue
+                      value={formatUsd(annualTargetSummary.targetToday)}
+                      isPrivate={isPrivate}
+                    />
+                  </strong>{' '}
+                  (Faltan{' '}
+                  <PrivacyValue value={formatUsd(annualGap)} isPrivate={isPrivate} />)
+                </span>
+              </div>
+              <p className="text-[11px] text-text-muted">
+                Calculado según las quincenas que faltan para tus gastos anuales próximos (ej.{' '}
+                {annualTargetSummary.items
+                  .slice(0, 3)
+                  .map((i) => `${i.name}: ${formatUsd(i.requiredToday)}`)
+                  .join(', ')}
+                ).
+              </p>
+              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                <label className="text-xs text-text-muted">Fondear desde Imprescindibles ($):</label>
+                <input
+                  type="number"
+                  step="1"
+                  min="0"
+                  value={annualTopUpInput}
+                  onChange={(e) => setAnnualTopUpInput(e.target.value)}
+                  className="w-24 px-2.5 py-1 rounded-lg text-xs font-bold bg-bg-input border border-border text-text-primary"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const sweepable = Math.max(0, impCurrentBalance - parsedImpReserve);
+                    setAnnualTopUpInput(String(Number(Math.min(sweepable, annualGap).toFixed(2))));
+                  }}
+                  className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-teal-500/15 border border-teal-500/30 text-teal-300 cursor-pointer"
+                >
+                  Sugerido
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAnnualTopUpInput('0')}
+                  className="px-2.5 py-1 rounded-lg text-[11px] font-medium bg-bg-input border border-border text-text-muted hover:text-text-primary cursor-pointer"
+                >
+                  $0
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Outcomes per Envelope/Vault */}
           <div className="space-y-2">

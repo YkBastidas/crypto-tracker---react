@@ -31,6 +31,7 @@ const ENVELOPE_SET = new Set<AssetBucketId>([
   'imprescindibles',
   'disfrute',
   'crecimiento_personal',
+  'provisiones_anuales',
 ]);
 
 const INVESTMENT_BUCKETS = new Set<AssetBucketId>([
@@ -45,6 +46,7 @@ const BUCKET_OPTIONS: { id: AssetBucketId; label: string }[] = [
   { id: 'imprescindibles', label: `Sobre: ${ENVELOPE_META.imprescindibles.name}` },
   { id: 'disfrute', label: `Sobre: ${ENVELOPE_META.disfrute.name}` },
   { id: 'crecimiento_personal', label: `Sobre: ${ENVELOPE_META.crecimiento_personal.name}` },
+  { id: 'provisiones_anuales', label: `Sobre: ${ENVELOPE_META.provisiones_anuales.name}` },
   { id: 'ahorro_inversion', label: `Sobre: ${ENVELOPE_META.ahorro_inversion.name}` },
   { id: 'banco_bolivares', label: 'Cuenta en Bolívares (Pago Móvil)' },
   { id: 'binance_usdt', label: 'Inversiones Binance (USDT)' },
