@@ -50,11 +50,21 @@ export type MovementType =
   | 'Transferencia (Entrada)'
   | 'Ajuste';
 
+export type RolloverRuleType =
+  | 'SWEEP_ALL'
+  | 'PHASED_CAP'
+  | 'ACCUMULATE'
+  | 'INVESTMENT_POOL'
+  | 'TARGET_VAULT';
+
+export type InternalTransactionType = 'SWEEP' | 'ROLLOVER';
+
 export interface LedgerMovement {
   id: string;
   date: string; // YYYY-MM-DD
   bucket: AssetBucketId;
   type: MovementType;
+  internalType?: InternalTransactionType;
   amountUsd: number;
   amountBs?: number;
   bcvRateUsed?: number;
@@ -159,4 +169,47 @@ export interface EnvelopeSummary {
     binance: number;
     bolivares: number;
   };
+}
+
+export interface EnvelopeRolloverConfig {
+  id: EnvelopeId | 'fondo_emergencia';
+  rolloverRule: RolloverRuleType;
+  maxCap: number | null;
+}
+
+export interface MonthEndSweepMovement {
+  id: string;
+  date: string;
+  type: InternalTransactionType;
+  fromBucket: AssetBucketId;
+  toBucket: AssetBucketId;
+  amountUsd: number;
+  reason: string;
+}
+
+export interface MonthEndEnvelopeOutcome {
+  id: EnvelopeId | 'fondo_emergencia';
+  name: string;
+  rolloverRule: RolloverRuleType;
+  maxCap: number | null;
+  previousBalance: number;
+  rolledOverAmount: number;
+  sweptOutAmount: number;
+  receivedSweepAmount: number;
+  newBalance: number;
+}
+
+export interface MonthEndSimulationResult {
+  date: string;
+  initialPhase: 1 | 2;
+  emergencyBefore: number;
+  emergencyAfter: number;
+  emergencyTarget: number;
+  disfruteMaxCap: number;
+  totalSwept: number;
+  totalSweptToEmergency: number;
+  totalSweptToInvestment: number;
+  totalRolledOver: number;
+  movements: MonthEndSweepMovement[];
+  outcomes: MonthEndEnvelopeOutcome[];
 }

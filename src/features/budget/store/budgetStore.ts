@@ -9,14 +9,17 @@ import type {
   CustomAccountId,
   EmergencyGoalConfig,
   EnvelopeId,
+  EnvelopeSummary,
   InstallmentPlan,
   LedgerMovement,
+  MonthEndSimulationResult,
   PaymentMethod,
   QuincenaConfig,
   RecurringExpense,
 } from '../types';
 import { advanceDueDate, type QuincenaPreview } from '../utils/calculations';
 import { fetchBcvUsdRate } from '../services/bcvApi';
+import { buildLedgerMovementsFromSimulation } from '../services/monthEndEngine';
 
 export interface UndoEntry {
   id: string;
@@ -95,6 +98,10 @@ interface BudgetState {
     notes?: string;
   }) => void;
   removeMovement: (id: string) => void;
+  applyMonthEndRollover: (
+    simulation: MonthEndSimulationResult,
+    envelopes: EnvelopeSummary[],
+  ) => void;
 
   // Undo actions
   undoLastAction: () => void;
@@ -386,6 +393,29 @@ export const useBudgetStore = create<BudgetState>()(
       },
 
       dismissUndo: () => set({ undoEntry: null }),
+
+      applyMonthEndRollover: (simulation, envelopes) => {
+        const state = get();
+        const generated = buildLedgerMovementsFromSimulation(
+          simulation,
+          envelopes,
+          state.bcvRate,
+        );
+        if (generated.length === 0) return;
+
+        const withIds: LedgerMovement[] = generated.map((m) => ({
+          ...m,
+          id: makeId('mov'),
+        }));
+
+        set({
+          undoEntry: createUndoSnapshot(
+            `Cierre mensual (${simulation.totalSwept.toFixed(2)} USD barridos)`,
+            state,
+          ),
+          movements: [...withIds, ...state.movements],
+        });
+      },
 
       updateQuincenaConfig: (config) =>
         set((state) => ({

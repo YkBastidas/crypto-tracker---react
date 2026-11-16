@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Smartphone,
+  Sparkles,
   Target,
   Trash2,
   Wallet,
@@ -40,6 +41,7 @@ import {
 import { BackupControls } from './BackupControls';
 import { CreateAccountModal } from './CreateAccountModal';
 import { EmergencyGoalModal } from './EmergencyGoalModal';
+import { MonthEndRolloverModal } from './MonthEndRolloverModal';
 import { PayExpenseModal } from './PayExpenseModal';
 import { RecordInstallmentModal } from './RecordInstallmentModal';
 import {
@@ -104,6 +106,7 @@ export function BudgetDashboard({
   const [quickModalOpen, setQuickModalOpen] = useState(false);
   const [createAccountOpen, setCreateAccountOpen] = useState(false);
   const [emergencyGoalOpen, setEmergencyGoalOpen] = useState(false);
+  const [monthEndOpen, setMonthEndOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<CustomAccount | null>(null);
   const [quickBucket, setQuickBucket] = useState<AssetBucketId>('imprescindibles');
   const [quickTab, setQuickTab] = useState<QuickModalTab>('movement');
@@ -411,11 +414,17 @@ export function BudgetDashboard({
 
       {/* 4 Sobres Operativos */}
       <section>
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <h2 className="text-sm font-bold uppercase tracking-wider text-text-muted">
             Saldo Disponible por Sobre (Partidas)
           </h2>
-          <span className="text-xs text-text-muted">Incluye efectivo y saldo digital</span>
+          <button
+            type="button"
+            onClick={() => setMonthEndOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-gold/15 border border-accent-gold/40 text-accent-gold hover:bg-accent-gold/25 cursor-pointer"
+          >
+            <Sparkles size={13} /> Cierre de Mes / Reestructurar
+          </button>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
@@ -735,6 +744,15 @@ export function BudgetDashboard({
         <EmergencyGoalModal
           currentBalance={emergencyFundBalance}
           onClose={() => setEmergencyGoalOpen(false)}
+        />
+      )}
+
+      {monthEndOpen && (
+        <MonthEndRolloverModal
+          envelopes={envelopes}
+          emergencyBalance={emergencyFundBalance}
+          emergencyTarget={emergencyGoalStats.targetUsd}
+          onClose={() => setMonthEndOpen(false)}
         />
       )}
     </div>
