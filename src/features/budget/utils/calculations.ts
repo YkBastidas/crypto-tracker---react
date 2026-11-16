@@ -184,6 +184,11 @@ export function calculateEnvelopeSummaries(movements: LedgerMovement[]): Envelop
       const amt = Math.abs(m.amountUsd);
       totals[envId].assigned += amt;
       totals[envId].byMethod[custody] += amt;
+    } else if (m.type === 'Transferencia (Salida)') {
+      // Las transferencias/cambios mueven saldo asignado o custodia sin contar como egreso/gasto real
+      const amt = Math.abs(m.amountUsd);
+      totals[envId].assigned -= amt;
+      totals[envId].byMethod[custody] -= amt;
     } else if (OUTFLOW_TYPES.has(m.type) || (m.type === 'Ajuste' && m.amountUsd < 0)) {
       const amt = Math.abs(m.amountUsd);
       totals[envId].spent += amt;
