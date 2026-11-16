@@ -41,8 +41,10 @@ _Vista general del dashboard con balances globales, progreso de metas e históri
 ## 🏁 Roadmap
 
 - [x] **Fase 1**: Tracker de Cripto y Fiat funcional (Local-First).
-- [ ] **Fase 2**: Integración de Finanzas Personales (Presupuestos, Gastos Diarios).
-- [ ] **Fase 3**: Sincronización opcional en la nube (Supabase) y cuentas de usuario.
+- [x] **Fase 2**: Motor Quincenal, Sobres, Gastos, Cierre Mensual y Tasa BCV.
+- [ ] **Fase 3**: Sincronización opcional en la nube (Supabase) y PWA móvil.
+
+Consulta el detalle completo y el progreso dinámico en [ROADMAP.md](./ROADMAP.md).
 
 ---
 
