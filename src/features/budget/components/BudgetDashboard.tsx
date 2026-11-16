@@ -406,6 +406,19 @@ export function BudgetDashboard({
                       />
                     </div>
                   )}
+
+                  {fund.breakdown && fund.breakdown.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-2.5 pt-2 border-t border-border text-[10px] text-text-muted">
+                      {fund.breakdown.map((b) => (
+                        <span key={b.label} className="px-1.5 py-0.5 rounded bg-bg-input">
+                          {b.label}:{' '}
+                          <strong className="text-text-primary">
+                            <PrivacyValue value={formatUsd(b.amount)} isPrivate={isPrivate} />
+                          </strong>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             );

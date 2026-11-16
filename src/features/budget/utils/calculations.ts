@@ -313,10 +313,14 @@ export function calculateFundSummaries(
   const { balanceBs, hasBsData } = sumBolivaresBalance(movements, bcvRate);
   const cuentaBolivares =
     hasBsData && bcvRate && bcvRate > 0 ? balanceBs / bcvRate : cuentaBolivaresUsdLedger;
-  const inversionesBinance =
-    sumBucketBalance(movements, ['binance_crypto', 'binance_usdt', 'binance_paxg']) +
-    binanceSobres;
-  const fondoEmergencia = sumBucketBalance(movements, ['emergencias', 'binance_usdc']);
+  const binanceCryptoBal = sumBucketBalance(movements, ['binance_crypto']);
+  const binanceUsdtBal = sumBucketBalance(movements, ['binance_usdt']) + binanceSobres;
+  const binancePaxgBal = sumBucketBalance(movements, ['binance_paxg']);
+  const inversionesBinance = binanceCryptoBal + binanceUsdtBal + binancePaxgBal;
+
+  const emergenciaEfectivoBal = sumBucketBalance(movements, ['emergencias']);
+  const emergenciaUsdcBal = sumBucketBalance(movements, ['binance_usdc']);
+  const fondoEmergencia = emergenciaEfectivoBal + emergenciaUsdcBal;
   const billeteraBtc = sumBucketBalance(movements, ['wallet_btc']);
 
   const rawFunds: Omit<FundSummary, 'percentage'>[] = [
@@ -341,6 +345,11 @@ export function calculateFundSummaries(
       assetType: 'Binance (Crypto + USDT + PAXG)',
       notes: 'Incluye capital activo y USDT asignado a sobres',
       balance: inversionesBinance,
+      breakdown: [
+        { label: 'Crypto', amount: binanceCryptoBal },
+        { label: 'USDT', amount: binanceUsdtBal },
+        { label: 'PAXG', amount: binancePaxgBal },
+      ],
     },
     {
       id: 'fondo_emergencia',
@@ -348,6 +357,10 @@ export function calculateFundSummaries(
       assetType: 'Efectivo + Binance USDC',
       notes: 'Reserva de seguridad y estabilidad',
       balance: fondoEmergencia,
+      breakdown: [
+        { label: 'Efectivo', amount: emergenciaEfectivoBal },
+        { label: 'USDC', amount: emergenciaUsdcBal },
+      ],
     },
     {
       id: 'billetera_btc',

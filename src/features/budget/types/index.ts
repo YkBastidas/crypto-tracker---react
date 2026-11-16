@@ -156,6 +156,7 @@ export interface FundSummary {
   percentage: number;
   isCustom?: boolean;
   currency?: AccountCurrency;
+  breakdown?: { label: string; amount: number }[];
 }
 
 export interface EnvelopeSummary {
