@@ -5,6 +5,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  HelpCircle,
   LayoutDashboard,
   Menu,
   Sparkles,
@@ -15,6 +16,7 @@ import { usePortfolioStore } from '../../shared/store/portfolioStore';
 import { parseCsvFile, exportCsv } from '../../shared/lib/csv';
 import { TransactionForm } from '../../features/crypto-portfolio/components/TransactionForm';
 import { SupportDonate } from '../../features/crypto-portfolio/components/SupportDonate';
+import { HelpModal } from './HelpModal';
 
 export type AppView = 'resumen' | 'quincena' | 'gastos' | 'crypto';
 
@@ -56,6 +58,7 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
     usePortfolioStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   // beforeunload warning for unsaved crypto CSV changes
   useEffect(() => {
@@ -218,16 +221,27 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
             </h2>
           </div>
 
-          <button
-            type="button"
-            onClick={togglePrivacy}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-bg-card border border-border text-text-muted hover:text-text-primary hover:border-accent-gold transition-all cursor-pointer"
-          >
-            {isPrivate ? <EyeOff size={14} /> : <Eye size={14} />}
-            <span className="hidden sm:inline">
-              {isPrivate ? 'Mostrar Montos' : 'Ocultar Montos'}
-            </span>
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setHelpOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-bg-card border border-border text-text-muted hover:text-text-primary hover:border-accent-blue transition-all cursor-pointer"
+            >
+              <HelpCircle size={14} />
+              <span>Cómo usar</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={togglePrivacy}
+              className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-bg-card border border-border text-text-muted hover:text-text-primary hover:border-accent-gold transition-all cursor-pointer"
+            >
+              {isPrivate ? <EyeOff size={14} /> : <Eye size={14} />}
+              <span className="hidden sm:inline">
+                {isPrivate ? 'Mostrar Montos' : 'Ocultar Montos'}
+              </span>
+            </button>
+          </div>
         </header>
 
         {/* Scrollable Content */}
@@ -255,6 +269,12 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
           })}
         </nav>
       </div>
+
+      <HelpModal
+        isOpen={helpOpen}
+        onClose={() => setHelpOpen(false)}
+        onNavigate={(view) => onChangeView(view)}
+      />
     </div>
   );
 }

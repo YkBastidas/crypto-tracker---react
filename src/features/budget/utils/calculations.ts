@@ -22,6 +22,7 @@ const OUTFLOW_TYPES = new Set([
   'Cambio a Bolívares',
   'Barrido a Inversión',
   'Pago de Cuota',
+  'Transferencia (Salida)',
 ]);
 
 export function formatUsd(amount: number): string {
@@ -83,7 +84,11 @@ export function calculateEnvelopeSummaries(movements: LedgerMovement[]): Envelop
   for (const m of movements) {
     if (!ENVELOPE_IDS.includes(m.bucket as EnvelopeId)) continue;
     const envId = m.bucket as EnvelopeId;
-    if (m.type === 'Ingreso a Sobre' || (m.type === 'Ajuste' && m.amountUsd >= 0)) {
+    if (
+      m.type === 'Ingreso a Sobre' ||
+      m.type === 'Transferencia (Entrada)' ||
+      (m.type === 'Ajuste' && m.amountUsd >= 0)
+    ) {
       totals[envId].assigned += Math.abs(m.amountUsd);
     } else if (OUTFLOW_TYPES.has(m.type) || (m.type === 'Ajuste' && m.amountUsd < 0)) {
       totals[envId].spent += Math.abs(m.amountUsd);
@@ -111,7 +116,12 @@ function sumBucketBalance(movements: LedgerMovement[], buckets: AssetBucketId[])
   let total = 0;
   for (const m of movements) {
     if (!set.has(m.bucket)) continue;
-    if (m.type === 'Gasto en Efectivo' || m.type === 'Cambio a Bolívares' || m.type === 'Pago de Cuota') {
+    if (
+      m.type === 'Gasto en Efectivo' ||
+      m.type === 'Cambio a Bolívares' ||
+      m.type === 'Pago de Cuota' ||
+      m.type === 'Transferencia (Salida)'
+    ) {
       total -= Math.abs(m.amountUsd);
     } else {
       total += m.amountUsd;

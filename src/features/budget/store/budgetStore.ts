@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { createDefaultSeed } from '../data/defaultSeed';
 import type {
+  AssetBucketId,
   BudgetSnapshot,
   EnvelopeId,
   InstallmentPlan,
@@ -20,6 +21,14 @@ interface BudgetState {
 
   // Ledger actions
   addMovement: (movement: Omit<LedgerMovement, 'id'>) => void;
+  transferBetweenBuckets: (params: {
+    date: string;
+    fromBucket: AssetBucketId;
+    toBucket: AssetBucketId;
+    amountFrom: number;
+    amountTo?: number;
+    notes?: string;
+  }) => void;
   removeMovement: (id: string) => void;
 
   // Quincena wizard actions
@@ -68,6 +77,33 @@ export const useBudgetStore = create<BudgetState>()(
         set((state) => ({
           movements: [{ ...movement, id: makeId('mov') }, ...state.movements],
         })),
+
+      transferBetweenBuckets: ({ date, fromBucket, toBucket, amountFrom, amountTo, notes }) => {
+        const cleanFrom = Number(Math.abs(amountFrom).toFixed(2));
+        const cleanTo = Number(Math.abs(amountTo ?? amountFrom).toFixed(2));
+        if (cleanFrom <= 0 || cleanTo <= 0 || fromBucket === toBucket) return;
+
+        const label = notes?.trim() ? ` (${notes.trim()})` : '';
+        const outMov: LedgerMovement = {
+          id: makeId('mov'),
+          date,
+          bucket: fromBucket,
+          type: 'Transferencia (Salida)',
+          amountUsd: cleanFrom,
+          notes: `Cambio / Transferencia salida${label}`,
+        };
+        const inMov: LedgerMovement = {
+          id: makeId('mov'),
+          date,
+          bucket: toBucket,
+          type: 'Transferencia (Entrada)',
+          amountUsd: cleanTo,
+          notes: `Cambio / Transferencia entrada${label}`,
+        };
+        set((state) => ({
+          movements: [inMov, outMov, ...state.movements],
+        }));
+      },
 
       removeMovement: (id) =>
         set((state) => ({

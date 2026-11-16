@@ -31,6 +31,8 @@ export type MovementType =
   | 'Cambio a Bolívares'
   | 'Barrido a Inversión'
   | 'Pago de Cuota'
+  | 'Transferencia (Salida)'
+  | 'Transferencia (Entrada)'
   | 'Ajuste';
 
 export interface LedgerMovement {

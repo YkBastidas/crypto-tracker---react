@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowDownRight,
+  ArrowLeftRight,
   ArrowUpRight,
   Bitcoin,
   CheckCircle2,
@@ -23,7 +24,7 @@ import {
   formatUsd,
 } from '../utils/calculations';
 import { BackupControls } from './BackupControls';
-import { QuickMovementModal } from './QuickMovementModal';
+import { QuickMovementModal, type QuickModalTab } from './QuickMovementModal';
 
 interface BudgetDashboardProps {
   onNavigateQuincena: () => void;
@@ -45,6 +46,7 @@ export function BudgetDashboard({
   const { movements, expenses, removeMovement, markExpensePaid } = useBudgetStore();
   const [quickModalOpen, setQuickModalOpen] = useState(false);
   const [quickBucket, setQuickBucket] = useState<AssetBucketId>('imprescindibles');
+  const [quickTab, setQuickTab] = useState<QuickModalTab>('movement');
 
   const { funds, totalNetWorth, envelopes } = useMemo(
     () => calculateFundSummaries(movements),
@@ -59,8 +61,12 @@ export function BudgetDashboard({
       .sort((a, b) => a.daysLeft - b.daysLeft);
   }, [expenses]);
 
-  const openQuickModal = (bucket: AssetBucketId = 'imprescindibles') => {
+  const openQuickModal = (
+    bucket: AssetBucketId = 'imprescindibles',
+    tab: QuickModalTab = 'movement',
+  ) => {
     setQuickBucket(bucket);
+    setQuickTab(tab);
     setQuickModalOpen(true);
   };
 
@@ -84,10 +90,17 @@ export function BudgetDashboard({
           <div className="flex flex-wrap gap-2.5">
             <button
               type="button"
-              onClick={() => openQuickModal('imprescindibles')}
+              onClick={() => openQuickModal('imprescindibles', 'movement')}
               className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-accent-gold/15 border border-accent-gold/40 text-accent-gold hover:bg-accent-gold/25 transition-all cursor-pointer"
             >
               <Zap size={15} /> Gasto Rápido
+            </button>
+            <button
+              type="button"
+              onClick={() => openQuickModal('binance_usdt', 'transfer')}
+              className="flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold bg-accent-blue/15 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/25 transition-all cursor-pointer"
+            >
+              <ArrowLeftRight size={15} /> Cambiar / Transferir
             </button>
             <button
               type="button"
@@ -307,7 +320,8 @@ export function BudgetDashboard({
               const isOutflow =
                 m.type === 'Gasto en Efectivo' ||
                 m.type === 'Cambio a Bolívares' ||
-                m.type === 'Pago de Cuota';
+                m.type === 'Pago de Cuota' ||
+                m.type === 'Transferencia (Salida)';
 
               return (
                 <div
@@ -362,11 +376,15 @@ export function BudgetDashboard({
 
       <BackupControls />
 
-      <QuickMovementModal
-        isOpen={quickModalOpen}
-        initialBucket={quickBucket}
-        onClose={() => setQuickModalOpen(false)}
-      />
+      {quickModalOpen && (
+        <QuickMovementModal
+          key={`${quickBucket}-${quickTab}`}
+          isOpen={quickModalOpen}
+          initialBucket={quickBucket}
+          initialTab={quickTab}
+          onClose={() => setQuickModalOpen(false)}
+        />
+      )}
     </div>
   );
 }
