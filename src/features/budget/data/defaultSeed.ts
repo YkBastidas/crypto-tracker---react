@@ -1,0 +1,328 @@
+import type {
+  EnvelopeId,
+  InstallmentPlan,
+  LedgerMovement,
+  PaymentMethod,
+  QuincenaConfig,
+  RecurringExpense,
+} from '../types';
+
+export const ENVELOPE_META: Record<
+  EnvelopeId,
+  { name: string; shortName: string; description: string; colorClass: string; badgeBg: string }
+> = {
+  ahorro_inversion: {
+    name: 'Ahorro e Inversión',
+    shortName: 'Ahorro',
+    description: 'Fondo de reserva y capital para inversión',
+    colorClass: 'text-accent-green',
+    badgeBg: 'bg-accent-green/15 text-accent-green border-accent-green/30',
+  },
+  imprescindibles: {
+    name: 'Imprescindibles',
+    shortName: 'Imprescind.',
+    description: 'Mercado, servicios, telefonía e internet',
+    colorClass: 'text-accent-blue',
+    badgeBg: 'bg-accent-blue/15 text-accent-blue border-accent-blue/30',
+  },
+  disfrute: {
+    name: 'Disfrute',
+    shortName: 'Disfrute',
+    description: 'Salidas, entretenimiento y recreación',
+    colorClass: 'text-accent-gold',
+    badgeBg: 'bg-accent-gold/15 text-accent-gold border-accent-gold/30',
+  },
+  crecimiento_personal: {
+    name: 'Crecimiento Personal',
+    shortName: 'Crecimiento',
+    description: 'Libros, cursos y formación personal',
+    colorClass: 'text-purple-400',
+    badgeBg: 'bg-purple-500/15 text-purple-300 border-purple-500/30',
+  },
+  provisiones_anuales: {
+    name: 'Provisiones Anuales',
+    shortName: 'Prov. Anual',
+    description: 'Sinking fund acumulable para seguros, ISLR y renovaciones anuales',
+    colorClass: 'text-teal-300',
+    badgeBg: 'bg-teal-500/15 text-teal-300 border-teal-500/30',
+  },
+};
+
+export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  efectivo_usd: 'Efectivo USD',
+  binance_usdt: 'Binance USDT / USDC',
+  bolivares_pago_movil: 'Bolívares / Pago Móvil',
+  otro: 'Otro',
+};
+
+export const DEFAULT_QUINCENA_CONFIG: QuincenaConfig = {
+  rules: [
+    { envelopeId: 'ahorro_inversion', mode: 'percentage', value: 12 },
+    { envelopeId: 'imprescindibles', mode: 'percentage', value: 58 },
+    { envelopeId: 'disfrute', mode: 'percentage', value: 20 },
+    { envelopeId: 'crecimiento_personal', mode: 'percentage', value: 10 },
+  ],
+  autoProvisionExpenses: true,
+  autoProvisionInstallments: true,
+};
+
+function offsetDaysIso(daysFromToday: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + daysFromToday);
+  return d.toISOString().slice(0, 10);
+}
+
+export function createDefaultSeed(): {
+  movements: LedgerMovement[];
+  expenses: RecurringExpense[];
+  installments: InstallmentPlan[];
+  quincenaConfig: QuincenaConfig;
+} {
+  const today = offsetDaysIso(0);
+  return {
+    quincenaConfig: DEFAULT_QUINCENA_CONFIG,
+    movements: [
+      {
+        id: 'seed-m1',
+        date: today,
+        bucket: 'ahorro_inversion',
+        type: 'Ingreso a Sobre',
+        amountUsd: 60,
+        paymentMethod: 'efectivo_usd',
+        notes: 'Asignación: Fondo de reserva',
+      },
+      {
+        id: 'seed-m2',
+        date: today,
+        bucket: 'imprescindibles',
+        type: 'Ingreso a Sobre',
+        amountUsd: 300,
+        paymentMethod: 'efectivo_usd',
+        notes: 'Asignación: mercado y servicios',
+      },
+      {
+        id: 'seed-m3',
+        date: today,
+        bucket: 'disfrute',
+        type: 'Ingreso a Sobre',
+        amountUsd: 100,
+        paymentMethod: 'efectivo_usd',
+        notes: 'Asignación: salidas y recreación',
+      },
+      {
+        id: 'seed-m4',
+        date: today,
+        bucket: 'crecimiento_personal',
+        type: 'Ingreso a Sobre',
+        amountUsd: 50,
+        paymentMethod: 'efectivo_usd',
+        notes: 'Asignación base: libros y formación',
+      },
+      {
+        id: 'seed-m5',
+        date: today,
+        bucket: 'imprescindibles',
+        type: 'Gasto en Efectivo',
+        amountUsd: 100,
+        paymentMethod: 'efectivo_usd',
+        notes: 'Mercado quincenal',
+      },
+      {
+        id: 'seed-m6',
+        date: today,
+        bucket: 'emergencias',
+        type: 'Ingreso a Sobre',
+        amountUsd: 400,
+        paymentMethod: 'efectivo_usd',
+        notes: 'Fondo de Emergencias físico (Demo)',
+      },
+      {
+        id: 'seed-m7',
+        date: today,
+        bucket: 'binance_usdc',
+        type: 'Barrido a Inversión',
+        amountUsd: 100,
+        paymentMethod: 'binance_usdt',
+        notes: 'Reserva USDC emergencia (Demo)',
+      },
+      {
+        id: 'seed-m8',
+        date: today,
+        bucket: 'binance_crypto',
+        type: 'Barrido a Inversión',
+        amountUsd: 1000,
+        paymentMethod: 'binance_usdt',
+        notes: 'Portafolio Crypto activo (Demo)',
+      },
+      {
+        id: 'seed-m9',
+        date: today,
+        bucket: 'binance_paxg',
+        type: 'Barrido a Inversión',
+        amountUsd: 200,
+        paymentMethod: 'binance_usdt',
+        notes: 'Reserva PAXG (Demo)',
+      },
+      {
+        id: 'seed-m10',
+        date: today,
+        bucket: 'binance_usdt',
+        type: 'Barrido a Inversión',
+        amountUsd: 500,
+        paymentMethod: 'binance_usdt',
+        notes: 'Liquidez USDT en Exchange (Demo)',
+      },
+      {
+        id: 'seed-m11',
+        date: today,
+        bucket: 'wallet_btc',
+        type: 'Barrido a Inversión',
+        amountUsd: 1500,
+        paymentMethod: 'otro',
+        notes: 'Billetera fría BTC (Demo)',
+      },
+    ],
+    expenses: [
+      {
+        id: 'exp-internet',
+        name: 'Internet Fibra',
+        amountUsd: 30,
+        frequency: 'mensual',
+        nextDueDate: offsetDaysIso(12),
+        envelopeId: 'imprescindibles',
+        active: true,
+      },
+      {
+        id: 'exp-comida',
+        name: 'Mercado Quincenal',
+        amountUsd: 100,
+        frequency: 'quincenal',
+        nextDueDate: offsetDaysIso(2),
+        envelopeId: 'imprescindibles',
+        active: true,
+      },
+      {
+        id: 'exp-music',
+        name: 'Música Familiar',
+        amountUsd: 12,
+        frequency: 'mensual',
+        nextDueDate: offsetDaysIso(4),
+        envelopeId: 'disfrute',
+        active: true,
+      },
+      {
+        id: 'exp-streaming',
+        name: 'Streaming Video',
+        amountUsd: 15,
+        frequency: 'mensual',
+        nextDueDate: offsetDaysIso(18),
+        envelopeId: 'disfrute',
+        active: true,
+      },
+      {
+        id: 'exp-dev-tool',
+        name: 'Herramienta Dev / IA',
+        amountUsd: 10,
+        frequency: 'mensual',
+        nextDueDate: offsetDaysIso(6),
+        envelopeId: 'crecimiento_personal',
+        active: true,
+      },
+      {
+        id: 'exp-phone',
+        name: 'Telefonía Móvil',
+        amountUsd: 5,
+        frequency: 'mensual',
+        nextDueDate: offsetDaysIso(1),
+        envelopeId: 'imprescindibles',
+        active: true,
+      },
+      {
+        id: 'exp-courses',
+        name: 'Plataforma de Cursos (Anual)',
+        amountUsd: 120,
+        frequency: 'anual',
+        nextDueDate: offsetDaysIso(45),
+        envelopeId: 'crecimiento_personal',
+        active: true,
+      },
+      {
+        id: 'exp-seguro-auto',
+        name: 'Seguro Vehículo (Anual)',
+        amountUsd: 300,
+        frequency: 'anual',
+        nextDueDate: offsetDaysIso(110),
+        envelopeId: 'imprescindibles',
+        active: true,
+      },
+      {
+        id: 'exp-impuestos',
+        name: 'Impuestos Anuales',
+        amountUsd: 180,
+        frequency: 'anual',
+        nextDueDate: offsetDaysIso(120),
+        envelopeId: 'imprescindibles',
+        active: true,
+      },
+    ],
+    installments: [
+      {
+        id: 'inst-loan-demo',
+        name: 'Préstamo Vehículo (Demo)',
+        direction: 'receivable',
+        installmentAmount: 35,
+        frequency: 'semanal',
+        maxCap: 1500,
+        paidTotal: 350,
+        paymentsCount: 10,
+        startDate: offsetDaysIso(-90),
+        lastPaidDate: offsetDaysIso(-7),
+        notes: 'Ejemplo de cuenta por cobrar en cuotas semanales',
+      },
+      {
+        id: 'inst-shared-edu',
+        name: 'Suscripción Educación - Miembro A',
+        direction: 'receivable',
+        installmentAmount: 15,
+        frequency: 'mensual',
+        maxCap: 60,
+        paidTotal: 60,
+        paymentsCount: 4,
+        notes: 'Ejemplo de cuenta por cobrar completada',
+      },
+      {
+        id: 'inst-shared-music-1',
+        name: 'Música Familiar - Miembro 1',
+        direction: 'receivable',
+        installmentAmount: 24,
+        frequency: 'anual',
+        maxCap: 24,
+        paidTotal: 24,
+        paymentsCount: 1,
+        notes: 'Pago anual compartido',
+      },
+      {
+        id: 'inst-shared-music-2',
+        name: 'Música Familiar - Miembro 2',
+        direction: 'receivable',
+        installmentAmount: 24,
+        frequency: 'anual',
+        maxCap: 24,
+        paidTotal: 0,
+        paymentsCount: 0,
+        notes: 'Pago anual pendiente',
+      },
+      {
+        id: 'inst-shared-stream-1',
+        name: 'Streaming - Miembro 1',
+        direction: 'receivable',
+        installmentAmount: 36,
+        frequency: 'anual',
+        maxCap: 36,
+        paidTotal: 36,
+        paymentsCount: 1,
+        notes: 'Pago anual compartido',
+      },
+    ],
+  };
+}
