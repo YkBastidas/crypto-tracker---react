@@ -1,5 +1,6 @@
 export type FundId =
   | 'efectivo_sobres'
+  | 'cuenta_bolivares'
   | 'inversiones_binance'
   | 'fondo_emergencia'
   | 'billetera_btc';
@@ -12,6 +13,7 @@ export type EnvelopeId =
 
 export type AssetBucketId =
   | EnvelopeId
+  | 'banco_bolivares'
   | 'emergencias'
   | 'binance_crypto'
   | 'binance_usdt'
@@ -44,6 +46,14 @@ export interface LedgerMovement {
   paymentMethod?: PaymentMethod;
   notes?: string;
   quincenaId?: string;
+  linkedExpense?: {
+    id: string;
+    previousDueDate: string;
+  };
+  linkedInstallment?: {
+    id: string;
+    amount: number;
+  };
 }
 
 export type AllocationMode = 'percentage' | 'fixed';
@@ -111,4 +121,9 @@ export interface EnvelopeSummary {
   spent: number;
   available: number;
   percentage: number;
+  byMethod: {
+    efectivo: number;
+    binance: number;
+    bolivares: number;
+  };
 }

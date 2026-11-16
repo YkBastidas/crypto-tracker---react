@@ -17,15 +17,14 @@ const HELP_GUIDES: HelpGuideItem[] = [
   {
     id: 'transfer-usdt-cash',
     section: 'Resumen · Transferencias',
-    title: '¿Cómo cambiar USDT (Binance) a dólares en efectivo o viceversa?',
+    title: '¿Cómo cambiar USDT a efectivo o pasar dinero a mi Cuenta en Bolívares?',
     summary:
-      'Usa la pestaña "Cambiar / Transferir" para mover dinero entre fondos y sobres sin alterar tu patrimonio total.',
+      'Usa "Cambiar / Transferir" para mover saldo entre fondos (Binance, Efectivo, Bolívares) o cambiar la custodia dentro del mismo sobre.',
     steps: [
       'En Resumen, toca el botón azul "Cambiar / Transferir".',
-      'En "Sale de (Origen)" elige Inversiones Binance (USDT) (o el preset rápido "USDT → Efectivo Sobres").',
-      'En "Entra a (Destino)" elige el sobre donde guardarás el efectivo (ej. Imprescindibles o Ahorro).',
-      'Ingresa el monto que salió (ej. 100) y, si hubo comisión P2P, coloca el monto neto recibido.',
-      'Confirma: se resta de Binance y se suma automáticamente al sobre elegido.',
+      'Usa los atajos rápidos: "USDT → Efectivo", "USDT → Cuenta Bs" o "Efectivo → Cuenta Bs".',
+      'Si recibiste tu quincena en USDT dentro de un sobre y cambiaste parte a efectivo físico, elige el mismo sobre en Origen (Custodia: Binance USDT) y Destino (Custodia: Efectivo USD).',
+      'Ingresa el monto que salió (ej. 100) y, si hubo comisión, el monto neto recibido.',
     ],
     keywords: [
       'cambiar',
@@ -37,6 +36,11 @@ const HELP_GUIDES: HelpGuideItem[] = [
       'cash',
       'dolares',
       'billetes',
+      'bolivares',
+      'bs',
+      'pago movil',
+      'recarga',
+      'estacionamiento',
       'p2p',
       'transferir',
       'transferencia',
@@ -111,14 +115,13 @@ const HELP_GUIDES: HelpGuideItem[] = [
   {
     id: 'recurring-expenses',
     section: 'Gastos y Pagos',
-    title: '¿Cómo controlar gastos mensuales, anuales y saber cuánto apartar?',
+    title: '¿Cómo pagar alertas próximas eligiendo de dónde salió el dinero o deshacer un pago?',
     summary:
-      'Cada gasto muestra los días restantes y calcula la cuota quincenal recomendada (prorrateo).',
+      'Cada gasto muestra los días restantes y te deja elegir si lo pagaste en Efectivo, Binance USDT o Bolívares.',
     steps: [
-      'Abre la pestaña "Gastos".',
-      'Usa el botón "+ Nuevo" para agregar servicios mensuales (ej. Internet), quincenales o anuales (ej. Seguro, ISLR).',
-      'Los gastos anuales se dividen entre 24 quincenas y los mensuales entre 2 para que nunca te quedes sin liquidez.',
-      'Cuando pagues un servicio, presiona "Pagar": la app registra el egreso en el ledger y avanza la fecha al próximo mes/año.',
+      'Al tocar "Pagar" en una alerta o gasto, se abre una ventana para elegir de dónde salió el dinero (Efectivo USD, Binance USDT, Bolívares/Pago Móvil u Otro).',
+      'Los gastos anuales se dividen entre 24 quincenas y los mensuales entre 2 para calcular tu cuota quincenal recomendada.',
+      'Si pagaste o borraste algo por error, toca "Deshacer" en la barra inferior, o elimina el movimiento del ledger para devolver automáticamente el gasto a tus alertas.',
     ],
     keywords: [
       'gastos',
@@ -131,6 +134,10 @@ const HELP_GUIDES: HelpGuideItem[] = [
       'vence',
       'alerta',
       'pagar',
+      'deshacer',
+      'undo',
+      'eliminar',
+      'revertir',
       'internet',
       'netflix',
       'spotify',

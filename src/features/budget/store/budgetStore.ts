@@ -13,11 +13,33 @@ import type {
 } from '../types';
 import { advanceDueDate, type QuincenaPreview } from '../utils/calculations';
 
+export interface UndoEntry {
+  id: string;
+  label: string;
+  movements: LedgerMovement[];
+  expenses: RecurringExpense[];
+  installments: InstallmentPlan[];
+}
+
+export interface PayExpenseOptions {
+  logToLedger?: boolean;
+  paymentMethod?: PaymentMethod;
+  amountUsd?: number;
+  envelopeId?: EnvelopeId;
+}
+
+export interface PayInstallmentOptions {
+  amountOverride?: number;
+  envelopeId?: EnvelopeId;
+  paymentMethod?: PaymentMethod;
+}
+
 interface BudgetState {
   movements: LedgerMovement[];
   expenses: RecurringExpense[];
   installments: InstallmentPlan[];
   quincenaConfig: QuincenaConfig;
+  undoEntry: UndoEntry | null;
 
   // Ledger actions
   addMovement: (movement: Omit<LedgerMovement, 'id'>) => void;
@@ -25,11 +47,17 @@ interface BudgetState {
     date: string;
     fromBucket: AssetBucketId;
     toBucket: AssetBucketId;
+    fromPaymentMethod?: PaymentMethod;
+    toPaymentMethod?: PaymentMethod;
     amountFrom: number;
     amountTo?: number;
     notes?: string;
   }) => void;
   removeMovement: (id: string) => void;
+
+  // Undo actions
+  undoLastAction: () => void;
+  dismissUndo: () => void;
 
   // Quincena wizard actions
   updateQuincenaConfig: (config: Partial<QuincenaConfig>) => void;
@@ -44,13 +72,13 @@ interface BudgetState {
   addExpense: (expense: Omit<RecurringExpense, 'id'>) => void;
   updateExpense: (id: string, patch: Partial<RecurringExpense>) => void;
   removeExpense: (id: string) => void;
-  markExpensePaid: (id: string, logToLedger?: boolean) => void;
+  markExpensePaid: (id: string, options?: PayExpenseOptions) => void;
 
   // Installment plans actions
   addInstallment: (plan: Omit<InstallmentPlan, 'id'>) => void;
   updateInstallment: (id: string, patch: Partial<InstallmentPlan>) => void;
   removeInstallment: (id: string) => void;
-  recordInstallmentPayment: (id: string, amountOverride?: number, envelopeId?: EnvelopeId) => void;
+  recordInstallmentPayment: (id: string, options?: PayInstallmentOptions) => void;
 
   // Backup & reset
   exportSnapshot: () => BudgetSnapshot;
@@ -65,6 +93,19 @@ function makeId(prefix: string): string {
 
 const initialSeed = createDefaultSeed();
 
+function createUndoSnapshot(
+  label: string,
+  state: Pick<BudgetState, 'movements' | 'expenses' | 'installments'>,
+): UndoEntry {
+  return {
+    id: makeId('undo'),
+    label,
+    movements: state.movements,
+    expenses: state.expenses,
+    installments: state.installments,
+  };
+}
+
 export const useBudgetStore = create<BudgetState>()(
   persist(
     (set, get) => ({
@@ -72,16 +113,29 @@ export const useBudgetStore = create<BudgetState>()(
       expenses: initialSeed.expenses,
       installments: initialSeed.installments,
       quincenaConfig: initialSeed.quincenaConfig,
+      undoEntry: null,
 
       addMovement: (movement) =>
         set((state) => ({
+          undoEntry: createUndoSnapshot(`Movimiento: ${movement.notes || movement.type}`, state),
           movements: [{ ...movement, id: makeId('mov') }, ...state.movements],
         })),
 
-      transferBetweenBuckets: ({ date, fromBucket, toBucket, amountFrom, amountTo, notes }) => {
+      transferBetweenBuckets: ({
+        date,
+        fromBucket,
+        toBucket,
+        fromPaymentMethod,
+        toPaymentMethod,
+        amountFrom,
+        amountTo,
+        notes,
+      }) => {
         const cleanFrom = Number(Math.abs(amountFrom).toFixed(2));
         const cleanTo = Number(Math.abs(amountTo ?? amountFrom).toFixed(2));
-        if (cleanFrom <= 0 || cleanTo <= 0 || fromBucket === toBucket) return;
+        const sameTarget =
+          fromBucket === toBucket && fromPaymentMethod === toPaymentMethod;
+        if (cleanFrom <= 0 || cleanTo <= 0 || sameTarget) return;
 
         const label = notes?.trim() ? ` (${notes.trim()})` : '';
         const outMov: LedgerMovement = {
@@ -90,6 +144,7 @@ export const useBudgetStore = create<BudgetState>()(
           bucket: fromBucket,
           type: 'Transferencia (Salida)',
           amountUsd: cleanFrom,
+          paymentMethod: fromPaymentMethod,
           notes: `Cambio / Transferencia salida${label}`,
         };
         const inMov: LedgerMovement = {
@@ -98,17 +153,65 @@ export const useBudgetStore = create<BudgetState>()(
           bucket: toBucket,
           type: 'Transferencia (Entrada)',
           amountUsd: cleanTo,
+          paymentMethod: toPaymentMethod,
           notes: `Cambio / Transferencia entrada${label}`,
         };
         set((state) => ({
+          undoEntry: createUndoSnapshot(`Transferencia de $${cleanFrom}`, state),
           movements: [inMov, outMov, ...state.movements],
         }));
       },
 
-      removeMovement: (id) =>
-        set((state) => ({
+      removeMovement: (id) => {
+        const state = get();
+        const target = state.movements.find((m) => m.id === id);
+        if (!target) return;
+
+        let nextExpenses = state.expenses;
+        if (target.linkedExpense) {
+          const { id: expenseId, previousDueDate } = target.linkedExpense;
+          nextExpenses = state.expenses.map((e) =>
+            e.id === expenseId ? { ...e, nextDueDate: previousDueDate } : e,
+          );
+        }
+
+        let nextInstallments = state.installments;
+        if (target.linkedInstallment) {
+          const { id: instId, amount } = target.linkedInstallment;
+          nextInstallments = state.installments.map((p) =>
+            p.id === instId
+              ? {
+                  ...p,
+                  paidTotal: Math.max(0, Number((p.paidTotal - amount).toFixed(2))),
+                  paymentsCount: Math.max(0, p.paymentsCount - 1),
+                }
+              : p,
+          );
+        }
+
+        set({
+          undoEntry: createUndoSnapshot(
+            `Eliminado: ${target.notes || target.type}`,
+            state,
+          ),
           movements: state.movements.filter((m) => m.id !== id),
-        })),
+          expenses: nextExpenses,
+          installments: nextInstallments,
+        });
+      },
+
+      undoLastAction: () => {
+        const entry = get().undoEntry;
+        if (!entry) return;
+        set({
+          movements: entry.movements,
+          expenses: entry.expenses,
+          installments: entry.installments,
+          undoEntry: null,
+        });
+      },
+
+      dismissUndo: () => set({ undoEntry: null }),
 
       updateQuincenaConfig: (config) =>
         set((state) => ({
@@ -116,6 +219,7 @@ export const useBudgetStore = create<BudgetState>()(
         })),
 
       confirmQuincena: ({ date, paymentMethod, notes, preview }) => {
+        const state = get();
         const quincenaId = makeId('qna');
         const newMovements: LedgerMovement[] = [];
         const noteSuffix = notes?.trim() ? ` (${notes.trim()})` : '';
@@ -160,9 +264,10 @@ export const useBudgetStore = create<BudgetState>()(
           });
         }
 
-        set((state) => ({
+        set({
+          undoEntry: createUndoSnapshot(`Quincena ($${preview.grossAmount})`, state),
           movements: [...newMovements, ...state.movements],
-        }));
+        });
       },
 
       addExpense: (expense) =>
@@ -176,18 +281,37 @@ export const useBudgetStore = create<BudgetState>()(
         })),
 
       removeExpense: (id) =>
-        set((state) => ({
-          expenses: state.expenses.filter((e) => e.id !== id),
-        })),
+        set((state) => {
+          const target = state.expenses.find((e) => e.id === id);
+          return {
+            undoEntry: target
+              ? createUndoSnapshot(`Gasto eliminado: ${target.name}`, state)
+              : state.undoEntry,
+            expenses: state.expenses.filter((e) => e.id !== id),
+          };
+        }),
 
-      markExpensePaid: (id, logToLedger = true) => {
-        const target = get().expenses.find((e) => e.id === id);
+      markExpensePaid: (id, options) => {
+        const state = get();
+        const target = state.expenses.find((e) => e.id === id);
         if (!target) return;
 
-        const todayIso = new Date().toISOString().slice(0, 10);
-        const nextDue = advanceDueDate(target.nextDueDate, target.frequency);
+        const logToLedger = options?.logToLedger ?? true;
+        const paymentMethod = options?.paymentMethod ?? 'efectivo_usd';
+        const amountUsd = options?.amountUsd ?? target.amountUsd;
+        const envelopeId = options?.envelopeId ?? target.envelopeId;
 
-        set((state) => ({
+        const todayIso = new Date().toISOString().slice(0, 10);
+        const previousDueDate = target.nextDueDate;
+        const nextDue = advanceDueDate(previousDueDate, target.frequency);
+
+        const movementType =
+          paymentMethod === 'bolivares_pago_movil'
+            ? 'Cambio a Bolívares'
+            : 'Gasto en Efectivo';
+
+        set({
+          undoEntry: createUndoSnapshot(`Pago: ${target.name}`, state),
           expenses: state.expenses.map((e) =>
             e.id === id ? { ...e, nextDueDate: nextDue } : e,
           ),
@@ -196,15 +320,20 @@ export const useBudgetStore = create<BudgetState>()(
                 {
                   id: makeId('mov'),
                   date: todayIso,
-                  bucket: target.envelopeId,
-                  type: 'Gasto en Efectivo',
-                  amountUsd: target.amountUsd,
+                  bucket: envelopeId,
+                  type: movementType,
+                  amountUsd: Number(Math.abs(amountUsd).toFixed(2)),
+                  paymentMethod,
                   notes: `Pago: ${target.name}`,
+                  linkedExpense: {
+                    id: target.id,
+                    previousDueDate,
+                  },
                 },
                 ...state.movements,
               ]
             : state.movements,
-        }));
+        });
       },
 
       addInstallment: (plan) =>
@@ -218,19 +347,29 @@ export const useBudgetStore = create<BudgetState>()(
         })),
 
       removeInstallment: (id) =>
-        set((state) => ({
-          installments: state.installments.filter((p) => p.id !== id),
-        })),
+        set((state) => {
+          const target = state.installments.find((p) => p.id === id);
+          return {
+            undoEntry: target
+              ? createUndoSnapshot(`Cuota eliminada: ${target.name}`, state)
+              : state.undoEntry,
+            installments: state.installments.filter((p) => p.id !== id),
+          };
+        }),
 
-      recordInstallmentPayment: (id, amountOverride, envelopeId = 'imprescindibles') => {
-        const plan = get().installments.find((p) => p.id === id);
+      recordInstallmentPayment: (id, options) => {
+        const state = get();
+        const plan = state.installments.find((p) => p.id === id);
         if (!plan) return;
-        const amount = amountOverride ?? plan.installmentAmount;
+        const amount = options?.amountOverride ?? plan.installmentAmount;
         if (amount <= 0) return;
 
+        const envelopeId = options?.envelopeId ?? 'imprescindibles';
+        const paymentMethod = options?.paymentMethod ?? 'efectivo_usd';
         const todayIso = new Date().toISOString().slice(0, 10);
 
-        set((state) => ({
+        set({
+          undoEntry: createUndoSnapshot(`Cuota #${plan.paymentsCount + 1}: ${plan.name}`, state),
           installments: state.installments.map((p) =>
             p.id === id
               ? {
@@ -247,12 +386,17 @@ export const useBudgetStore = create<BudgetState>()(
               date: todayIso,
               bucket: envelopeId,
               type: 'Pago de Cuota',
-              amountUsd: amount,
+              amountUsd: Number(Math.abs(amount).toFixed(2)),
+              paymentMethod,
               notes: `Cuota #${plan.paymentsCount + 1}: ${plan.name}`,
+              linkedInstallment: {
+                id: plan.id,
+                amount: Number(Math.abs(amount).toFixed(2)),
+              },
             },
             ...state.movements,
           ],
-        }));
+        });
       },
 
       exportSnapshot: () => {
@@ -282,13 +426,14 @@ export const useBudgetStore = create<BudgetState>()(
           expenses: snapshot.expenses,
           installments: snapshot.installments,
           quincenaConfig: snapshot.quincenaConfig,
+          undoEntry: null,
         });
         return true;
       },
 
       resetToSeed: () => {
         const seed = createDefaultSeed();
-        set(seed);
+        set({ ...seed, undoEntry: null });
       },
 
       clearAllData: () => {
@@ -297,11 +442,18 @@ export const useBudgetStore = create<BudgetState>()(
           expenses: [],
           installments: [],
           quincenaConfig: initialSeed.quincenaConfig,
+          undoEntry: null,
         });
       },
     }),
     {
       name: 'budget-control-storage',
+      partialize: (state) => ({
+        movements: state.movements,
+        expenses: state.expenses,
+        installments: state.installments,
+        quincenaConfig: state.quincenaConfig,
+      }),
     },
   ),
 );

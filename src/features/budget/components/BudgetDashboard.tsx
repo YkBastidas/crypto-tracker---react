@@ -9,21 +9,23 @@ import {
   Landmark,
   Plus,
   ShieldCheck,
+  Smartphone,
   Trash2,
   Wallet,
   Zap,
 } from 'lucide-react';
 import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { PrivacyValue } from '../../../shared/ui/PrivacyValue';
-import { ENVELOPE_META } from '../data/defaultSeed';
+import { ENVELOPE_META, PAYMENT_METHOD_LABELS } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
-import type { AssetBucketId, FundId } from '../types';
+import type { AssetBucketId, FundId, RecurringExpense } from '../types';
 import {
   calculateDaysLeft,
   calculateFundSummaries,
   formatUsd,
 } from '../utils/calculations';
 import { BackupControls } from './BackupControls';
+import { PayExpenseModal } from './PayExpenseModal';
 import { QuickMovementModal, type QuickModalTab } from './QuickMovementModal';
 
 interface BudgetDashboardProps {
@@ -33,9 +35,24 @@ interface BudgetDashboardProps {
 
 const FUND_ICONS: Record<FundId, React.ReactNode> = {
   efectivo_sobres: <Wallet size={18} className="text-accent-green" />,
+  cuenta_bolivares: <Smartphone size={18} className="text-cyan-400" />,
   inversiones_binance: <Landmark size={18} className="text-accent-blue" />,
   fondo_emergencia: <ShieldCheck size={18} className="text-accent-gold" />,
   billetera_btc: <Bitcoin size={18} className="text-orange-400" />,
+};
+
+const BUCKET_LABELS: Record<AssetBucketId, string> = {
+  ahorro_inversion: ENVELOPE_META.ahorro_inversion.name,
+  imprescindibles: ENVELOPE_META.imprescindibles.name,
+  disfrute: ENVELOPE_META.disfrute.name,
+  crecimiento_personal: ENVELOPE_META.crecimiento_personal.name,
+  banco_bolivares: 'Cuenta en Bolívares',
+  emergencias: 'Fondo Emergencia (Efectivo)',
+  binance_usdc: 'Fondo Emergencia (USDC)',
+  binance_usdt: 'Binance USDT',
+  binance_crypto: 'Binance Crypto',
+  binance_paxg: 'Binance PAXG',
+  wallet_btc: 'Billetera BTC',
 };
 
 export function BudgetDashboard({
@@ -43,10 +60,11 @@ export function BudgetDashboard({
   onNavigateExpenses,
 }: BudgetDashboardProps) {
   const isPrivate = usePortfolioStore((s) => s.isPrivate);
-  const { movements, expenses, removeMovement, markExpensePaid } = useBudgetStore();
+  const { movements, expenses, removeMovement } = useBudgetStore();
   const [quickModalOpen, setQuickModalOpen] = useState(false);
   const [quickBucket, setQuickBucket] = useState<AssetBucketId>('imprescindibles');
   const [quickTab, setQuickTab] = useState<QuickModalTab>('movement');
+  const [payingExpense, setPayingExpense] = useState<RecurringExpense | null>(null);
 
   const { funds, totalNetWorth, envelopes } = useMemo(
     () => calculateFundSummaries(movements),
@@ -83,7 +101,7 @@ export function BudgetDashboard({
               <PrivacyValue value={formatUsd(totalNetWorth)} isPrivate={isPrivate} />
             </div>
             <p className="text-xs text-text-muted mt-1">
-              Distribuido en 4 fondos operativos y de reserva
+              Distribuido en 5 fondos (Efectivo, Bolívares, Binance, Emergencia y BTC)
             </p>
           </div>
 
@@ -113,12 +131,12 @@ export function BudgetDashboard({
         </div>
       </div>
 
-      {/* 4 Fondos */}
+      {/* 5 Fondos */}
       <section>
         <h2 className="text-sm font-bold uppercase tracking-wider text-text-muted mb-3">
           Resumen por Fondos
         </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3.5">
           {funds.map((fund) => (
             <div
               key={fund.id}
@@ -126,17 +144,17 @@ export function BudgetDashboard({
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="flex items-center gap-2.5">
-                  <div className="p-2 rounded-lg bg-bg-input border border-border">
+                  <div className="p-2 rounded-lg bg-bg-input border border-border shrink-0">
                     {FUND_ICONS[fund.id]}
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <h3 className="text-sm font-bold text-text-primary leading-tight">
                       {fund.name}
                     </h3>
-                    <p className="text-[11px] text-text-muted">{fund.assetType}</p>
+                    <p className="text-[11px] text-text-muted truncate">{fund.assetType}</p>
                   </div>
                 </div>
-                <span className="text-xs font-semibold text-text-muted">
+                <span className="text-xs font-semibold text-text-muted shrink-0">
                   {fund.percentage.toFixed(1)}%
                 </span>
               </div>
@@ -161,9 +179,9 @@ export function BudgetDashboard({
       <section>
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-sm font-bold uppercase tracking-wider text-text-muted">
-            Saldo Disponible por Sobre
+            Saldo Disponible por Sobre (Partidas)
           </h2>
-          <span className="text-xs text-text-muted">Presupuesto quincenal</span>
+          <span className="text-xs text-text-muted">Incluye efectivo y saldo digital</span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
@@ -188,7 +206,7 @@ export function BudgetDashboard({
                   </div>
                   <button
                     type="button"
-                    onClick={() => openQuickModal(env.id)}
+                    onClick={() => openQuickModal(env.id, 'movement')}
                     title={`Registrar movimiento en ${meta.name}`}
                     className="p-1.5 rounded-lg bg-bg-input border border-border text-text-muted hover:text-text-primary hover:border-accent-blue cursor-pointer shrink-0"
                   >
@@ -222,6 +240,41 @@ export function BudgetDashboard({
                       Egresos: <PrivacyValue value={formatUsd(env.spent)} isPrivate={isPrivate} />
                     </span>
                     <span>{ratio.toFixed(0)}% disp.</span>
+                  </div>
+
+                  {/* Custody breakdown per envelope */}
+                  <div className="flex flex-wrap gap-1.5 mt-2.5 pt-2 border-t border-border text-[10px] text-text-muted">
+                    <span className="px-1.5 py-0.5 rounded bg-bg-input">
+                      Efec:{' '}
+                      <strong className="text-text-primary">
+                        <PrivacyValue
+                          value={formatUsd(env.byMethod.efectivo)}
+                          isPrivate={isPrivate}
+                        />
+                      </strong>
+                    </span>
+                    {env.byMethod.binance !== 0 && (
+                      <span className="px-1.5 py-0.5 rounded bg-accent-blue/10 text-accent-blue">
+                        USDT:{' '}
+                        <strong>
+                          <PrivacyValue
+                            value={formatUsd(env.byMethod.binance)}
+                            isPrivate={isPrivate}
+                          />
+                        </strong>
+                      </span>
+                    )}
+                    {env.byMethod.bolivares !== 0 && (
+                      <span className="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300">
+                        Bs:{' '}
+                        <strong>
+                          <PrivacyValue
+                            value={formatUsd(env.byMethod.bolivares)}
+                            isPrivate={isPrivate}
+                          />
+                        </strong>
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -290,7 +343,7 @@ export function BudgetDashboard({
                     </span>
                     <button
                       type="button"
-                      onClick={() => markExpensePaid(item.id, true)}
+                      onClick={() => setPayingExpense(item)}
                       className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-green/15 border border-accent-green/40 text-accent-green hover:bg-accent-green/25 cursor-pointer"
                     >
                       Pagar
@@ -343,8 +396,8 @@ export function BudgetDashboard({
                         {m.notes || m.type}
                       </p>
                       <p className="text-[11px] text-text-muted">
-                        {m.date} · {m.type} ·{' '}
-                        {ENVELOPE_META[m.bucket as keyof typeof ENVELOPE_META]?.name ?? m.bucket}
+                        {m.date} · {BUCKET_LABELS[m.bucket] ?? m.bucket}
+                        {m.paymentMethod ? ` · ${PAYMENT_METHOD_LABELS[m.paymentMethod]}` : ''}
                       </p>
                     </div>
                   </div>
@@ -361,7 +414,7 @@ export function BudgetDashboard({
                     <button
                       type="button"
                       onClick={() => removeMovement(m.id)}
-                      title="Eliminar movimiento"
+                      title="Eliminar movimiento (revierte alerta si aplica)"
                       className="p-1 text-text-muted hover:text-accent-red bg-transparent border-none cursor-pointer"
                     >
                       <Trash2 size={13} />
@@ -383,6 +436,14 @@ export function BudgetDashboard({
           initialBucket={quickBucket}
           initialTab={quickTab}
           onClose={() => setQuickModalOpen(false)}
+        />
+      )}
+
+      {payingExpense && (
+        <PayExpenseModal
+          key={payingExpense.id}
+          expense={payingExpense}
+          onClose={() => setPayingExpense(null)}
         />
       )}
     </div>

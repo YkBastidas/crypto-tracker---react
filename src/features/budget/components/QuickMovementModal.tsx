@@ -13,11 +13,19 @@ interface QuickMovementModalProps {
   onClose: () => void;
 }
 
+const ENVELOPE_SET = new Set<AssetBucketId>([
+  'ahorro_inversion',
+  'imprescindibles',
+  'disfrute',
+  'crecimiento_personal',
+]);
+
 const BUCKET_OPTIONS: { id: AssetBucketId; label: string }[] = [
   { id: 'imprescindibles', label: `Sobre: ${ENVELOPE_META.imprescindibles.name}` },
   { id: 'disfrute', label: `Sobre: ${ENVELOPE_META.disfrute.name}` },
   { id: 'crecimiento_personal', label: `Sobre: ${ENVELOPE_META.crecimiento_personal.name}` },
   { id: 'ahorro_inversion', label: `Sobre: ${ENVELOPE_META.ahorro_inversion.name}` },
+  { id: 'banco_bolivares', label: 'Cuenta en Bolívares (Pago Móvil)' },
   { id: 'binance_usdt', label: 'Inversiones Binance (USDT)' },
   { id: 'binance_crypto', label: 'Inversiones Binance (Crypto)' },
   { id: 'binance_paxg', label: 'Inversiones Binance (PAXG)' },
@@ -34,6 +42,14 @@ const MOVEMENT_TYPES: MovementType[] = [
   'Pago de Cuota',
 ];
 
+function inferDefaultMethod(bucket: AssetBucketId): PaymentMethod {
+  if (bucket === 'banco_bolivares') return 'bolivares_pago_movil';
+  if (bucket === 'binance_usdt' || bucket === 'binance_crypto' || bucket === 'binance_paxg' || bucket === 'binance_usdc') {
+    return 'binance_usdt';
+  }
+  return 'efectivo_usd';
+}
+
 export function QuickMovementModal({
   isOpen,
   initialBucket = 'imprescindibles',
@@ -45,17 +61,35 @@ export function QuickMovementModal({
   const [bucket, setBucket] = useState<AssetBucketId>(initialBucket);
   const [type, setType] = useState<MovementType>('Gasto en Efectivo');
   const [amount, setAmount] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(() =>
+    inferDefaultMethod(initialBucket),
+  );
   const [notes, setNotes] = useState('');
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
 
   // Transfer state
   const [fromBucket, setFromBucket] = useState<AssetBucketId>('binance_usdt');
   const [toBucket, setToBucket] = useState<AssetBucketId>('imprescindibles');
+  const [fromMethod, setFromMethod] = useState<PaymentMethod>('binance_usdt');
+  const [toMethod, setToMethod] = useState<PaymentMethod>('efectivo_usd');
   const [amountFrom, setAmountFrom] = useState('');
   const [amountTo, setAmountTo] = useState('');
 
   if (!isOpen) return null;
+
+  const isSameTransferTarget =
+    fromBucket === toBucket &&
+    (!ENVELOPE_SET.has(fromBucket) || fromMethod === toMethod);
+
+  const handleSelectFromBucket = (next: AssetBucketId) => {
+    setFromBucket(next);
+    setFromMethod(inferDefaultMethod(next));
+  };
+
+  const handleSelectToBucket = (next: AssetBucketId) => {
+    setToBucket(next);
+    setToMethod(inferDefaultMethod(next));
+  };
 
   const handleSubmitMovement = (e: React.FormEvent) => {
     e.preventDefault();
@@ -80,12 +114,14 @@ export function QuickMovementModal({
     const numFrom = parseFloat(amountFrom);
     const numTo = amountTo.trim() ? parseFloat(amountTo) : numFrom;
     if (!Number.isFinite(numFrom) || numFrom <= 0 || !Number.isFinite(numTo) || numTo <= 0) return;
-    if (fromBucket === toBucket) return;
+    if (isSameTransferTarget) return;
 
     transferBetweenBuckets({
       date,
       fromBucket,
       toBucket,
+      fromPaymentMethod: ENVELOPE_SET.has(fromBucket) ? fromMethod : inferDefaultMethod(fromBucket),
+      toPaymentMethod: ENVELOPE_SET.has(toBucket) ? toMethod : inferDefaultMethod(toBucket),
       amountFrom: numFrom,
       amountTo: numTo,
       notes: notes.trim() || undefined,
@@ -208,7 +244,11 @@ export function QuickMovementModal({
               <label className="text-xs text-text-muted block mb-1.5">Sobre o Fondo</label>
               <select
                 value={bucket}
-                onChange={(e) => setBucket(e.target.value as EnvelopeId | AssetBucketId)}
+                onChange={(e) => {
+                  const next = e.target.value as EnvelopeId | AssetBucketId;
+                  setBucket(next);
+                  setPaymentMethod(inferDefaultMethod(next));
+                }}
                 className="w-full px-3 py-2.5 rounded-xl text-sm bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
               >
                 {BUCKET_OPTIONS.map((opt) => (
@@ -222,7 +262,7 @@ export function QuickMovementModal({
             {/* Method + Date */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs text-text-muted block mb-1.5">Método</label>
+                <label className="text-xs text-text-muted block mb-1.5">Medio / Custodia</label>
                 <select
                   value={paymentMethod}
                   onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
@@ -253,7 +293,7 @@ export function QuickMovementModal({
                 type="text"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                placeholder="Ej. Mercado, almuerzo, Pago Móvil..."
+                placeholder="Ej. Mercado, recarga, parking..."
                 className="w-full px-3 py-2.5 rounded-xl text-sm bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
               />
             </div>
@@ -268,37 +308,55 @@ export function QuickMovementModal({
         ) : (
           <form onSubmit={handleSubmitTransfer} className="space-y-4">
             {/* Quick presets */}
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap gap-1.5">
               <button
                 type="button"
                 onClick={() => {
                   setFromBucket('binance_usdt');
+                  setFromMethod('binance_usdt');
                   setToBucket('imprescindibles');
+                  setToMethod('efectivo_usd');
                   setNotes('Cambio USDT a USD efectivo');
                 }}
                 className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-blue/10 border border-accent-blue/30 text-accent-blue cursor-pointer"
               >
-                USDT → Efectivo Sobres
+                USDT → Efectivo
               </button>
               <button
                 type="button"
                 onClick={() => {
-                  setFromBucket('ahorro_inversion');
-                  setToBucket('binance_usdt');
-                  setNotes('Depósito efectivo a Binance USDT');
+                  setFromBucket('binance_usdt');
+                  setFromMethod('binance_usdt');
+                  setToBucket('banco_bolivares');
+                  setToMethod('bolivares_pago_movil');
+                  setNotes('Cambio USDT a Bolívares');
+                }}
+                className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-gold/10 border border-accent-gold/30 text-accent-gold cursor-pointer"
+              >
+                USDT → Cuenta Bs
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFromBucket('imprescindibles');
+                  setFromMethod('efectivo_usd');
+                  setToBucket('banco_bolivares');
+                  setToMethod('bolivares_pago_movil');
+                  setNotes('Cambio efectivo a Bolívares');
                 }}
                 className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-green/10 border border-accent-green/30 text-accent-green cursor-pointer"
               >
-                Sobre Ahorro → Binance USDT
+                Efectivo → Cuenta Bs
               </button>
             </div>
 
-            <div>
-              <label className="text-xs text-text-muted block mb-1.5">Sale de (Origen)</label>
+            {/* Origin */}
+            <div className="space-y-2 bg-bg-input/40 border border-border rounded-xl p-3">
+              <label className="text-xs text-text-muted block">Sale de (Origen)</label>
               <select
                 value={fromBucket}
-                onChange={(e) => setFromBucket(e.target.value as AssetBucketId)}
-                className="w-full px-3 py-2.5 rounded-xl text-sm bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
+                onChange={(e) => handleSelectFromBucket(e.target.value as AssetBucketId)}
+                className="w-full px-3 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
               >
                 {BUCKET_OPTIONS.map((opt) => (
                   <option key={opt.id} value={opt.id}>
@@ -306,14 +364,26 @@ export function QuickMovementModal({
                   </option>
                 ))}
               </select>
+              {ENVELOPE_SET.has(fromBucket) && (
+                <select
+                  value={fromMethod}
+                  onChange={(e) => setFromMethod(e.target.value as PaymentMethod)}
+                  className="w-full px-3 py-1.5 rounded-lg text-[11px] bg-bg-input border border-border text-text-muted"
+                >
+                  <option value="efectivo_usd">Custodia: Efectivo USD</option>
+                  <option value="binance_usdt">Custodia: Binance USDT</option>
+                  <option value="bolivares_pago_movil">Custodia: Bolívares</option>
+                </select>
+              )}
             </div>
 
-            <div>
-              <label className="text-xs text-text-muted block mb-1.5">Entra a (Destino)</label>
+            {/* Destination */}
+            <div className="space-y-2 bg-bg-input/40 border border-border rounded-xl p-3">
+              <label className="text-xs text-text-muted block">Entra a (Destino)</label>
               <select
                 value={toBucket}
-                onChange={(e) => setToBucket(e.target.value as AssetBucketId)}
-                className="w-full px-3 py-2.5 rounded-xl text-sm bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
+                onChange={(e) => handleSelectToBucket(e.target.value as AssetBucketId)}
+                className="w-full px-3 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
               >
                 {BUCKET_OPTIONS.map((opt) => (
                   <option key={opt.id} value={opt.id}>
@@ -321,11 +391,22 @@ export function QuickMovementModal({
                   </option>
                 ))}
               </select>
+              {ENVELOPE_SET.has(toBucket) && (
+                <select
+                  value={toMethod}
+                  onChange={(e) => setToMethod(e.target.value as PaymentMethod)}
+                  className="w-full px-3 py-1.5 rounded-lg text-[11px] bg-bg-input border border-border text-text-muted"
+                >
+                  <option value="efectivo_usd">Custodia: Efectivo USD</option>
+                  <option value="binance_usdt">Custodia: Binance USDT</option>
+                  <option value="bolivares_pago_movil">Custodia: Bolívares</option>
+                </select>
+              )}
             </div>
 
-            {fromBucket === toBucket && (
+            {isSameTransferTarget && (
               <p className="text-xs text-accent-red">
-                El origen y el destino deben ser distintos.
+                El origen y el destino deben ser distintos (o cambia la custodia).
               </p>
             )}
 
@@ -377,7 +458,7 @@ export function QuickMovementModal({
                   type="text"
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
-                  placeholder="Ej. P2P / Efectivo"
+                  placeholder="Ej. P2P / Pago Móvil"
                   className="w-full px-3 py-2 rounded-xl text-xs bg-bg-input border border-border text-text-primary"
                 />
               </div>
@@ -385,7 +466,7 @@ export function QuickMovementModal({
 
             <button
               type="submit"
-              disabled={fromBucket === toBucket}
+              disabled={isSameTransferTarget}
               className="w-full py-3 rounded-xl text-sm font-bold bg-accent-blue/20 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/30 disabled:opacity-40 transition-all cursor-pointer"
             >
               Confirmar Cambio / Transferencia

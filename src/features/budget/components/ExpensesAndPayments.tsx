@@ -11,13 +11,20 @@ import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { PrivacyValue } from '../../../shared/ui/PrivacyValue';
 import { ENVELOPE_META } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
-import type { EnvelopeId, ExpenseFrequency, InstallmentFrequency } from '../types';
+import type {
+  EnvelopeId,
+  ExpenseFrequency,
+  InstallmentFrequency,
+  PaymentMethod,
+  RecurringExpense,
+} from '../types';
 import {
   calculateDaysLeft,
   formatUsd,
   getExpenseBiweeklyQuota,
   getInstallmentBiweeklyQuota,
 } from '../utils/calculations';
+import { PayExpenseModal } from './PayExpenseModal';
 
 export function ExpensesAndPayments() {
   const isPrivate = usePortfolioStore((s) => s.isPrivate);
@@ -26,7 +33,6 @@ export function ExpensesAndPayments() {
     installments,
     addExpense,
     removeExpense,
-    markExpensePaid,
     addInstallment,
     removeInstallment,
     recordInstallmentPayment,
@@ -35,6 +41,8 @@ export function ExpensesAndPayments() {
   const [expenseFilter, setExpenseFilter] = useState<'all' | 'mensual' | 'anual'>('all');
   const [showAddExpense, setShowAddExpense] = useState(false);
   const [showAddInstallment, setShowAddInstallment] = useState(false);
+  const [payingExpense, setPayingExpense] = useState<RecurringExpense | null>(null);
+  const [installmentMethod, setInstallmentMethod] = useState<PaymentMethod>('efectivo_usd');
 
   // New Expense form state
   const [expName, setExpName] = useState('');
@@ -331,7 +339,7 @@ export function ExpensesAndPayments() {
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={() => markExpensePaid(item.id, true)}
+                      onClick={() => setPayingExpense(item)}
                       className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-green/15 border border-accent-green/40 text-accent-green hover:bg-accent-green/25 cursor-pointer"
                     >
                       Pagar
@@ -515,27 +523,49 @@ export function ExpensesAndPayments() {
                   </p>
                 )}
 
-                <div className="flex items-center justify-between pt-1">
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                   <span className="text-[11px] text-text-muted">
                     Quincenal recom.:{' '}
                     <strong className="text-accent-gold">
                       <PrivacyValue value={formatUsd(biweekly)} isPrivate={isPrivate} />
                     </strong>
                   </span>
-                  <button
-                    type="button"
-                    disabled={isCompleted}
-                    onClick={() => recordInstallmentPayment(plan.id)}
-                    className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-blue/20 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/30 disabled:opacity-40 cursor-pointer"
-                  >
-                    {isCompleted ? 'Completado' : '+ Registrar Cuota'}
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <select
+                      aria-label="Medio de pago cuota"
+                      value={installmentMethod}
+                      onChange={(e) => setInstallmentMethod(e.target.value as PaymentMethod)}
+                      className="px-2 py-1.5 rounded-lg text-[11px] bg-bg-input border border-border text-text-muted"
+                    >
+                      <option value="efectivo_usd">Efectivo</option>
+                      <option value="binance_usdt">Binance</option>
+                      <option value="bolivares_pago_movil">Bolívares</option>
+                    </select>
+                    <button
+                      type="button"
+                      disabled={isCompleted}
+                      onClick={() =>
+                        recordInstallmentPayment(plan.id, { paymentMethod: installmentMethod })
+                      }
+                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-blue/20 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/30 disabled:opacity-40 cursor-pointer"
+                    >
+                      {isCompleted ? 'Completado' : '+ Registrar Cuota'}
+                    </button>
+                  </div>
                 </div>
               </div>
             );
           })}
         </div>
       </section>
+
+      {payingExpense && (
+        <PayExpenseModal
+          key={payingExpense.id}
+          expense={payingExpense}
+          onClose={() => setPayingExpense(null)}
+        />
+      )}
     </div>
   );
 }

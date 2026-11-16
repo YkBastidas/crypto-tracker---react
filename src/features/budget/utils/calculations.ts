@@ -74,31 +74,49 @@ export function getInstallmentBiweeklyQuota(plan: InstallmentPlan): number {
 }
 
 export function calculateEnvelopeSummaries(movements: LedgerMovement[]): EnvelopeSummary[] {
-  const totals: Record<EnvelopeId, { assigned: number; spent: number }> = {
-    ahorro_inversion: { assigned: 0, spent: 0 },
-    imprescindibles: { assigned: 0, spent: 0 },
-    disfrute: { assigned: 0, spent: 0 },
-    crecimiento_personal: { assigned: 0, spent: 0 },
+  const totals: Record<
+    EnvelopeId,
+    {
+      assigned: number;
+      spent: number;
+      byMethod: { efectivo: number; binance: number; bolivares: number };
+    }
+  > = {
+    ahorro_inversion: { assigned: 0, spent: 0, byMethod: { efectivo: 0, binance: 0, bolivares: 0 } },
+    imprescindibles: { assigned: 0, spent: 0, byMethod: { efectivo: 0, binance: 0, bolivares: 0 } },
+    disfrute: { assigned: 0, spent: 0, byMethod: { efectivo: 0, binance: 0, bolivares: 0 } },
+    crecimiento_personal: { assigned: 0, spent: 0, byMethod: { efectivo: 0, binance: 0, bolivares: 0 } },
   };
 
   for (const m of movements) {
     if (!ENVELOPE_IDS.includes(m.bucket as EnvelopeId)) continue;
     const envId = m.bucket as EnvelopeId;
+    const custody: 'efectivo' | 'binance' | 'bolivares' =
+      m.paymentMethod === 'binance_usdt'
+        ? 'binance'
+        : m.paymentMethod === 'bolivares_pago_movil'
+          ? 'bolivares'
+          : 'efectivo';
+
     if (
       m.type === 'Ingreso a Sobre' ||
       m.type === 'Transferencia (Entrada)' ||
       (m.type === 'Ajuste' && m.amountUsd >= 0)
     ) {
-      totals[envId].assigned += Math.abs(m.amountUsd);
+      const amt = Math.abs(m.amountUsd);
+      totals[envId].assigned += amt;
+      totals[envId].byMethod[custody] += amt;
     } else if (OUTFLOW_TYPES.has(m.type) || (m.type === 'Ajuste' && m.amountUsd < 0)) {
-      totals[envId].spent += Math.abs(m.amountUsd);
+      const amt = Math.abs(m.amountUsd);
+      totals[envId].spent += amt;
+      totals[envId].byMethod[custody] -= amt;
     }
   }
 
   const totalAssigned = ENVELOPE_IDS.reduce((acc, id) => acc + totals[id].assigned, 0);
 
   return ENVELOPE_IDS.map((id) => {
-    const { assigned, spent } = totals[id];
+    const { assigned, spent, byMethod } = totals[id];
     const available = assigned - spent;
     return {
       id,
@@ -107,6 +125,7 @@ export function calculateEnvelopeSummaries(movements: LedgerMovement[]): Envelop
       spent,
       available,
       percentage: totalAssigned > 0 ? (assigned / totalAssigned) * 100 : 0,
+      byMethod,
     };
   });
 }
@@ -136,12 +155,14 @@ export function calculateFundSummaries(movements: LedgerMovement[]): {
   envelopes: EnvelopeSummary[];
 } {
   const envelopes = calculateEnvelopeSummaries(movements);
-  const efectivoSobres = envelopes.reduce((acc, e) => acc + e.available, 0);
-  const inversionesBinance = sumBucketBalance(movements, [
-    'binance_crypto',
-    'binance_usdt',
-    'binance_paxg',
-  ]);
+  const efectivoSobres = envelopes.reduce((acc, e) => acc + e.byMethod.efectivo, 0);
+  const bolivaresSobres = envelopes.reduce((acc, e) => acc + e.byMethod.bolivares, 0);
+  const binanceSobres = envelopes.reduce((acc, e) => acc + e.byMethod.binance, 0);
+
+  const cuentaBolivares = sumBucketBalance(movements, ['banco_bolivares']) + bolivaresSobres;
+  const inversionesBinance =
+    sumBucketBalance(movements, ['binance_crypto', 'binance_usdt', 'binance_paxg']) +
+    binanceSobres;
   const fondoEmergencia = sumBucketBalance(movements, ['emergencias', 'binance_usdc']);
   const billeteraBtc = sumBucketBalance(movements, ['wallet_btc']);
 
@@ -149,15 +170,22 @@ export function calculateFundSummaries(movements: LedgerMovement[]): {
     {
       id: 'efectivo_sobres',
       name: 'Efectivo en Sobres',
-      assetType: 'Efectivo Físico',
-      notes: 'Presupuesto quincenal operativo en sobres',
+      assetType: 'Efectivo Físico USD',
+      notes: 'Billetes físicos asignados a sobres',
       balance: efectivoSobres,
     },
     {
+      id: 'cuenta_bolivares',
+      name: 'Cuenta en Bolívares',
+      assetType: 'Banco / Pago Móvil (Eq. USD)',
+      notes: 'Saldo operativo para recargas, parking y pagos en Bs',
+      balance: cuentaBolivares,
+    },
+    {
       id: 'inversiones_binance',
-      name: 'Inversiones Binance',
+      name: 'Inversiones y USDT Binance',
       assetType: 'Binance (Crypto + USDT + PAXG)',
-      notes: 'Capital activo de inversión y liquidez',
+      notes: 'Incluye capital activo y USDT asignado a sobres',
       balance: inversionesBinance,
     },
     {

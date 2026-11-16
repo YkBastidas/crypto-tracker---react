@@ -8,11 +8,13 @@ import {
   HelpCircle,
   LayoutDashboard,
   Menu,
+  RotateCcw,
   Sparkles,
   Upload,
   X,
 } from 'lucide-react';
 import { usePortfolioStore } from '../../shared/store/portfolioStore';
+import { useBudgetStore } from '../../features/budget/store/budgetStore';
 import { parseCsvFile, exportCsv } from '../../shared/lib/csv';
 import { TransactionForm } from '../../features/crypto-portfolio/components/TransactionForm';
 import { SupportDonate } from '../../features/crypto-portfolio/components/SupportDonate';
@@ -56,6 +58,7 @@ const NAV_ITEMS: { id: AppView; label: string; shortLabel: string; icon: ReactNo
 export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps) {
   const { transactions, isDirty, isPrivate, togglePrivacy, setDirty, loadTransactions } =
     usePortfolioStore();
+  const { undoEntry, undoLastAction, dismissUndo } = useBudgetStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -275,6 +278,32 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
         onClose={() => setHelpOpen(false)}
         onNavigate={(view) => onChangeView(view)}
       />
+
+      {undoEntry && (
+        <div className="fixed bottom-20 lg:bottom-6 right-4 left-4 sm:left-auto sm:min-w-[320px] z-40 flex items-center justify-between gap-3 bg-bg-card border border-accent-gold/40 rounded-xl px-4 py-3 shadow-2xl">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-text-primary truncate">{undoEntry.label}</p>
+            <p className="text-[11px] text-text-muted">¿Te equivocaste? Puedes revertir el cambio.</p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={undoLastAction}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-accent-gold/20 border border-accent-gold/40 text-accent-gold hover:bg-accent-gold/30 cursor-pointer"
+            >
+              <RotateCcw size={13} /> Deshacer
+            </button>
+            <button
+              type="button"
+              onClick={dismissUndo}
+              title="Cerrar"
+              className="p-1 text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
