@@ -52,10 +52,15 @@ export function calculateDaysLeft(nextDueDate: string): number {
   return Math.round((targetMidnight - todayMidnight) / (1000 * 60 * 60 * 24));
 }
 
-export function advanceDueDate(currentIso: string, frequency: RecurringExpense['frequency']): string {
+export function advanceDueDate(
+  currentIso: string,
+  frequency: RecurringExpense['frequency'] | 'semanal',
+): string {
   const [y, m, d] = currentIso.split('-').map(Number);
   const date = new Date(y, (m || 1) - 1, d || 1);
-  if (frequency === 'quincenal') {
+  if (frequency === 'semanal') {
+    date.setDate(date.getDate() + 7);
+  } else if (frequency === 'quincenal') {
     date.setDate(date.getDate() + 15);
   } else if (frequency === 'mensual') {
     date.setMonth(date.getMonth() + 1);
@@ -76,10 +81,42 @@ export function getExpenseBiweeklyQuota(expense: RecurringExpense): number {
 }
 
 export function getInstallmentBiweeklyQuota(plan: InstallmentPlan): number {
+  if ((plan.direction ?? 'receivable') === 'receivable') return 0;
   if (plan.maxCap !== null && plan.paidTotal >= plan.maxCap) return 0;
   if (plan.frequency === 'semanal') return plan.installmentAmount * 2;
   if (plan.frequency === 'mensual') return plan.installmentAmount / 2;
+  if (plan.frequency === 'anual') return plan.installmentAmount / 24;
   return plan.installmentAmount;
+}
+
+export function getInstallmentArrears(plan: InstallmentPlan): {
+  arrearsUsd: number;
+  behindPeriods: number;
+  expectedTotal: number;
+} | null {
+  if (!plan.startDate) return null;
+  if (plan.maxCap !== null && plan.paidTotal >= plan.maxCap) {
+    return { arrearsUsd: 0, behindPeriods: 0, expectedTotal: plan.maxCap };
+  }
+
+  const daysSinceStart = Math.max(0, -calculateDaysLeft(plan.startDate));
+  const periodDays =
+    plan.frequency === 'semanal'
+      ? 7
+      : plan.frequency === 'quincenal'
+        ? 15
+        : plan.frequency === 'mensual'
+          ? 30
+          : 365;
+  const elapsedPeriods = Math.floor(daysSinceStart / periodDays);
+  const expectedRaw = elapsedPeriods * plan.installmentAmount;
+  const expectedTotal =
+    plan.maxCap !== null ? Math.min(plan.maxCap, expectedRaw) : expectedRaw;
+  const arrearsUsd = Math.max(0, Number((expectedTotal - plan.paidTotal).toFixed(2)));
+  const behindPeriods =
+    plan.installmentAmount > 0 ? Math.floor(arrearsUsd / plan.installmentAmount) : 0;
+
+  return { arrearsUsd, behindPeriods, expectedTotal: Number(expectedTotal.toFixed(2)) };
 }
 
 export function calculateMonthlyEssentials(expenses: RecurringExpense[]): number {

@@ -68,6 +68,7 @@ export interface LedgerMovement {
   linkedInstallment?: {
     id: string;
     amount: number;
+    previousDueDate?: string;
   };
 }
 
@@ -97,16 +98,20 @@ export interface RecurringExpense {
   active: boolean;
 }
 
-export type InstallmentFrequency = 'semanal' | 'quincenal' | 'mensual';
+export type InstallmentFrequency = 'semanal' | 'quincenal' | 'mensual' | 'anual';
+export type InstallmentDirection = 'receivable' | 'payable';
 
 export interface InstallmentPlan {
   id: string;
   name: string;
+  direction?: InstallmentDirection; // 'receivable' = me deben (default), 'payable' = debo
   installmentAmount: number;
   frequency: InstallmentFrequency;
-  maxCap: number | null; // null = sin tope (ej. suscripción compartida)
+  maxCap: number | null; // null = sin tope
   paidTotal: number;
   paymentsCount: number;
+  startDate?: string; // YYYY-MM-DD para calcular atrasos
+  nextDueDate?: string; // YYYY-MM-DD próximo pago/cobro
   lastPaidDate?: string;
   notes?: string;
 }

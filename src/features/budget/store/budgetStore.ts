@@ -40,7 +40,10 @@ export interface PayExpenseOptions {
 export interface PayInstallmentOptions {
   amountOverride?: number;
   envelopeId?: EnvelopeId;
+  bucketOverride?: AssetBucketId;
   paymentMethod?: PaymentMethod;
+  amountBs?: number;
+  bcvRateUsed?: number;
 }
 
 interface BudgetState {
@@ -346,13 +349,14 @@ export const useBudgetStore = create<BudgetState>()(
 
         let nextInstallments = state.installments;
         if (target.linkedInstallment) {
-          const { id: instId, amount } = target.linkedInstallment;
+          const { id: instId, amount, previousDueDate } = target.linkedInstallment;
           nextInstallments = state.installments.map((p) =>
             p.id === instId
               ? {
                   ...p,
                   paidTotal: Math.max(0, Number((p.paidTotal - amount).toFixed(2))),
                   paymentsCount: Math.max(0, p.paymentsCount - 1),
+                  nextDueDate: previousDueDate ?? p.nextDueDate,
                 }
               : p,
           );
@@ -553,19 +557,48 @@ export const useBudgetStore = create<BudgetState>()(
         const amount = options?.amountOverride ?? plan.installmentAmount;
         if (amount <= 0) return;
 
-        const envelopeId = options?.envelopeId ?? 'imprescindibles';
+        const isReceivable = (plan.direction ?? 'receivable') === 'receivable';
+        const envelopeId = options?.envelopeId ?? 'ahorro_inversion';
+        const targetBucket: AssetBucketId = options?.bucketOverride ?? envelopeId;
         const paymentMethod = options?.paymentMethod ?? 'efectivo_usd';
         const todayIso = new Date().toISOString().slice(0, 10);
+        const cleanAmount = Number(Math.abs(amount).toFixed(2));
+
+        const movementType = isReceivable
+          ? targetBucket === 'binance_usdt' ||
+            targetBucket === 'binance_crypto' ||
+            targetBucket === 'binance_paxg' ||
+            targetBucket === 'binance_usdc' ||
+            targetBucket === 'wallet_btc'
+            ? 'Barrido a Inversión'
+            : 'Ingreso a Sobre'
+          : 'Pago de Cuota';
+
+        const rate = options?.bcvRateUsed ?? state.bcvRate ?? undefined;
+        const amountBs =
+          options?.amountBs ??
+          (paymentMethod === 'bolivares_pago_movil' && rate
+            ? Number((cleanAmount * rate).toFixed(2))
+            : undefined);
+
+        const previousDueDate = plan.nextDueDate;
+        const nextDueDate = previousDueDate
+          ? advanceDueDate(previousDueDate, plan.frequency)
+          : undefined;
 
         set({
-          undoEntry: createUndoSnapshot(`Cuota #${plan.paymentsCount + 1}: ${plan.name}`, state),
+          undoEntry: createUndoSnapshot(
+            `${isReceivable ? 'Cobro' : 'Cuota'} #${plan.paymentsCount + 1}: ${plan.name}`,
+            state,
+          ),
           installments: state.installments.map((p) =>
             p.id === id
               ? {
                   ...p,
-                  paidTotal: Number((p.paidTotal + amount).toFixed(2)),
+                  paidTotal: Number((p.paidTotal + cleanAmount).toFixed(2)),
                   paymentsCount: p.paymentsCount + 1,
                   lastPaidDate: todayIso,
+                  nextDueDate: nextDueDate ?? p.nextDueDate,
                 }
               : p,
           ),
@@ -573,14 +606,17 @@ export const useBudgetStore = create<BudgetState>()(
             {
               id: makeId('mov'),
               date: todayIso,
-              bucket: envelopeId,
-              type: 'Pago de Cuota',
-              amountUsd: Number(Math.abs(amount).toFixed(2)),
+              bucket: targetBucket,
+              type: movementType,
+              amountUsd: cleanAmount,
+              amountBs,
+              bcvRateUsed: rate,
               paymentMethod,
-              notes: `Cuota #${plan.paymentsCount + 1}: ${plan.name}`,
+              notes: `${isReceivable ? 'Cobro' : 'Cuota'} #${plan.paymentsCount + 1}: ${plan.name}`,
               linkedInstallment: {
                 id: plan.id,
-                amount: Number(Math.abs(amount).toFixed(2)),
+                amount: cleanAmount,
+                previousDueDate,
               },
             },
             ...state.movements,

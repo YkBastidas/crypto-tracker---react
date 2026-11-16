@@ -27,6 +27,7 @@ import type {
   CustomAccount,
   CustomAccountId,
   FundId,
+  InstallmentPlan,
   RecurringExpense,
 } from '../types';
 import {
@@ -40,6 +41,7 @@ import { BackupControls } from './BackupControls';
 import { CreateAccountModal } from './CreateAccountModal';
 import { EmergencyGoalModal } from './EmergencyGoalModal';
 import { PayExpenseModal } from './PayExpenseModal';
+import { RecordInstallmentModal } from './RecordInstallmentModal';
 import {
   QuickMovementModal,
   type MovementDirection,
@@ -92,6 +94,7 @@ export function BudgetDashboard({
   const {
     movements,
     expenses,
+    installments,
     customAccounts,
     emergencyGoal,
     bcvRate,
@@ -107,6 +110,7 @@ export function BudgetDashboard({
   const [quickDirection, setQuickDirection] = useState<MovementDirection>('out');
   const [showAllMovements, setShowAllMovements] = useState(false);
   const [payingExpense, setPayingExpense] = useState<RecurringExpense | null>(null);
+  const [payingInstallment, setPayingInstallment] = useState<InstallmentPlan | null>(null);
 
   const { funds, totalNetWorth, envelopes } = useMemo(
     () => calculateFundSummaries(movements, bcvRate, customAccounts),
@@ -129,12 +133,41 @@ export function BudgetDashboard({
   }, [customAccounts]);
 
   const upcomingAlerts = useMemo(() => {
-    return expenses
+    const expenseItems = expenses
       .filter((e) => e.active)
-      .map((e) => ({ ...e, daysLeft: calculateDaysLeft(e.nextDueDate) }))
-      .filter((e) => e.daysLeft <= 7)
+      .map((e) => ({
+        kind: 'expense' as const,
+        id: e.id,
+        name: e.name,
+        amountUsd: e.amountUsd,
+        nextDueDate: e.nextDueDate,
+        subtitle: `Sobre: ${ENVELOPE_META[e.envelopeId].name} · Vence ${e.nextDueDate}`,
+        daysLeft: calculateDaysLeft(e.nextDueDate),
+        rawExpense: e,
+      }));
+
+    const payableInstallmentItems = installments
+      .filter(
+        (p) =>
+          p.direction === 'payable' &&
+          Boolean(p.nextDueDate) &&
+          (p.maxCap === null || p.paidTotal < p.maxCap),
+      )
+      .map((p) => ({
+        kind: 'installment' as const,
+        id: p.id,
+        name: p.name,
+        amountUsd: p.installmentAmount,
+        nextDueDate: p.nextDueDate!,
+        subtitle: `Por pagar (${p.frequency}) · Vence ${p.nextDueDate}`,
+        daysLeft: calculateDaysLeft(p.nextDueDate!),
+        rawPlan: p,
+      }));
+
+    return [...expenseItems, ...payableInstallmentItems]
+      .filter((item) => item.daysLeft <= 7)
       .sort((a, b) => a.daysLeft - b.daysLeft);
-  }, [expenses]);
+  }, [expenses, installments]);
 
   const openQuickModal = (
     bucket: AssetBucketId = 'imprescindibles',
@@ -533,9 +566,7 @@ export function BudgetDashboard({
                             : `En ${item.daysLeft}d`}
                       </span>
                     </div>
-                    <p className="text-xs text-text-muted mt-0.5">
-                      Sobre: {ENVELOPE_META[item.envelopeId].name} · Vence {item.nextDueDate}
-                    </p>
+                    <p className="text-xs text-text-muted mt-0.5">{item.subtitle}</p>
                   </div>
 
                   <div className="flex items-center justify-between sm:justify-end gap-3">
@@ -544,7 +575,13 @@ export function BudgetDashboard({
                     </span>
                     <button
                       type="button"
-                      onClick={() => setPayingExpense(item)}
+                      onClick={() => {
+                        if (item.kind === 'expense') {
+                          setPayingExpense(item.rawExpense);
+                        } else {
+                          setPayingInstallment(item.rawPlan);
+                        }
+                      }}
                       className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-green/15 border border-accent-green/40 text-accent-green hover:bg-accent-green/25 cursor-pointer"
                     >
                       Pagar
@@ -672,6 +709,14 @@ export function BudgetDashboard({
           key={payingExpense.id}
           expense={payingExpense}
           onClose={() => setPayingExpense(null)}
+        />
+      )}
+
+      {payingInstallment && (
+        <RecordInstallmentModal
+          key={payingInstallment.id}
+          plan={payingInstallment}
+          onClose={() => setPayingInstallment(null)}
         />
       )}
 

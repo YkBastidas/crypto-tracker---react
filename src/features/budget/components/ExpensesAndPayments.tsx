@@ -15,18 +15,20 @@ import { useBudgetStore } from '../store/budgetStore';
 import type {
   EnvelopeId,
   ExpenseFrequency,
+  InstallmentDirection,
   InstallmentFrequency,
   InstallmentPlan,
-  PaymentMethod,
   RecurringExpense,
 } from '../types';
 import {
   calculateDaysLeft,
   formatUsd,
   getExpenseBiweeklyQuota,
+  getInstallmentArrears,
   getInstallmentBiweeklyQuota,
 } from '../utils/calculations';
 import { PayExpenseModal } from './PayExpenseModal';
+import { RecordInstallmentModal } from './RecordInstallmentModal';
 
 export function ExpensesAndPayments() {
   const isPrivate = usePortfolioStore((s) => s.isPrivate);
@@ -39,7 +41,6 @@ export function ExpensesAndPayments() {
     addInstallment,
     updateInstallment,
     removeInstallment,
-    recordInstallmentPayment,
   } = useBudgetStore();
 
   const [expenseFilter, setExpenseFilter] = useState<'all' | 'mensual' | 'anual'>('all');
@@ -48,7 +49,7 @@ export function ExpensesAndPayments() {
   const [showAddInstallment, setShowAddInstallment] = useState(false);
   const [editingInstallmentId, setEditingInstallmentId] = useState<string | null>(null);
   const [payingExpense, setPayingExpense] = useState<RecurringExpense | null>(null);
-  const [installmentMethod, setInstallmentMethod] = useState<PaymentMethod>('efectivo_usd');
+  const [recordingPlan, setRecordingPlan] = useState<InstallmentPlan | null>(null);
 
   // New Expense form state
   const [expName, setExpName] = useState('');
@@ -59,9 +60,14 @@ export function ExpensesAndPayments() {
 
   // New Installment form state
   const [instName, setInstName] = useState('');
+  const [instDirection, setInstDirection] = useState<InstallmentDirection>('receivable');
   const [instAmount, setInstAmount] = useState('');
   const [instFreq, setInstFreq] = useState<InstallmentFrequency>('semanal');
   const [instCap, setInstCap] = useState('');
+  const [instPaidTotal, setInstPaidTotal] = useState('0');
+  const [instPaymentsCount, setInstPaymentsCount] = useState('0');
+  const [instStartDate, setInstStartDate] = useState('');
+  const [instNextDueDate, setInstNextDueDate] = useState('');
   const [instNotes, setInstNotes] = useState('');
 
   const stats = useMemo(() => {
@@ -144,9 +150,14 @@ export function ExpensesAndPayments() {
   const startEditInstallment = (plan: InstallmentPlan) => {
     setEditingInstallmentId(plan.id);
     setInstName(plan.name);
+    setInstDirection(plan.direction ?? 'receivable');
     setInstAmount(String(plan.installmentAmount));
     setInstFreq(plan.frequency);
     setInstCap(plan.maxCap ? String(plan.maxCap) : '');
+    setInstPaidTotal(String(plan.paidTotal));
+    setInstPaymentsCount(String(plan.paymentsCount));
+    setInstStartDate(plan.startDate ?? '');
+    setInstNextDueDate(plan.nextDueDate ?? '');
     setInstNotes(plan.notes ?? '');
     setShowAddInstallment(true);
   };
@@ -156,30 +167,45 @@ export function ExpensesAndPayments() {
     const amount = parseFloat(instAmount);
     if (!instName.trim() || !Number.isFinite(amount) || amount <= 0) return;
     const cap = instCap.trim() ? parseFloat(instCap) : null;
+    const paidTotal = Math.max(0, parseFloat(instPaidTotal) || 0);
+    const paymentsCount = Math.max(0, Math.round(parseFloat(instPaymentsCount) || 0));
 
     if (editingInstallmentId) {
       updateInstallment(editingInstallmentId, {
         name: instName.trim(),
+        direction: instDirection,
         installmentAmount: Number(amount.toFixed(2)),
         frequency: instFreq,
         maxCap: cap && Number.isFinite(cap) && cap > 0 ? cap : null,
+        paidTotal: Number(paidTotal.toFixed(2)),
+        paymentsCount,
+        startDate: instStartDate.trim() || undefined,
+        nextDueDate: instNextDueDate.trim() || undefined,
         notes: instNotes.trim() || undefined,
       });
     } else {
       addInstallment({
         name: instName.trim(),
+        direction: instDirection,
         installmentAmount: Number(amount.toFixed(2)),
         frequency: instFreq,
         maxCap: cap && Number.isFinite(cap) && cap > 0 ? cap : null,
-        paidTotal: 0,
-        paymentsCount: 0,
+        paidTotal: Number(paidTotal.toFixed(2)),
+        paymentsCount,
+        startDate: instStartDate.trim() || undefined,
+        nextDueDate: instNextDueDate.trim() || undefined,
         notes: instNotes.trim() || undefined,
       });
     }
     setEditingInstallmentId(null);
     setInstName('');
+    setInstDirection('receivable');
     setInstAmount('');
     setInstCap('');
+    setInstPaidTotal('0');
+    setInstPaymentsCount('0');
+    setInstStartDate('');
+    setInstNextDueDate('');
     setInstNotes('');
     setShowAddInstallment(false);
   };
@@ -421,15 +447,15 @@ export function ExpensesAndPayments() {
         </div>
       </section>
 
-      {/* Section 2: Matriz de Pagos Recurrentes / Cuotas */}
+      {/* Section 2: Cuentas por Cobrar y Cuotas */}
       <section className="bg-bg-card border border-border rounded-2xl p-4 sm:p-5 space-y-4">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-bold text-text-primary flex items-center gap-2">
-              <Repeat size={18} className="text-accent-gold" /> Matriz de Pagos Recurrentes y Cuotas
+              <Repeat size={18} className="text-accent-green" /> Cuentas por Cobrar y Cuotas
             </h2>
             <p className="text-xs text-text-muted">
-              Control de cuotas semanales/mensuales con meta acumulada y progreso.
+              Deudas que te pagan en cuotas (ingresos) o compromisos por pagar con meta y progreso.
             </p>
           </div>
 
@@ -438,24 +464,40 @@ export function ExpensesAndPayments() {
             onClick={() => {
               setEditingInstallmentId(null);
               setInstName('');
+              setInstDirection('receivable');
               setInstAmount('');
               setInstCap('');
+              setInstPaidTotal('0');
+              setInstPaymentsCount('0');
+              setInstStartDate('');
+              setInstNextDueDate('');
               setInstNotes('');
               setShowAddInstallment((v) => !v);
             }}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-gold/15 border border-accent-gold/40 text-accent-gold hover:bg-accent-gold/25 cursor-pointer shrink-0"
           >
-            <Plus size={14} /> Nueva Cuota
+            <Plus size={14} /> Nueva Cuenta
           </button>
         </div>
 
         {showAddInstallment && (
           <form
             onSubmit={handleCreateInstallment}
-            className="bg-bg-input/60 border border-border rounded-xl p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end"
+            className="bg-bg-input/60 border border-border rounded-xl p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3 items-end"
           >
             <div>
-              <label className="text-[11px] text-text-muted block mb-1">Nombre / Cuenta</label>
+              <label className="text-[11px] text-text-muted block mb-1">Tipo</label>
+              <select
+                value={instDirection}
+                onChange={(e) => setInstDirection(e.target.value as InstallmentDirection)}
+                className="w-full px-3 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary"
+              >
+                <option value="receivable">Por Cobrar (Me deben)</option>
+                <option value="payable">Por Pagar (Debo)</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[11px] text-text-muted block mb-1">Nombre / Persona</label>
               <input
                 type="text"
                 required
@@ -488,10 +530,11 @@ export function ExpensesAndPayments() {
                 <option value="semanal">Semanal</option>
                 <option value="quincenal">Quincenal</option>
                 <option value="mensual">Mensual</option>
+                <option value="anual">Anual</option>
               </select>
             </div>
             <div>
-              <label className="text-[11px] text-text-muted block mb-1">Tope Máximo (opcional)</label>
+              <label className="text-[11px] text-text-muted block mb-1">Meta / Tope ($)</label>
               <input
                 type="number"
                 step="0.01"
@@ -502,17 +545,62 @@ export function ExpensesAndPayments() {
                 className="w-full px-3 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary"
               />
             </div>
-            <div className="flex gap-2">
+            <div>
+              <label className="text-[11px] text-text-muted block mb-1">Acumulado ($)</label>
               <input
-                type="text"
-                value={instNotes}
-                onChange={(e) => setInstNotes(e.target.value)}
-                placeholder="Notas..."
-                className="flex-1 px-3 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary"
+                type="number"
+                step="0.01"
+                min="0"
+                value={instPaidTotal}
+                onChange={(e) => setInstPaidTotal(e.target.value)}
+                placeholder="0.00"
+                className="w-full px-3 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary"
               />
+            </div>
+            <div>
+              <label className="text-[11px] text-text-muted block mb-1"># Cuotas</label>
+              <input
+                type="number"
+                step="1"
+                min="0"
+                value={instPaymentsCount}
+                onChange={(e) => setInstPaymentsCount(e.target.value)}
+                placeholder="0"
+                className="w-full px-3 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary"
+              />
+            </div>
+            <div className="sm:col-span-2 lg:col-span-5 flex flex-wrap gap-2 items-end">
+              <div className="w-36">
+                <label className="text-[11px] text-text-muted block mb-1">Próximo pago/cobro</label>
+                <input
+                  type="date"
+                  value={instNextDueDate}
+                  onChange={(e) => setInstNextDueDate(e.target.value)}
+                  className="w-full px-2 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary"
+                />
+              </div>
+              <div className="w-36">
+                <label className="text-[11px] text-text-muted block mb-1">Inicio (opc.)</label>
+                <input
+                  type="date"
+                  value={instStartDate}
+                  onChange={(e) => setInstStartDate(e.target.value)}
+                  className="w-full px-2 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary"
+                />
+              </div>
+              <div className="flex-1">
+                <label className="text-[11px] text-text-muted block mb-1">Notas (opc.)</label>
+                <input
+                  type="text"
+                  value={instNotes}
+                  onChange={(e) => setInstNotes(e.target.value)}
+                  placeholder="Ej. Pagado completo hasta diciembre"
+                  className="w-full px-3 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary"
+                />
+              </div>
               <button
                 type="submit"
-                className="px-3 py-2 rounded-lg text-xs font-bold bg-accent-gold text-black border-none cursor-pointer"
+                className="px-4 py-2 rounded-lg text-xs font-bold bg-accent-gold text-black border-none cursor-pointer"
               >
                 <Check size={14} />
               </button>
@@ -522,12 +610,15 @@ export function ExpensesAndPayments() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {installments.map((plan) => {
+            const isReceivable = (plan.direction ?? 'receivable') === 'receivable';
             const hasCap = plan.maxCap !== null && plan.maxCap > 0;
             const progressPct = hasCap
               ? Math.min(100, (plan.paidTotal / (plan.maxCap as number)) * 100)
               : 0;
             const isCompleted = hasCap && plan.paidTotal >= (plan.maxCap as number);
             const biweekly = getInstallmentBiweeklyQuota(plan);
+            const arrears = getInstallmentArrears(plan);
+            const dueDaysLeft = plan.nextDueDate ? calculateDaysLeft(plan.nextDueDate) : null;
 
             return (
               <div
@@ -536,21 +627,55 @@ export function ExpensesAndPayments() {
               >
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <div className="flex items-center gap-2">
-                      <Layers size={15} className="text-accent-gold" />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Layers
+                        size={15}
+                        className={isReceivable ? 'text-accent-green' : 'text-accent-gold'}
+                      />
                       <h3 className="text-sm font-bold text-text-primary">{plan.name}</h3>
+                      <span
+                        className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                          isReceivable
+                            ? 'bg-accent-green/15 text-accent-green'
+                            : 'bg-accent-gold/15 text-accent-gold'
+                        }`}
+                      >
+                        {isReceivable ? 'Por Cobrar' : 'Por Pagar'}
+                      </span>
+                      {dueDaysLeft !== null && !isCompleted && (
+                        <span
+                          className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                            dueDaysLeft < 0
+                              ? 'bg-accent-red/15 text-accent-red'
+                              : dueDaysLeft <= 7
+                                ? 'bg-accent-gold/20 text-accent-gold'
+                                : 'bg-bg-input text-text-muted'
+                          }`}
+                        >
+                          {dueDaysLeft < 0
+                            ? `Vencido hace ${Math.abs(dueDaysLeft)}d`
+                            : dueDaysLeft === 0
+                              ? 'Vence hoy'
+                              : `${dueDaysLeft}d restantes`}
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-text-muted mt-0.5">
                       <PrivacyValue value={formatUsd(plan.installmentAmount)} isPrivate={isPrivate} />{' '}
-                      / {plan.frequency} · {plan.paymentsCount} cuotas pagadas
+                      / {plan.frequency} · {plan.paymentsCount}{' '}
+                      {isReceivable ? 'cobros' : 'cuotas'}
+                      {plan.nextDueDate ? ` · Próx: ${plan.nextDueDate}` : ''}
                     </p>
+                    {plan.notes && (
+                      <p className="text-[11px] text-text-muted/80 mt-0.5">{plan.notes}</p>
+                    )}
                   </div>
 
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-1 shrink-0">
                     <button
                       type="button"
                       onClick={() => startEditInstallment(plan)}
-                      title="Editar cuota"
+                      title="Editar cuenta"
                       className="p-1 text-text-muted hover:text-accent-blue bg-transparent border-none cursor-pointer"
                     >
                       <Pencil size={14} />
@@ -558,7 +683,7 @@ export function ExpensesAndPayments() {
                     <button
                       type="button"
                       onClick={() => removeInstallment(plan.id)}
-                      title="Eliminar cuota"
+                      title="Eliminar cuenta"
                       className="p-1 text-text-muted hover:text-accent-red bg-transparent border-none cursor-pointer"
                     >
                       <Trash2 size={14} />
@@ -566,11 +691,23 @@ export function ExpensesAndPayments() {
                   </div>
                 </div>
 
+                {arrears && arrears.arrearsUsd > 0 && (
+                  <div className="bg-accent-red/10 border border-accent-red/30 rounded-lg px-2.5 py-1.5 text-[11px] text-accent-red flex items-center justify-between">
+                    <span>
+                      Atraso estimado ({arrears.behindPeriods}{' '}
+                      {plan.frequency === 'semanal' ? 'sem.' : 'per.'}):
+                    </span>
+                    <strong>
+                      <PrivacyValue value={formatUsd(arrears.arrearsUsd)} isPrivate={isPrivate} />
+                    </strong>
+                  </div>
+                )}
+
                 {hasCap ? (
                   <div>
                     <div className="flex justify-between text-xs mb-1">
                       <span className="text-text-muted">
-                        Acumulado:{' '}
+                        {isReceivable ? 'Cobrado:' : 'Pagado:'}{' '}
                         <strong className="text-text-primary">
                           <PrivacyValue value={formatUsd(plan.paidTotal)} isPrivate={isPrivate} />
                         </strong>
@@ -586,7 +723,11 @@ export function ExpensesAndPayments() {
                     <div className="w-full h-2 bg-bg-input rounded-full overflow-hidden border border-border">
                       <div
                         className={`h-full rounded-full transition-all duration-500 ${
-                          isCompleted ? 'bg-accent-green' : 'bg-accent-gold'
+                          isCompleted
+                            ? 'bg-accent-green'
+                            : isReceivable
+                              ? 'bg-accent-blue'
+                              : 'bg-accent-gold'
                         }`}
                         style={{ width: `${progressPct}%` }}
                       />
@@ -603,33 +744,47 @@ export function ExpensesAndPayments() {
 
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                   <span className="text-[11px] text-text-muted">
-                    Quincenal recom.:{' '}
-                    <strong className="text-accent-gold">
-                      <PrivacyValue value={formatUsd(biweekly)} isPrivate={isPrivate} />
-                    </strong>
+                    {isReceivable ? (
+                      hasCap ? (
+                        <>
+                          Resta por cobrar:{' '}
+                          <strong className="text-text-primary">
+                            <PrivacyValue
+                              value={formatUsd(Math.max(0, (plan.maxCap as number) - plan.paidTotal))}
+                              isPrivate={isPrivate}
+                            />
+                          </strong>
+                        </>
+                      ) : (
+                        'Ingreso al cobrar'
+                      )
+                    ) : (
+                      <>
+                        Quincenal recom.:{' '}
+                        <strong className="text-accent-gold">
+                          <PrivacyValue value={formatUsd(biweekly)} isPrivate={isPrivate} />
+                        </strong>
+                      </>
+                    )}
                   </span>
-                  <div className="flex items-center gap-1.5">
-                    <select
-                      aria-label="Medio de pago cuota"
-                      value={installmentMethod}
-                      onChange={(e) => setInstallmentMethod(e.target.value as PaymentMethod)}
-                      className="px-2 py-1.5 rounded-lg text-[11px] bg-bg-input border border-border text-text-muted"
-                    >
-                      <option value="efectivo_usd">Efectivo</option>
-                      <option value="binance_usdt">Binance</option>
-                      <option value="bolivares_pago_movil">Bolívares</option>
-                    </select>
-                    <button
-                      type="button"
-                      disabled={isCompleted}
-                      onClick={() =>
-                        recordInstallmentPayment(plan.id, { paymentMethod: installmentMethod })
-                      }
-                      className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-blue/20 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/30 disabled:opacity-40 cursor-pointer"
-                    >
-                      {isCompleted ? 'Completado' : '+ Registrar Cuota'}
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    disabled={isCompleted}
+                    onClick={() => setRecordingPlan(plan)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border disabled:opacity-40 cursor-pointer ${
+                      isReceivable
+                        ? 'bg-accent-green/15 border-accent-green/40 text-accent-green hover:bg-accent-green/25'
+                        : 'bg-accent-blue/20 border-accent-blue/40 text-accent-blue hover:bg-accent-blue/30'
+                    }`}
+                  >
+                    {isCompleted
+                      ? isReceivable
+                        ? 'Cobrado 100%'
+                        : 'Completado'
+                      : isReceivable
+                        ? '+ Registrar Cobro'
+                        : '+ Registrar Cuota'}
+                  </button>
                 </div>
               </div>
             );
@@ -642,6 +797,14 @@ export function ExpensesAndPayments() {
           key={payingExpense.id}
           expense={payingExpense}
           onClose={() => setPayingExpense(null)}
+        />
+      )}
+
+      {recordingPlan && (
+        <RecordInstallmentModal
+          key={recordingPlan.id}
+          plan={recordingPlan}
+          onClose={() => setRecordingPlan(null)}
         />
       )}
     </div>
