@@ -7,6 +7,7 @@ import type {
   BudgetSnapshot,
   CustomAccount,
   CustomAccountId,
+  EmergencyGoalConfig,
   EnvelopeId,
   InstallmentPlan,
   LedgerMovement,
@@ -48,7 +49,11 @@ interface BudgetState {
   installments: InstallmentPlan[];
   customAccounts: CustomAccount[];
   quincenaConfig: QuincenaConfig;
+  emergencyGoal: EmergencyGoalConfig;
   undoEntry: UndoEntry | null;
+
+  // Emergency goal
+  updateEmergencyGoal: (patch: Partial<EmergencyGoalConfig>) => void;
 
   // Custom accounts
   addCustomAccount: (params: {
@@ -126,6 +131,12 @@ function makeId(prefix: string): string {
 
 const initialSeed = createDefaultSeed();
 
+const DEFAULT_EMERGENCY_GOAL: EmergencyGoalConfig = {
+  mode: 'months_of_essentials',
+  months: 3,
+  customAmount: 1000,
+};
+
 function createUndoSnapshot(
   label: string,
   state: Pick<BudgetState, 'movements' | 'expenses' | 'installments' | 'customAccounts'>,
@@ -148,11 +159,17 @@ export const useBudgetStore = create<BudgetState>()(
       installments: initialSeed.installments,
       customAccounts: [],
       quincenaConfig: initialSeed.quincenaConfig,
+      emergencyGoal: DEFAULT_EMERGENCY_GOAL,
       undoEntry: null,
       bcvRate: null,
       bcvUpdatedAt: null,
       bcvLoading: false,
       bcvError: null,
+
+      updateEmergencyGoal: (patch) =>
+        set((state) => ({
+          emergencyGoal: { ...state.emergencyGoal, ...patch },
+        })),
 
       addCustomAccount: ({ name, currency, subtitle, initialBalance }) => {
         const state = get();
@@ -572,7 +589,14 @@ export const useBudgetStore = create<BudgetState>()(
       },
 
       exportSnapshot: () => {
-        const { movements, expenses, installments, customAccounts, quincenaConfig } = get();
+        const {
+          movements,
+          expenses,
+          installments,
+          customAccounts,
+          quincenaConfig,
+          emergencyGoal,
+        } = get();
         return {
           version: 1,
           exportedAt: new Date().toISOString(),
@@ -581,6 +605,7 @@ export const useBudgetStore = create<BudgetState>()(
           installments,
           customAccounts,
           quincenaConfig,
+          emergencyGoal,
         };
       },
 
@@ -600,6 +625,7 @@ export const useBudgetStore = create<BudgetState>()(
           installments: snapshot.installments,
           customAccounts: Array.isArray(snapshot.customAccounts) ? snapshot.customAccounts : [],
           quincenaConfig: snapshot.quincenaConfig,
+          emergencyGoal: snapshot.emergencyGoal ?? DEFAULT_EMERGENCY_GOAL,
           undoEntry: null,
         });
         return true;
@@ -607,7 +633,12 @@ export const useBudgetStore = create<BudgetState>()(
 
       resetToSeed: () => {
         const seed = createDefaultSeed();
-        set({ ...seed, customAccounts: [], undoEntry: null });
+        set({
+          ...seed,
+          customAccounts: [],
+          emergencyGoal: DEFAULT_EMERGENCY_GOAL,
+          undoEntry: null,
+        });
       },
 
       clearAllData: () => {
@@ -617,6 +648,7 @@ export const useBudgetStore = create<BudgetState>()(
           installments: [],
           customAccounts: [],
           quincenaConfig: initialSeed.quincenaConfig,
+          emergencyGoal: DEFAULT_EMERGENCY_GOAL,
           undoEntry: null,
         });
       },
@@ -629,6 +661,7 @@ export const useBudgetStore = create<BudgetState>()(
         installments: state.installments,
         customAccounts: state.customAccounts,
         quincenaConfig: state.quincenaConfig,
+        emergencyGoal: state.emergencyGoal,
         bcvRate: state.bcvRate,
         bcvUpdatedAt: state.bcvUpdatedAt,
       }),

@@ -111,6 +111,14 @@ export interface InstallmentPlan {
   notes?: string;
 }
 
+export type EmergencyGoalMode = 'months_of_essentials' | 'custom';
+
+export interface EmergencyGoalConfig {
+  mode: EmergencyGoalMode;
+  months: number;
+  customAmount: number;
+}
+
 export interface BudgetSnapshot {
   version: number;
   exportedAt: string;
@@ -119,6 +127,7 @@ export interface BudgetSnapshot {
   installments: InstallmentPlan[];
   quincenaConfig: QuincenaConfig;
   customAccounts?: CustomAccount[];
+  emergencyGoal?: EmergencyGoalConfig;
 }
 
 export interface FundSummary {

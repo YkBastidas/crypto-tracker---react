@@ -2,6 +2,7 @@ import { ENVELOPE_META } from '../data/defaultSeed';
 import type {
   AssetBucketId,
   CustomAccount,
+  EmergencyGoalConfig,
   EnvelopeId,
   EnvelopeRule,
   EnvelopeSummary,
@@ -79,6 +80,32 @@ export function getInstallmentBiweeklyQuota(plan: InstallmentPlan): number {
   if (plan.frequency === 'semanal') return plan.installmentAmount * 2;
   if (plan.frequency === 'mensual') return plan.installmentAmount / 2;
   return plan.installmentAmount;
+}
+
+export function calculateMonthlyEssentials(expenses: RecurringExpense[]): number {
+  const total = expenses
+    .filter((e) => e.active && e.envelopeId === 'imprescindibles')
+    .reduce((acc, e) => {
+      if (e.frequency === 'anual') return acc + e.amountUsd / 12;
+      if (e.frequency === 'quincenal') return acc + e.amountUsd * 2;
+      return acc + e.amountUsd;
+    }, 0);
+  return Number(total.toFixed(2));
+}
+
+export function calculateEmergencyGoalTarget(
+  config: EmergencyGoalConfig,
+  expenses: RecurringExpense[],
+): {
+  targetUsd: number;
+  monthlyEssentials: number;
+} {
+  const monthlyEssentials = calculateMonthlyEssentials(expenses);
+  const targetUsd =
+    config.mode === 'months_of_essentials'
+      ? Number((monthlyEssentials * Math.max(0, config.months)).toFixed(2))
+      : Number(Math.max(0, config.customAmount).toFixed(2));
+  return { targetUsd, monthlyEssentials };
 }
 
 export function calculateEnvelopeSummaries(movements: LedgerMovement[]): EnvelopeSummary[] {

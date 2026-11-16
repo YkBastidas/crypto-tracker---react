@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Smartphone,
+  Target,
   Trash2,
   Wallet,
   Zap,
@@ -30,12 +31,14 @@ import type {
 } from '../types';
 import {
   calculateDaysLeft,
+  calculateEmergencyGoalTarget,
   calculateFundSummaries,
   formatBs,
   formatUsd,
 } from '../utils/calculations';
 import { BackupControls } from './BackupControls';
 import { CreateAccountModal } from './CreateAccountModal';
+import { EmergencyGoalModal } from './EmergencyGoalModal';
 import { PayExpenseModal } from './PayExpenseModal';
 import {
   QuickMovementModal,
@@ -86,10 +89,18 @@ export function BudgetDashboard({
   onNavigateExpenses,
 }: BudgetDashboardProps) {
   const isPrivate = usePortfolioStore((s) => s.isPrivate);
-  const { movements, expenses, customAccounts, bcvRate, removeMovement, removeCustomAccount } =
-    useBudgetStore();
+  const {
+    movements,
+    expenses,
+    customAccounts,
+    emergencyGoal,
+    bcvRate,
+    removeMovement,
+    removeCustomAccount,
+  } = useBudgetStore();
   const [quickModalOpen, setQuickModalOpen] = useState(false);
   const [createAccountOpen, setCreateAccountOpen] = useState(false);
+  const [emergencyGoalOpen, setEmergencyGoalOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<CustomAccount | null>(null);
   const [quickBucket, setQuickBucket] = useState<AssetBucketId>('imprescindibles');
   const [quickTab, setQuickTab] = useState<QuickModalTab>('movement');
@@ -101,6 +112,13 @@ export function BudgetDashboard({
     () => calculateFundSummaries(movements, bcvRate, customAccounts),
     [movements, bcvRate, customAccounts],
   );
+
+  const emergencyGoalStats = useMemo(
+    () => calculateEmergencyGoalTarget(emergencyGoal, expenses),
+    [emergencyGoal, expenses],
+  );
+  const emergencyFundBalance =
+    funds.find((f) => f.id === 'fondo_emergencia')?.balance ?? 0;
 
   const bucketLabelMap = useMemo(() => {
     const map: Record<string, string> = { ...BUCKET_LABELS };
@@ -241,6 +259,16 @@ export function BudgetDashboard({
                     >
                       <SlidersHorizontal size={12} />
                     </button>
+                    {fund.id === 'fondo_emergencia' && (
+                      <button
+                        type="button"
+                        onClick={() => setEmergencyGoalOpen(true)}
+                        title="Configurar meta del Fondo de Emergencia"
+                        className="p-1 rounded-md bg-bg-input border border-border text-accent-gold hover:border-accent-gold/50 cursor-pointer"
+                      >
+                        <Target size={12} />
+                      </button>
+                    )}
                     {fund.isCustom && (
                       <>
                         <button
@@ -286,12 +314,61 @@ export function BudgetDashboard({
                       <PrivacyValue value={formatUsd(fund.balance)} isPrivate={isPrivate} />
                     </div>
                   )}
-                  <div className="w-full h-1.5 bg-bg-input rounded-full overflow-hidden mt-2">
-                    <div
-                      className="h-full rounded-full bg-accent-blue transition-all duration-500"
-                      style={{ width: `${Math.min(100, Math.max(0, fund.percentage))}%` }}
-                    />
-                  </div>
+
+                  {fund.id === 'fondo_emergencia' && emergencyGoalStats.targetUsd > 0 ? (
+                    (() => {
+                      const goalTarget = emergencyGoalStats.targetUsd;
+                      const goalPct = Math.min(100, Math.max(0, (fund.balance / goalTarget) * 100));
+                      const remaining = Math.max(0, goalTarget - fund.balance);
+                      return (
+                        <div className="mt-2 space-y-1">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <button
+                              type="button"
+                              onClick={() => setEmergencyGoalOpen(true)}
+                              className="text-accent-gold hover:underline bg-transparent border-none p-0 cursor-pointer font-medium"
+                            >
+                              Meta (
+                              {emergencyGoal.mode === 'months_of_essentials'
+                                ? `${emergencyGoal.months}m indisp.`
+                                : 'Custom'}
+                              ): <PrivacyValue value={formatUsd(goalTarget)} isPrivate={isPrivate} />
+                            </button>
+                            <span className="font-semibold text-text-muted">
+                              {goalPct.toFixed(0)}%
+                            </span>
+                          </div>
+                          <div className="w-full h-1.5 bg-bg-input rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all duration-500 ${
+                                goalPct >= 100 ? 'bg-accent-green' : 'bg-accent-gold'
+                              }`}
+                              style={{ width: `${goalPct}%` }}
+                            />
+                          </div>
+                          <p className="text-[10px] text-text-muted">
+                            {remaining > 0 ? (
+                              <>
+                                Faltan{' '}
+                                <PrivacyValue value={formatUsd(remaining)} isPrivate={isPrivate} />
+                              </>
+                            ) : (
+                              <span className="text-accent-green font-semibold">
+                                ¡Meta alcanzada!
+                              </span>
+                            )}
+                          </p>
+                        </div>
+                      );
+                    })()
+                  ) : (
+                    <div className="w-full h-1.5 bg-bg-input rounded-full overflow-hidden mt-2">
+                      <div
+                        className="h-full rounded-full bg-accent-blue transition-all duration-500"
+                        style={{ width: `${Math.min(100, Math.max(0, fund.percentage))}%` }}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -606,6 +683,13 @@ export function BudgetDashboard({
             setCreateAccountOpen(false);
             setEditingAccount(null);
           }}
+        />
+      )}
+
+      {emergencyGoalOpen && (
+        <EmergencyGoalModal
+          currentBalance={emergencyFundBalance}
+          onClose={() => setEmergencyGoalOpen(false)}
         />
       )}
     </div>
