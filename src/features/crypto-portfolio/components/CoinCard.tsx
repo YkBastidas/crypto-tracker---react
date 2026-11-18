@@ -1,20 +1,43 @@
-import { useState } from 'react';
-import { ChevronDown, ChevronUp, ExternalLink } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { ChevronDown, ChevronUp, ExternalLink, Sparkles } from 'lucide-react';
 import type { CoinHolding } from '../types';
-import { formatUsd, formatTokens } from '../utils/calculations';
+import {
+  computeSmartTradeRecommendation,
+  formatUsd,
+  formatTokens,
+} from '../utils/calculations';
 import { getCoinTargets, saveCoinTargets } from '../../../shared/lib/storage';
 import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 
 interface CoinCardProps {
   holding: CoinHolding;
+  eligibleCapitalUsd?: number;
+  totalVolatileCryptoUsd?: number;
   onTargetChange?: () => void;
 }
 
-export function CoinCard({ holding, onTargetChange }: CoinCardProps) {
+export function CoinCard({
+  holding,
+  eligibleCapitalUsd = 0,
+  totalVolatileCryptoUsd = 0,
+  onTargetChange,
+}: CoinCardProps) {
   const isPrivate = usePortfolioStore((s) => s.isPrivate);
   const [showTargets, setShowTargets] = useState(false);
   const [buyPct, setBuyPct] = useState(holding.targetBuyPct);
   const [sellPct, setSellPct] = useState(holding.targetSellPct);
+
+  const recommendation = useMemo(
+    () =>
+      !holding.isStablecoin && holding.livePrice > 0
+        ? computeSmartTradeRecommendation({
+            holding,
+            eligibleCapitalUsd,
+            totalVolatileCryptoUsd,
+          })
+        : null,
+    [holding, eligibleCapitalUsd, totalVolatileCryptoUsd],
+  );
 
   const pv = (val: string) => (isPrivate ? '****' : val);
 
@@ -129,6 +152,69 @@ export function CoinCard({ holding, onTargetChange }: CoinCardProps) {
               </span>
             </div>
           </div>
+
+          {/* Smart Dip-Buying / Profit-Taking Insight */}
+          {recommendation && holding.tradeSignal === 'BUY' && (
+            <div className="mt-3 p-2.5 rounded-lg bg-accent-red/10 border border-accent-red/30 text-[11px] space-y-1.5">
+              <div className="flex items-center justify-between gap-1 font-semibold text-accent-red">
+                <span className="flex items-center gap-1">
+                  <Sparkles size={12} /> {recommendation.dipTierLabel}
+                </span>
+                <span>-{recommendation.dropFromDcaPct.toFixed(1)}%</span>
+              </div>
+              {recommendation.breakEvenBuyUsd > 0 && (
+                <p className="text-text-muted leading-snug">
+                  Para salir de Target Buy:{' '}
+                  <strong className="text-text-primary">
+                    {pv(formatUsd(recommendation.breakEvenBuyUsd))}
+                  </strong>{' '}
+                  <span className="text-[10px]">
+                    ({pv(formatTokens(recommendation.breakEvenBuyTokens, holding.ticker))} → DCA{' '}
+                    {pv(formatUsd(recommendation.newDcaAfterBreakEven))})
+                  </span>
+                </p>
+              )}
+              {recommendation.tacticalBuyUsd > 0 ? (
+                <p className="text-text-muted leading-snug">
+                  Compra táctica:{' '}
+                  <strong className="text-accent-gold">
+                    {pv(formatUsd(recommendation.tacticalBuyUsd))}
+                  </strong>{' '}
+                  <span className="text-[10px]">
+                    (de {pv(formatUsd(recommendation.eligibleCapitalUsd))} elegibles · reserva{' '}
+                    {pv(formatUsd(recommendation.residualAfterBuyUsd))})
+                  </span>
+                </p>
+              ) : (
+                recommendation.blockedReason && (
+                  <p className="text-[10px] text-accent-gold">{recommendation.blockedReason}</p>
+                )
+              )}
+              {recommendation.concentrationWarning && (
+                <p className="text-[10px] text-accent-gold font-medium">
+                  ⚠️ {recommendation.concentrationWarning}
+                </p>
+              )}
+            </div>
+          )}
+
+          {recommendation && holding.tradeSignal === 'SELL' && (
+            <div className="mt-3 p-2.5 rounded-lg bg-accent-green/10 border border-accent-green/30 text-[11px] space-y-1">
+              <div className="flex items-center justify-between font-semibold text-accent-green">
+                <span className="flex items-center gap-1">
+                  <Sparkles size={12} /> Toma parcial sugerida (25%)
+                </span>
+                <span>+{recommendation.pumpFromDcaPct.toFixed(1)}%</span>
+              </div>
+              <p className="text-text-muted">
+                Vender{' '}
+                <strong className="text-text-primary">
+                  {pv(formatTokens(recommendation.suggestedSellTokens, holding.ticker))}
+                </strong>{' '}
+                (≈ {pv(formatUsd(recommendation.suggestedSellUsd))}) hacia USDT.
+              </p>
+            </div>
+          )}
 
           {/* Trade Action Button */}
           <div className="mt-4 flex items-center gap-2">

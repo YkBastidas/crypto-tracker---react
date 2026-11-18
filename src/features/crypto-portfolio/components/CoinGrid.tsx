@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { useBudgetStore } from '../../budget/store/budgetStore';
+import { calculateEligibleInvestmentCapital } from '../../budget/utils/calculations';
 import { CoinCard } from './CoinCard';
 import type { CoinHolding } from '../types';
 
@@ -10,7 +12,21 @@ interface CoinGridProps {
 
 export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
   const [showAll, setShowAll] = useState(false);
+  const movements = useBudgetStore((s) => s.movements);
   const MAX_INITIAL = 8;
+
+  const { totalEligibleUsd } = useMemo(
+    () => calculateEligibleInvestmentCapital(movements),
+    [movements],
+  );
+
+  const totalVolatileCryptoUsd = useMemo(
+    () =>
+      holdings
+        .filter((h) => !h.isStablecoin)
+        .reduce((acc, h) => acc + h.currentValue, 0),
+    [holdings],
+  );
 
   const displayHoldings = showAll ? holdings : holdings.slice(0, MAX_INITIAL);
   const hasMore = holdings.length > MAX_INITIAL;
@@ -31,6 +47,8 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
           <CoinCard
             key={holding.ticker}
             holding={holding}
+            eligibleCapitalUsd={totalEligibleUsd}
+            totalVolatileCryptoUsd={totalVolatileCryptoUsd}
             onTargetChange={onTargetChange}
           />
         ))}

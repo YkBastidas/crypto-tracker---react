@@ -89,3 +89,30 @@ export interface PortfolioSummary {
   netFiatInvested: number;    // deposits - withdrawals
   totalPnl: number;           // totalPortfolioValue - netFiatInvested
 }
+
+export type DipTier = 0 | 1 | 2 | 3;
+
+export interface SmartTradeRecommendation {
+  ticker: string;
+  signal: 'BUY' | 'SELL' | 'WATCH';
+  dropFromDcaPct: number;
+  pumpFromDcaPct: number;
+  /** Exact USD to buy at livePrice to shift DCA enough to exit Target Buy */
+  breakEvenBuyUsd: number;
+  breakEvenBuyTokens: number;
+  newDcaAfterBreakEven: number;
+  /** Drop depth tier: 1 (8-12%), 2 (12.1-18%), 3 (>18%), 0 (<8%) */
+  dipTier: DipTier;
+  dipTierLabel: string;
+  /** Tactical staged buy restricted by eligible capital & residual reserve */
+  tacticalBuyUsd: number;
+  tacticalBuyTokens: number;
+  newDcaAfterTactical: number;
+  eligibleCapitalUsd: number;
+  residualAfterBuyUsd: number;
+  blockedReason?: string;
+  concentrationWarning?: string;
+  /** Suggested 25% staged profit trim when signal === 'SELL' */
+  suggestedSellTokens: number;
+  suggestedSellUsd: number;
+}

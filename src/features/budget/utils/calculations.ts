@@ -670,3 +670,26 @@ export function calculateReadyToAssignAndRunway(params: {
     runwayMonths,
   };
 }
+
+/**
+ * Eligible liquid capital for tactical crypto dip-buying:
+ * exclusively Ahorro e Inversión envelope + unassigned Binance USDT.
+ * Never touches Emergency Fund, Bolivares, or essential envelopes.
+ */
+export function calculateEligibleInvestmentCapital(movements: LedgerMovement[]): {
+  ahorroEnvelopeUsd: number;
+  unassignedUsdtUsd: number;
+  totalEligibleUsd: number;
+} {
+  const envelopes = calculateEnvelopeSummaries(movements);
+  const ahorroEnvelopeUsd = Math.max(
+    0,
+    Number((envelopes.find((e) => e.id === 'ahorro_inversion')?.available ?? 0).toFixed(2)),
+  );
+  const unassignedUsdtUsd = Math.max(
+    0,
+    Number(sumBucketBalance(movements, ['binance_usdt']).toFixed(2)),
+  );
+  const totalEligibleUsd = Number((ahorroEnvelopeUsd + unassignedUsdtUsd).toFixed(2));
+  return { ahorroEnvelopeUsd, unassignedUsdtUsd, totalEligibleUsd };
+}

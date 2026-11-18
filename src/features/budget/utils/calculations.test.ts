@@ -9,6 +9,7 @@ import type {
 } from '../types';
 import {
   advanceDueDate,
+  calculateEligibleInvestmentCapital,
   calculateEnvelopeSummaries,
   calculateFundSummaries,
   calculateReadyToAssignAndRunway,
@@ -531,5 +532,55 @@ describe('budget/utils/calculations', () => {
       netWorthBefore,
       2,
     );
+  });
+
+  it('isolates eligible investment capital excluding emergency fund, essentials, and bolivares', () => {
+    const movements: LedgerMovement[] = [
+      {
+        id: 'e1',
+        date: '2026-11-18',
+        bucket: 'ahorro_inversion',
+        type: 'Ingreso a Sobre',
+        amountUsd: 120,
+        paymentMethod: 'efectivo_usd',
+      },
+      {
+        id: 'e2',
+        date: '2026-11-18',
+        bucket: 'binance_usdt',
+        type: 'Transferencia (Entrada)',
+        amountUsd: 80,
+        paymentMethod: 'binance_usdt',
+      },
+      {
+        id: 'ignore-1',
+        date: '2026-11-18',
+        bucket: 'emergencias',
+        type: 'Ingreso a Sobre',
+        amountUsd: 1000,
+        paymentMethod: 'efectivo_usd',
+      },
+      {
+        id: 'ignore-2',
+        date: '2026-11-18',
+        bucket: 'binance_usdc',
+        type: 'Barrido a Inversión',
+        amountUsd: 500,
+        paymentMethod: 'binance_usdt',
+      },
+      {
+        id: 'ignore-3',
+        date: '2026-11-18',
+        bucket: 'banco_bolivares',
+        type: 'Transferencia (Entrada)',
+        amountUsd: 300,
+        paymentMethod: 'bolivares_pago_movil',
+      },
+    ];
+
+    const eligible = calculateEligibleInvestmentCapital(movements);
+    expect(eligible.ahorroEnvelopeUsd).toBeCloseTo(120, 2);
+    expect(eligible.unassignedUsdtUsd).toBeCloseTo(80, 2);
+    expect(eligible.totalEligibleUsd).toBeCloseTo(200, 2);
   });
 });

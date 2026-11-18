@@ -5,7 +5,11 @@ import type {
   LivePrices,
   Transaction,
 } from '../../../shared/types';
-import { computeHoldings, computePortfolioSummary } from './calculations';
+import {
+  computeHoldings,
+  computePortfolioSummary,
+  computeSmartTradeRecommendation,
+} from './calculations';
 
 describe('crypto-portfolio/utils/calculations', () => {
   const coinMappings: CoinMappings = {
@@ -118,5 +122,101 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(summary.totalPortfolioValue).toBeCloseTo(680, 6);
     expect(summary.netFiatInvested).toBeCloseTo(400, 6);
     expect(summary.totalPnl).toBeCloseTo(280, 6);
+  });
+
+  it('computes exact DCA break-even buy amount so newTargetBuyPrice < livePrice and enforces 3-tier dip matrix with residual reserve', () => {
+    const transactions: Transaction[] = [
+      { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '1', usdValue: 100 },
+    ];
+    // Tier 1 (-10% vs $100 DCA, targetBuyPct = 10% -> targetBuyPrice = $90; wait: if targetBuyPct = 8%, price = 90 triggers BUY)
+    const customTargets: CoinTargets = {
+      BTC: { buy: 8, sell: 20 },
+    };
+    const [holding] = computeHoldings(
+      transactions,
+      coinMappings,
+      { bitcoin: { usd: 90 } }, // -10% drop -> Tier 1 (8-12%)
+      customTargets,
+      stablecoins,
+    );
+    expect(holding.tradeSignal).toBe('BUY');
+
+    const recTier1 = computeSmartTradeRecommendation({
+      holding,
+      eligibleCapitalUsd: 200,
+      totalVolatileCryptoUsd: 90,
+    });
+
+    // Mathematical proof: after buying breakEvenBuyUsd at $90, newTargetBuyPrice must be strictly < $90
+    const addedTokens = recTier1.breakEvenBuyUsd / 90;
+    const verifiedNewDca = (100 + recTier1.breakEvenBuyUsd) / (1 + addedTokens);
+    expect(verifiedNewDca * (1 - 8 / 100)).toBeLessThan(90);
+    expect(recTier1.dipTier).toBe(1);
+    // Eligible = 200 -> 25% = 50, min residual 25 allows up to 120 (60%) -> tacticalBuy = 50
+    expect(recTier1.tacticalBuyUsd).toBeCloseTo(50, 2);
+    expect(recTier1.residualAfterBuyUsd).toBeCloseTo(150, 2);
+
+    // Tier 2 (-15%) & Tier 3 (-25%)
+    const [holdingTier2] = computeHoldings(
+      transactions,
+      coinMappings,
+      { bitcoin: { usd: 85 } },
+      customTargets,
+      stablecoins,
+    );
+    const recTier2 = computeSmartTradeRecommendation({
+      holding: holdingTier2,
+      eligibleCapitalUsd: 200,
+      totalVolatileCryptoUsd: 85,
+    });
+    expect(recTier2.dipTier).toBe(2);
+    expect(recTier2.tacticalBuyUsd).toBeCloseTo(80, 2); // 40% of 200
+
+    const [holdingTier3] = computeHoldings(
+      transactions,
+      coinMappings,
+      { bitcoin: { usd: 75 } },
+      customTargets,
+      stablecoins,
+    );
+    const recTier3 = computeSmartTradeRecommendation({
+      holding: holdingTier3,
+      eligibleCapitalUsd: 200,
+      totalVolatileCryptoUsd: 75,
+    });
+    expect(recTier3.dipTier).toBe(3);
+    expect(recTier3.tacticalBuyUsd).toBeCloseTo(120, 2); // 60% of 200, keeping $80 (>= $25)
+
+    // Safety filter when eligible capital < $20 or violates $25 residual reserve
+    const recBlocked = computeSmartTradeRecommendation({
+      holding: holdingTier3,
+      eligibleCapitalUsd: 30, // maxSpendable = min(5, 18) = 5 < $20 min trade
+      totalVolatileCryptoUsd: 75,
+    });
+    expect(recBlocked.tacticalBuyUsd).toBe(0);
+    expect(recBlocked.blockedReason).toBeDefined();
+  });
+
+  it('recommends 25% profit trim on SELL and flags high altcoin concentration (>35%)', () => {
+    const transactions: Transaction[] = [
+      { date: '2026-04-01', type: 'Buy', asset: 'ETH', tokens: '1', usdValue: 100 },
+    ];
+    const [eth] = computeHoldings(
+      transactions,
+      coinMappings,
+      { ethereum: { usd: 150 } }, // +50% >= +30% target -> SELL
+      targets,
+      stablecoins,
+    );
+    expect(eth.tradeSignal).toBe('SELL');
+
+    const rec = computeSmartTradeRecommendation({
+      holding: eth,
+      eligibleCapitalUsd: 500,
+      totalVolatileCryptoUsd: 200, // 150 / 200 = 75% > 35%
+    });
+    expect(rec.suggestedSellTokens).toBeCloseTo(0.25, 6);
+    expect(rec.suggestedSellUsd).toBeCloseTo(37.5, 2);
+    expect(rec.concentrationWarning).toBeDefined();
   });
 });

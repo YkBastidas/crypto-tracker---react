@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
+  Bell,
   Bitcoin,
   CalendarClock,
   Download,
@@ -16,6 +17,13 @@ import {
 } from 'lucide-react';
 import { usePortfolioStore } from '../../shared/store/portfolioStore';
 import { useBudgetStore } from '../../features/budget/store/budgetStore';
+import { calculateEligibleInvestmentCapital } from '../../features/budget/utils/calculations';
+import { useInvestmentEngine } from '../../features/crypto-portfolio/hooks/useInvestmentEngine';
+import {
+  computeSmartTradeRecommendation,
+  formatTokens,
+  formatUsd,
+} from '../../features/crypto-portfolio/utils/calculations';
 import { parseCsvFile, exportCsv } from '../../shared/lib/csv';
 import { TransactionForm } from '../../features/crypto-portfolio/components/TransactionForm';
 import { SupportDonate } from '../../features/crypto-portfolio/components/SupportDonate';
@@ -70,6 +78,7 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
     dismissPortfolioUndo,
   } = usePortfolioStore();
   const {
+    movements,
     undoEntry,
     undoLastAction,
     dismissUndo,
@@ -80,6 +89,30 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
     refreshBcvRate,
     setManualBcvRate,
   } = useBudgetStore();
+  const { holdings } = useInvestmentEngine();
+  const [alertsPopoverOpen, setAlertsPopoverOpen] = useState(false);
+
+  const pv = (val: string) => (isPrivate ? '****' : val);
+
+  const eligibleCapital = useMemo(
+    () => calculateEligibleInvestmentCapital(movements),
+    [movements],
+  );
+
+  const tradeAlerts = useMemo(() => {
+    const volatileHoldings = holdings.filter((h) => !h.isStablecoin);
+    const totalVolatileUsd = volatileHoldings.reduce((acc, h) => acc + h.currentValue, 0);
+    return volatileHoldings
+      .filter((h) => h.tradeSignal === 'BUY' || h.tradeSignal === 'SELL')
+      .map((holding) => ({
+        holding,
+        rec: computeSmartTradeRecommendation({
+          holding,
+          eligibleCapitalUsd: eligibleCapital.totalEligibleUsd,
+          totalVolatileCryptoUsd: totalVolatileUsd,
+        }),
+      }));
+  }, [holdings, eligibleCapital.totalEligibleUsd]);
 
   const activeUndo =
     activeView === 'crypto' && undoTransactions
@@ -273,6 +306,135 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Opportunities Bell (BUY / SELL signals across views) */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setBcvPopoverOpen(false);
+                  setAlertsPopoverOpen((v) => !v);
+                }}
+                title={
+                  tradeAlerts.length > 0
+                    ? `${tradeAlerts.length} oportunidad(es) BUY / SELL`
+                    : 'Sin oportunidades activas de BUY / SELL'
+                }
+                className={`relative flex items-center justify-center p-2 rounded-lg border transition-all cursor-pointer ${
+                  tradeAlerts.length > 0
+                    ? 'bg-accent-gold/15 border-accent-gold/40 text-accent-gold hover:bg-accent-gold/25'
+                    : 'bg-bg-card border-border text-text-muted hover:text-text-primary hover:border-accent-blue'
+                }`}
+              >
+                <Bell size={15} />
+                {tradeAlerts.length > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-accent-red text-white text-[10px] font-bold flex items-center justify-center shadow">
+                    *{tradeAlerts.length}
+                  </span>
+                )}
+              </button>
+
+              {alertsPopoverOpen && (
+                <div className="absolute right-0 mt-2 w-80 max-w-[90vw] bg-bg-card border border-border rounded-xl p-3.5 shadow-2xl z-50 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-xs font-bold text-text-primary">
+                        Oportunidades Crypto ({tradeAlerts.length})
+                      </h3>
+                      <p className="text-[11px] text-text-muted">
+                        Capital elegible:{' '}
+                        <strong className="text-accent-blue">
+                          {pv(formatUsd(eligibleCapital.totalEligibleUsd))}
+                        </strong>
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAlertsPopoverOpen(false)}
+                      className="text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+
+                  {tradeAlerts.length === 0 ? (
+                    <p className="text-xs text-text-muted py-2">
+                      Ningún activo está en zona Target Buy o Target Sell ahora mismo.
+                    </p>
+                  ) : (
+                    <div className="space-y-2 max-h-64 overflow-y-auto pr-0.5">
+                      {tradeAlerts.map(({ holding, rec }) => {
+                        const isBuy = holding.tradeSignal === 'BUY';
+                        return (
+                          <div
+                            key={holding.ticker}
+                            className={`p-2.5 rounded-lg border text-xs space-y-1 ${
+                              isBuy
+                                ? 'bg-accent-red/10 border-accent-red/30'
+                                : 'bg-accent-green/10 border-accent-green/30'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between font-bold">
+                              <span className="text-text-primary">{pv(holding.ticker)}</span>
+                              <span className={isBuy ? 'text-accent-red' : 'text-accent-green'}>
+                                {holding.tradeSignal} (
+                                {isBuy
+                                  ? `-${rec.dropFromDcaPct.toFixed(1)}%`
+                                  : `+${rec.pumpFromDcaPct.toFixed(1)}%`}
+                                )
+                              </span>
+                            </div>
+                            {isBuy ? (
+                              <>
+                                {rec.breakEvenBuyUsd > 0 && (
+                                  <p className="text-[11px] text-text-muted">
+                                    Salir de Target Buy:{' '}
+                                    <strong className="text-text-primary">
+                                      {pv(formatUsd(rec.breakEvenBuyUsd))}
+                                    </strong>
+                                  </p>
+                                )}
+                                <p className="text-[11px] text-text-muted">
+                                  {rec.tacticalBuyUsd > 0 ? (
+                                    <>
+                                      Compra táctica ({rec.dipTierLabel.split('·')[0].trim()}):{' '}
+                                      <strong className="text-accent-gold">
+                                        {pv(formatUsd(rec.tacticalBuyUsd))}
+                                      </strong>
+                                    </>
+                                  ) : (
+                                    <span className="text-accent-gold">{rec.blockedReason}</span>
+                                  )}
+                                </p>
+                              </>
+                            ) : (
+                              <p className="text-[11px] text-text-muted">
+                                Toma parcial (25%):{' '}
+                                <strong className="text-accent-green">
+                                  {pv(formatTokens(rec.suggestedSellTokens, holding.ticker))}
+                                </strong>{' '}
+                                (≈ {pv(formatUsd(rec.suggestedSellUsd))})
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAlertsPopoverOpen(false);
+                      onChangeView('crypto');
+                    }}
+                    className="w-full py-2 rounded-lg text-xs font-semibold bg-accent-blue/20 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/30 cursor-pointer"
+                  >
+                    Ver en Portafolio Crypto
+                  </button>
+                </div>
+              )}
+            </div>
+
             <button
               type="button"
               onClick={() => setHelpOpen(true)}
@@ -299,6 +461,7 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
                 <button
                   type="button"
                   onClick={() => {
+                    setAlertsPopoverOpen(false);
                     setManualRateInput(bcvRate ? String(bcvRate) : '');
                     setBcvPopoverOpen((v) => !v);
                   }}
