@@ -72,6 +72,7 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
     togglePrivacy,
     setDirty,
     loadTransactions,
+    archivedCoins,
     undoTransactions,
     undoLabel,
     undoLastPortfolioAction,
@@ -100,7 +101,10 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
   );
 
   const tradeAlerts = useMemo(() => {
-    const volatileHoldings = holdings.filter((h) => !h.isStablecoin);
+    const archivedSet = new Set(archivedCoins.map((t) => t.toUpperCase()));
+    const volatileHoldings = holdings.filter(
+      (h) => !h.isStablecoin && !archivedSet.has(h.ticker.toUpperCase()),
+    );
     const totalVolatileUsd = volatileHoldings.reduce((acc, h) => acc + h.currentValue, 0);
     return volatileHoldings
       .filter((h) => h.tradeSignal === 'BUY' || h.tradeSignal === 'SELL')
@@ -112,7 +116,7 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
           totalVolatileCryptoUsd: totalVolatileUsd,
         }),
       }));
-  }, [holdings, eligibleCapital.totalEligibleUsd]);
+  }, [holdings, archivedCoins, eligibleCapital.totalEligibleUsd]);
 
   const activeUndo =
     activeView === 'crypto' && undoTransactions

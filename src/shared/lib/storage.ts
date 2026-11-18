@@ -7,6 +7,8 @@ const KEYS = {
   TRANSACTIONS: 'portfolio-transactions',
   STABLECOINS: 'stablecoin-tickers',
   GOAL_TARGET: 'portfolio-goal-target',
+  COIN_ORDER: 'portfolio-coin-order',
+  ARCHIVED_COINS: 'portfolio-archived-coins',
 } as const;
 
 const DEFAULT_GOAL_TARGET = 20_000;
@@ -127,4 +129,30 @@ export function getPortfolioGoal(): number {
 export function savePortfolioGoal(target: number): void {
   if (!Number.isFinite(target) || target <= 0) return;
   setJson(KEYS.GOAL_TARGET, Number(target.toFixed(2)));
+}
+
+// ── Public API: Custom Coin Order ──
+
+export function getCustomCoinOrder(): string[] {
+  return getJson<string[]>(KEYS.COIN_ORDER, []);
+}
+
+export function saveCustomCoinOrder(order: string[]): void {
+  setJson(
+    KEYS.COIN_ORDER,
+    order.map((t) => t.toUpperCase().trim()).filter(Boolean),
+  );
+}
+
+// ── Public API: Archived / Closed Coins ──
+
+export function getArchivedCoins(): string[] {
+  return getJson<string[]>(KEYS.ARCHIVED_COINS, []);
+}
+
+export function saveArchivedCoins(tickers: string[]): void {
+  setJson(
+    KEYS.ARCHIVED_COINS,
+    Array.from(new Set(tickers.map((t) => t.toUpperCase().trim()).filter(Boolean))),
+  );
 }

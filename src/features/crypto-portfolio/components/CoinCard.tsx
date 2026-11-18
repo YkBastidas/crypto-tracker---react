@@ -1,5 +1,14 @@
-import { useMemo, useState } from 'react';
-import { ChevronDown, ChevronUp, ExternalLink, Sparkles } from 'lucide-react';
+import { useMemo, useState, type DragEvent } from 'react';
+import {
+  Archive,
+  ArrowLeft,
+  ArrowRight,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  GripVertical,
+  Sparkles,
+} from 'lucide-react';
 import type { CoinHolding } from '../types';
 import {
   computeSmartTradeRecommendation,
@@ -14,6 +23,15 @@ interface CoinCardProps {
   eligibleCapitalUsd?: number;
   totalVolatileCryptoUsd?: number;
   onTargetChange?: () => void;
+  onArchive?: (ticker: string) => void;
+  canMoveLeft?: boolean;
+  canMoveRight?: boolean;
+  onMoveLeft?: () => void;
+  onMoveRight?: () => void;
+  draggable?: boolean;
+  onDragStart?: () => void;
+  onDragOver?: (e: DragEvent<HTMLDivElement>) => void;
+  onDrop?: () => void;
 }
 
 export function CoinCard({
@@ -21,6 +39,15 @@ export function CoinCard({
   eligibleCapitalUsd = 0,
   totalVolatileCryptoUsd = 0,
   onTargetChange,
+  onArchive,
+  canMoveLeft = false,
+  canMoveRight = false,
+  onMoveLeft,
+  onMoveRight,
+  draggable = false,
+  onDragStart,
+  onDragOver,
+  onDrop,
 }: CoinCardProps) {
   const isPrivate = usePortfolioStore((s) => s.isPrivate);
   const [showTargets, setShowTargets] = useState(false);
@@ -71,7 +98,11 @@ export function CoinCard({
 
   return (
     <div
-      className="
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      className={`
         group relative p-5 rounded-xl
         bg-gradient-to-br from-bg-card to-bg-primary
         border border-border border-l-4 border-l-accent-blue
@@ -79,18 +110,58 @@ export function CoinCard({
         hover:shadow-[0_12px_24px_rgba(0,0,0,0.5)]
         hover:-translate-y-1 hover:border-l-accent-green
         transition-all duration-300
-      "
+        ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}
+      `}
     >
       {/* Header */}
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-xl font-bold tracking-wide">
-          {pv(holding.ticker)}
-        </h3>
-        {holding.livePrice === 0 && (
-          <span className="text-xs text-accent-red bg-accent-red/10 px-2 py-0.5 rounded-full">
-            No price
-          </span>
-        )}
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="flex items-center gap-1.5 min-w-0">
+          {draggable && (
+            <GripVertical size={15} className="text-text-muted/60 shrink-0" />
+          )}
+          <h3 className="text-xl font-bold tracking-wide truncate">
+            {pv(holding.ticker)}
+          </h3>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          {holding.livePrice === 0 && (
+            <span className="text-[10px] text-accent-red bg-accent-red/10 px-2 py-0.5 rounded-full">
+              No price
+            </span>
+          )}
+          {(onMoveLeft || onMoveRight) && (
+            <div className="flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={onMoveLeft}
+                disabled={!canMoveLeft}
+                title="Mover a la izquierda"
+                className="p-1 rounded bg-bg-input border border-border text-text-muted hover:text-text-primary disabled:opacity-25 cursor-pointer"
+              >
+                <ArrowLeft size={12} />
+              </button>
+              <button
+                type="button"
+                onClick={onMoveRight}
+                disabled={!canMoveRight}
+                title="Mover a la derecha"
+                className="p-1 rounded bg-bg-input border border-border text-text-muted hover:text-text-primary disabled:opacity-25 cursor-pointer"
+              >
+                <ArrowRight size={12} />
+              </button>
+            </div>
+          )}
+          {onArchive && (
+            <button
+              type="button"
+              onClick={() => onArchive(holding.ticker)}
+              title="Cerrar seguimiento y mover a Histórico de Profit"
+              className="p-1 rounded bg-bg-input border border-border text-text-muted hover:text-accent-gold hover:border-accent-gold/40 cursor-pointer"
+            >
+              <Archive size={12} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Holdings */}

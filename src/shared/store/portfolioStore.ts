@@ -10,6 +10,10 @@ import {
   saveStablecoins,
   getPortfolioGoal,
   savePortfolioGoal,
+  getCustomCoinOrder,
+  saveCustomCoinOrder,
+  getArchivedCoins,
+  saveArchivedCoins,
 } from '../lib/storage';
 
 interface PortfolioState {
@@ -20,6 +24,8 @@ interface PortfolioState {
   coinMappings: CoinMappings;
   stablecoins: string[];
   goalTarget: number;
+  customCoinOrder: string[];
+  archivedCoins: string[];
   undoTransactions: Transaction[] | null;
   undoLabel: string | null;
 
@@ -28,6 +34,10 @@ interface PortfolioState {
   addTransaction: (tx: Transaction) => void;
   updateTransaction: (index: number, patch: Partial<Transaction>) => void;
   removeTransaction: (index: number) => void;
+  removeCoinTransactions: (ticker: string) => void;
+  setCustomCoinOrder: (order: string[]) => void;
+  archiveCoin: (ticker: string) => void;
+  unarchiveCoin: (ticker: string) => void;
   undoLastPortfolioAction: () => void;
   dismissPortfolioUndo: () => void;
   togglePrivacy: () => void;
@@ -47,6 +57,8 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
   coinMappings: getCoinMappings(),
   stablecoins: getStablecoins(),
   goalTarget: getPortfolioGoal(),
+  customCoinOrder: getCustomCoinOrder(),
+  archivedCoins: getArchivedCoins(),
   undoTransactions: null,
   undoLabel: null,
 
@@ -93,6 +105,45 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
       undoTransactions: prev,
       undoLabel: `Eliminada: ${target.type} ${target.asset}`,
     });
+  },
+
+  removeCoinTransactions: (ticker) => {
+    const clean = ticker.toUpperCase().trim();
+    const prev = get().transactions;
+    const updated = prev.filter((tx) => tx.asset.toUpperCase() !== clean);
+    if (updated.length === prev.length) return;
+
+    persistTransactions(updated);
+    const nextArchived = get().archivedCoins.filter((t) => t.toUpperCase() !== clean);
+    saveArchivedCoins(nextArchived);
+    set({
+      transactions: updated,
+      archivedCoins: nextArchived,
+      isDirty: true,
+      undoTransactions: prev,
+      undoLabel: `Eliminada moneda: ${clean}`,
+    });
+  },
+
+  setCustomCoinOrder: (order) => {
+    const upper = order.map((t) => t.toUpperCase().trim()).filter(Boolean);
+    saveCustomCoinOrder(upper);
+    set({ customCoinOrder: upper });
+  },
+
+  archiveCoin: (ticker) => {
+    const clean = ticker.toUpperCase().trim();
+    if (!clean) return;
+    const next = Array.from(new Set([...get().archivedCoins.map((t) => t.toUpperCase()), clean]));
+    saveArchivedCoins(next);
+    set({ archivedCoins: next });
+  },
+
+  unarchiveCoin: (ticker) => {
+    const clean = ticker.toUpperCase().trim();
+    const next = get().archivedCoins.filter((t) => t.toUpperCase() !== clean);
+    saveArchivedCoins(next);
+    set({ archivedCoins: next });
   },
 
   undoLastPortfolioAction: () => {
