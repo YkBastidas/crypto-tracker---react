@@ -30,7 +30,7 @@
 
 ## 🛠️ Fase 3 — Arreglos, Integración Financiera y Mejoras a Fases 1 y 2 _(Siguiente)_
 
-- [ ] **Suite de Pruebas Contables e Invariantes (Vitest)**: Tests automatizados para blindar las fórmulas de Fases 1 y 2 (DCA, saldos por sobre/custodia, transferencias multi-sobre, cierre mensual y deshacer) y establecer verificación continua (`build` + `lint` + `test`) en cada fase.
+- [x] **Suite de Pruebas Contables e Invariantes (Vitest)**: Tests automatizados para blindar las fórmulas de Fases 1 y 2 (DCA, saldos por sobre/custodia, transferencias multi-sobre, cierre mensual y deshacer) y establecer verificación continua (`build` + `lint` + `test`) en cada fase.
 - [ ] **Conexión en vivo Portafolio Crypto ↔ Patrimonio Total**: Vincular los saldos y precios en tiempo real del módulo DCA (`usePortfolioStore` / CoinGecko) con los fondos `Inversiones Binance` y `Billetera BTC` en el Dashboard, más meta global de portafolio configurable.
 - [ ] **Indicador "Por Asignar" (_Ready to Assign_ estilo YNAB) y Runway**: Mostrar explícitamente en el Dashboard la liquidez libre en cuentas (`Binance USDT`, `Cuenta en Bolívares`, etc.) que aún no tiene sobre asignado, con acción en 1 clic para asignarla, y cálculo de días de cobertura (_Runway_).
 - [ ] **Motor Dual-Rate (BCV + Paralelo/USDT) e IGTF (+3%)**: Soporte opcional para doble tasa cambiaria (calculando el ahorro/ganancia por brecha cambiaria al cubrir gastos a tasa oficial con USDT/Bs) y botón rápido de `+3% IGTF` para pagos en divisas. Configurable según perfil regional (Venezuela / Global).
