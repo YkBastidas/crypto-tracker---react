@@ -73,6 +73,7 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
     setDirty,
     loadTransactions,
     archivedCoins,
+    tacticalDipConfig,
     undoTransactions,
     undoLabel,
     undoLastPortfolioAction,
@@ -114,9 +115,19 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
           holding,
           eligibleCapitalUsd: eligibleCapital.totalEligibleUsd,
           totalVolatileCryptoUsd: totalVolatileUsd,
+          allVolatileHoldings: volatileHoldings,
+          tacticalConfig: tacticalDipConfig,
         }),
       }));
-  }, [holdings, archivedCoins, eligibleCapital.totalEligibleUsd]);
+  }, [holdings, archivedCoins, eligibleCapital.totalEligibleUsd, tacticalDipConfig]);
+
+  const actionableAlertsCount = useMemo(
+    () =>
+      tradeAlerts.filter(
+        (a) => a.holding.tradeSignal === 'SELL' || a.rec.tacticalBuyUsd > 0,
+      ).length,
+    [tradeAlerts],
+  );
 
   const activeUndo =
     activeView === 'crypto' && undoTransactions
@@ -330,10 +341,19 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
                 }`}
               >
                 <Bell size={15} />
-                {tradeAlerts.length > 0 && (
+                {actionableAlertsCount > 0 ? (
                   <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-accent-red text-white text-[10px] font-bold flex items-center justify-center shadow">
-                    *{tradeAlerts.length}
+                    *{actionableAlertsCount}
                   </span>
+                ) : (
+                  tradeAlerts.length > 0 && (
+                    <span
+                      title="Señales BUY en espera / Cooldown"
+                      className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-accent-gold/85 text-bg-primary text-[10px] font-bold flex items-center justify-center shadow"
+                    >
+                      ·{tradeAlerts.length}
+                    </span>
+                  )
                 )}
               </button>
 
@@ -342,14 +362,40 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
                   <div className="flex items-center justify-between gap-2">
                     <div>
                       <h3 className="text-xs font-bold text-text-primary">
-                        Oportunidades Crypto ({tradeAlerts.length})
+                        Oportunidades Crypto ({actionableAlertsCount}/{tradeAlerts.length})
                       </h3>
                       <p className="text-[11px] text-text-muted">
-                        Capital elegible:{' '}
+                        USDT digital libre:{' '}
                         <strong className="text-accent-blue">
                           {pv(formatUsd(eligibleCapital.totalEligibleUsd))}
                         </strong>
+                        <span className="text-[10px]">
+                          {' '}
+                          (táctico:{' '}
+                          {pv(
+                            formatUsd(
+                              Math.max(
+                                0,
+                                eligibleCapital.totalEligibleUsd -
+                                  tacticalDipConfig.biweeklyDcaReserveUsd,
+                              ),
+                            ),
+                          )}
+                          )
+                        </span>
                       </p>
+                      {tradeAlerts.some((a) => a.rec.tacticalBuyUsd > 0) && (
+                        <p className="text-[11px] text-text-muted">
+                          Total compra táctica hoy:{' '}
+                          <strong className="text-accent-gold">
+                            {pv(
+                              formatUsd(
+                                tradeAlerts.reduce((acc, a) => acc + a.rec.tacticalBuyUsd, 0),
+                              ),
+                            )}
+                          </strong>
+                        </p>
+                      )}
                     </div>
                     <button
                       type="button"
@@ -373,13 +419,23 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
                             key={holding.ticker}
                             className={`p-2.5 rounded-lg border text-xs space-y-1 ${
                               isBuy
-                                ? 'bg-accent-red/10 border-accent-red/30'
+                                ? rec.isCooldownLocked || rec.tacticalBuyUsd === 0
+                                  ? 'bg-bg-input/60 border-border'
+                                  : 'bg-accent-red/10 border-accent-red/30'
                                 : 'bg-accent-green/10 border-accent-green/30'
                             }`}
                           >
                             <div className="flex items-center justify-between font-bold">
                               <span className="text-text-primary">{pv(holding.ticker)}</span>
-                              <span className={isBuy ? 'text-accent-red' : 'text-accent-green'}>
+                              <span
+                                className={
+                                  isBuy
+                                    ? rec.isCooldownLocked
+                                      ? 'text-accent-gold'
+                                      : 'text-accent-red'
+                                    : 'text-accent-green'
+                                }
+                              >
                                 {holding.tradeSignal} (
                                 {isBuy
                                   ? `-${rec.dropFromDcaPct.toFixed(1)}%`
@@ -389,26 +445,29 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
                             </div>
                             {isBuy ? (
                               <>
-                                {rec.breakEvenBuyUsd > 0 && (
-                                  <p className="text-[11px] text-text-muted">
-                                    Salir de Target Buy:{' '}
-                                    <strong className="text-text-primary">
-                                      {pv(formatUsd(rec.breakEvenBuyUsd))}
-                                    </strong>
-                                  </p>
-                                )}
                                 <p className="text-[11px] text-text-muted">
                                   {rec.tacticalBuyUsd > 0 ? (
                                     <>
-                                      Compra táctica ({rec.dipTierLabel.split('·')[0].trim()}):{' '}
+                                      Compra táctica:{' '}
                                       <strong className="text-accent-gold">
                                         {pv(formatUsd(rec.tacticalBuyUsd))}
-                                      </strong>
+                                      </strong>{' '}
+                                      <span className="text-[10px]">
+                                        (bloque fijo · {rec.dipTierLabel.split(' · ')[0]})
+                                      </span>
                                     </>
                                   ) : (
                                     <span className="text-accent-gold">{rec.blockedReason}</span>
                                   )}
                                 </p>
+                                {rec.breakEvenBuyUsd > 0 && (
+                                  <p className="text-[10px] text-text-muted/80">
+                                    Info referencial (salir de BUY):{' '}
+                                    <strong className="text-text-muted">
+                                      {pv(formatUsd(rec.breakEvenBuyUsd))}
+                                    </strong>
+                                  </p>
+                                )}
                               </>
                             ) : (
                               <p className="text-[11px] text-text-muted">

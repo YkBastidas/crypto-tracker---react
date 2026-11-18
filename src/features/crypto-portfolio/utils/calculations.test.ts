@@ -9,6 +9,7 @@ import {
   computeHoldings,
   computePortfolioSummary,
   computeSmartTradeRecommendation,
+  recommendTacticalTiersFromIncome,
 } from './calculations';
 
 describe('crypto-portfolio/utils/calculations', () => {
@@ -124,39 +125,46 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(summary.totalPnl).toBeCloseTo(280, 6);
   });
 
-  it('computes exact DCA break-even buy amount so newTargetBuyPrice < livePrice and enforces 3-tier dip matrix with residual reserve', () => {
+  it('computes informational break-even and applies income-anchored fixed tiers with DCA reserve & 40% cap', () => {
+    const defaultFromIncome = recommendTacticalTiersFromIncome(900);
+    expect(defaultFromIncome.tier1Usd).toBe(45);
+    expect(defaultFromIncome.tier2Usd).toBe(70);
+    expect(defaultFromIncome.tier3Usd).toBe(100);
+    expect(defaultFromIncome.biweeklyDcaReserveUsd).toBe(50);
+
     const transactions: Transaction[] = [
-      { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '1', usdValue: 100 },
+      { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '10', usdValue: 1000 },
     ];
-    // Tier 1 (-10% vs $100 DCA, targetBuyPct = 10% -> targetBuyPrice = $90; wait: if targetBuyPct = 8%, price = 90 triggers BUY)
     const customTargets: CoinTargets = {
-      BTC: { buy: 8, sell: 20 },
+      BTC: { buy: 8, sell: 20 }, // targetBuyPrice = $92
     };
-    const [holding] = computeHoldings(
+
+    const [holdingTier1] = computeHoldings(
       transactions,
       coinMappings,
-      { bitcoin: { usd: 90 } }, // -10% drop -> Tier 1 (8-12%)
+      { bitcoin: { usd: 90 } }, // -10% drop -> Tier 1 (10–14.9%)
       customTargets,
       stablecoins,
     );
-    expect(holding.tradeSignal).toBe('BUY');
+    expect(holdingTier1.tradeSignal).toBe('BUY');
 
     const recTier1 = computeSmartTradeRecommendation({
-      holding,
-      eligibleCapitalUsd: 200,
-      totalVolatileCryptoUsd: 90,
+      holding: holdingTier1,
+      eligibleCapitalUsd: 401.88,
+      totalVolatileCryptoUsd: 900,
     });
 
-    // Mathematical proof: after buying breakEvenBuyUsd at $90, newTargetBuyPrice must be strictly < $90
+    // Informational breakEven still mathematically lowers targetBuyPrice < $90, without shaping tacticalBuyUsd
     const addedTokens = recTier1.breakEvenBuyUsd / 90;
-    const verifiedNewDca = (100 + recTier1.breakEvenBuyUsd) / (1 + addedTokens);
+    const verifiedNewDca = (1000 + recTier1.breakEvenBuyUsd) / (10 + addedTokens);
     expect(verifiedNewDca * (1 - 8 / 100)).toBeLessThan(90);
+    expect(recTier1.isCappedByBreakEven).toBe(false);
     expect(recTier1.dipTier).toBe(1);
-    // Eligible = 200 -> 25% = 50, min residual 25 allows up to 120 (60%) -> tacticalBuy = 50
-    expect(recTier1.tacticalBuyUsd).toBeCloseTo(50, 2);
-    expect(recTier1.residualAfterBuyUsd).toBeCloseTo(150, 2);
+    expect(recTier1.tacticalBuyUsd).toBe(45);
+    expect(recTier1.freeTacticalUsdtUsd).toBeCloseTo(351.88, 2);
+    expect(recTier1.residualAfterBuyUsd).toBeCloseTo(356.88, 2);
 
-    // Tier 2 (-15%) & Tier 3 (-25%)
+    // Tier 2 (-15%) -> $70 fixed
     const [holdingTier2] = computeHoldings(
       transactions,
       coinMappings,
@@ -166,35 +174,184 @@ describe('crypto-portfolio/utils/calculations', () => {
     );
     const recTier2 = computeSmartTradeRecommendation({
       holding: holdingTier2,
-      eligibleCapitalUsd: 200,
-      totalVolatileCryptoUsd: 85,
+      eligibleCapitalUsd: 401.88,
+      totalVolatileCryptoUsd: 850,
     });
     expect(recTier2.dipTier).toBe(2);
-    expect(recTier2.tacticalBuyUsd).toBeCloseTo(80, 2); // 40% of 200
+    expect(recTier2.tacticalBuyUsd).toBe(70);
 
+    // Tier 3 (-22%) -> $100 fixed, or capped at 40% of free digital USDT when smaller ($120 * 0.40 = $48)
     const [holdingTier3] = computeHoldings(
       transactions,
       coinMappings,
-      { bitcoin: { usd: 75 } },
+      { bitcoin: { usd: 75 } }, // -25%
       customTargets,
       stablecoins,
     );
     const recTier3 = computeSmartTradeRecommendation({
       holding: holdingTier3,
-      eligibleCapitalUsd: 200,
-      totalVolatileCryptoUsd: 75,
+      eligibleCapitalUsd: 401.88,
+      totalVolatileCryptoUsd: 750,
     });
     expect(recTier3.dipTier).toBe(3);
-    expect(recTier3.tacticalBuyUsd).toBeCloseTo(120, 2); // 60% of 200, keeping $80 (>= $25)
+    expect(recTier3.tacticalBuyUsd).toBe(100);
 
-    // Safety filter when eligible capital < $20 or violates $25 residual reserve
-    const recBlocked = computeSmartTradeRecommendation({
+    const recTier3Capped = computeSmartTradeRecommendation({
       holding: holdingTier3,
-      eligibleCapitalUsd: 30, // maxSpendable = min(5, 18) = 5 < $20 min trade
-      totalVolatileCryptoUsd: 75,
+      eligibleCapitalUsd: 120, // free after $50 DCA = $70, 40% of $120 = $48
+      totalVolatileCryptoUsd: 750,
     });
-    expect(recBlocked.tacticalBuyUsd).toBe(0);
-    expect(recBlocked.blockedReason).toBeDefined();
+    expect(recTier3Capped.tacticalBuyUsd).toBe(48);
+
+    // Blocked when remaining USDT after $50 biweekly DCA reserve is < $20
+    const recDcaProtected = computeSmartTradeRecommendation({
+      holding: holdingTier3,
+      eligibleCapitalUsd: 60, // 60 - 50 = $10 < $20
+      totalVolatileCryptoUsd: 750,
+    });
+    expect(recDcaProtected.tacticalBuyUsd).toBe(0);
+    expect(recDcaProtected.blockedReason).toContain('DCA quincenal');
+
+    // Never inflates micro-orders (< $20) to $20
+    const recDiscarded = computeSmartTradeRecommendation({
+      holding: holdingTier1,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: 900,
+      tacticalConfig: { tier1Usd: 15 },
+    });
+    expect(recDiscarded.tacticalBuyUsd).toBe(0);
+    expect(recDiscarded.blockedReason).toContain('< $20');
+  });
+
+  it('prioritizes deeper drop on simultaneous BUY alerts and discards sub-$20 remainder without cutting leader', () => {
+    const txs: Transaction[] = [
+      { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '20', usdValue: 2000 }, // DCA = $100
+      { date: '2026-04-01', type: 'Buy', asset: 'PAXG', tokens: '2', usdValue: 200 },   // DCA = $100
+    ];
+    const customTargets: CoinTargets = {
+      BTC: { buy: 10, sell: 30 },  // targetBuyPrice = $90
+      PAXG: { buy: 10, sell: 30 }, // targetBuyPrice = $90
+    };
+    const holdings = computeHoldings(
+      txs,
+      { BTC: 'bitcoin', PAXG: 'pax-gold' },
+      { bitcoin: { usd: 89.24165 }, 'pax-gold': { usd: 89.721 } }, // BTC -10.76%, PAXG -10.28%
+      customTargets,
+      stablecoins,
+    );
+    const btc = holdings.find((h) => h.ticker === 'BTC')!;
+    const paxg = holdings.find((h) => h.ticker === 'PAXG')!;
+
+    const recBtc = computeSmartTradeRecommendation({
+      holding: btc,
+      eligibleCapitalUsd: 401.88,
+      totalVolatileCryptoUsd: btc.currentValue + paxg.currentValue,
+      allVolatileHoldings: holdings,
+    });
+    const recPaxg = computeSmartTradeRecommendation({
+      holding: paxg,
+      eligibleCapitalUsd: 401.88,
+      totalVolatileCryptoUsd: btc.currentValue + paxg.currentValue,
+      allVolatileHoldings: holdings,
+    });
+
+    // BTC takes full Tier 1 block ($45); PAXG is discarded ($0) with priority message, never cut or inflated
+    expect(recBtc.tacticalBuyUsd).toBe(45);
+    expect(recBtc.priorityRank).toBe(1);
+    expect(recPaxg.tacticalBuyUsd).toBe(0);
+    expect(recPaxg.priorityRank).toBe(2);
+    expect(recPaxg.blockedReason).toContain('Prioridad asignada a BTC');
+  });
+
+  it('enforces dual-filter cooldown after a dip buy, prevents phantom Tier 2 trigger, unlocks on >=7.5% extra drop, and resets on rebound', () => {
+    const customTargets: CoinTargets = {
+      BTC: { buy: 10, sell: 30 },
+      PAXG: { buy: 10, sell: 30 },
+    };
+    const txsWithRecentDipBuy: Transaction[] = [
+      { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '10', usdValue: 1000 },   // DCA = $100
+      { date: '2026-04-10', type: 'Buy', asset: 'BTC', tokens: '0.56', usdValue: 49.98 }, // executed at $89.25 (-10.75%, Nivel 1)
+      { date: '2026-04-01', type: 'Buy', asset: 'PAXG', tokens: '2', usdValue: 200 },     // PAXG has NO dip buy yet
+    ];
+
+    // Case A: Still in Nivel 1 (-10.75%) -> BTC locked in Cooldown; PAXG becomes priority #1 and gets $45
+    const holdingsNivel1 = computeHoldings(
+      txsWithRecentDipBuy,
+      { BTC: 'bitcoin', PAXG: 'pax-gold' },
+      { bitcoin: { usd: 88.8 }, 'pax-gold': { usd: 89.7 } },
+      customTargets,
+      stablecoins,
+    );
+    const btcN1 = holdingsNivel1.find((h) => h.ticker === 'BTC')!;
+    const paxgN1 = holdingsNivel1.find((h) => h.ticker === 'PAXG')!;
+
+    expect(btcN1.highestConsumedDipTier).toBe(1);
+    expect(btcN1.lastDipBuyPrice).toBeCloseTo(89.25, 2);
+
+    const recBtcN1 = computeSmartTradeRecommendation({
+      holding: btcN1,
+      eligibleCapitalUsd: 401.88,
+      totalVolatileCryptoUsd: btcN1.currentValue + paxgN1.currentValue,
+      allVolatileHoldings: holdingsNivel1,
+    });
+    const recPaxgN1 = computeSmartTradeRecommendation({
+      holding: paxgN1,
+      eligibleCapitalUsd: 401.88,
+      totalVolatileCryptoUsd: btcN1.currentValue + paxgN1.currentValue,
+      allVolatileHoldings: holdingsNivel1,
+    });
+
+    expect(recBtcN1.isCooldownLocked).toBe(true);
+    expect(recBtcN1.tacticalBuyUsd).toBe(0);
+    expect(recBtcN1.blockedReason).toContain('Cooldown Nivel 1 cumplido');
+    expect(recPaxgN1.tacticalBuyUsd).toBe(45); // Cooldown-locked BTC does not block unlocked PAXG
+
+    // Case B: Enters Nivel 2 vs DCA (-15.5% @ $84), but extra drop from $89.25 is only 5.88% (< 7.5%) -> still locked
+    const [btcPhantomN2] = computeHoldings(
+      txsWithRecentDipBuy.slice(0, 2),
+      coinMappings,
+      { bitcoin: { usd: 84 } },
+      customTargets,
+      stablecoins,
+    );
+    const recPhantom = computeSmartTradeRecommendation({
+      holding: btcPhantomN2,
+      eligibleCapitalUsd: 401.88,
+      totalVolatileCryptoUsd: btcPhantomN2.currentValue,
+    });
+    expect(recPhantom.dipTier).toBe(2);
+    expect(recPhantom.isCooldownLocked).toBe(true);
+    expect(recPhantom.tacticalBuyUsd).toBe(0);
+    expect(recPhantom.blockedReason).toContain('falta caída adicional');
+
+    // Case C: Enters Nivel 2 AND drops >= 7.5% below $89.25 ($82.00 is -8.12%) -> Unlocks Tier 2 ($70)
+    const [btcUnlockedN2] = computeHoldings(
+      txsWithRecentDipBuy.slice(0, 2),
+      coinMappings,
+      { bitcoin: { usd: 82 } },
+      customTargets,
+      stablecoins,
+    );
+    const recUnlocked = computeSmartTradeRecommendation({
+      holding: btcUnlockedN2,
+      eligibleCapitalUsd: 401.88,
+      totalVolatileCryptoUsd: btcUnlockedN2.currentValue,
+    });
+    expect(recUnlocked.dipTier).toBe(2);
+    expect(recUnlocked.isCooldownLocked).toBe(false);
+    expect(recUnlocked.tacticalBuyUsd).toBe(70);
+
+    // Case D: Price rebounds above Target Buy ($95 > $89.5) -> resets cycle automatically
+    const [btcRebound] = computeHoldings(
+      txsWithRecentDipBuy.slice(0, 2),
+      coinMappings,
+      { bitcoin: { usd: 95 } },
+      customTargets,
+      stablecoins,
+    );
+    expect(btcRebound.tradeSignal).toBe('WATCH');
+    expect(btcRebound.highestConsumedDipTier).toBe(0);
+    expect(btcRebound.lastDipBuyPrice).toBeUndefined();
   });
 
   it('recommends 25% profit trim on SELL and flags high altcoin concentration (>35%)', () => {

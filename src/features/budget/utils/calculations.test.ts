@@ -534,15 +534,23 @@ describe('budget/utils/calculations', () => {
     );
   });
 
-  it('isolates eligible investment capital excluding emergency fund, essentials, and bolivares', () => {
+  it('isolates digital Binance USDT eligible investment capital excluding physical cash, emergency fund, essentials, and bolivares', () => {
     const movements: LedgerMovement[] = [
       {
-        id: 'e1',
+        id: 'e1-cash',
         date: '2026-11-18',
         bucket: 'ahorro_inversion',
         type: 'Ingreso a Sobre',
         amountUsd: 120,
         paymentMethod: 'efectivo_usd',
+      },
+      {
+        id: 'e1-binance',
+        date: '2026-11-18',
+        bucket: 'ahorro_inversion',
+        type: 'Ingreso a Sobre',
+        amountUsd: 150,
+        paymentMethod: 'binance_usdt',
       },
       {
         id: 'e2',
@@ -579,8 +587,9 @@ describe('budget/utils/calculations', () => {
     ];
 
     const eligible = calculateEligibleInvestmentCapital(movements);
-    expect(eligible.ahorroEnvelopeUsd).toBeCloseTo(120, 2);
+    expect(eligible.ahorroEnvelopeUsd).toBeCloseTo(150, 2);
+    expect(eligible.excludedPhysicalCashUsd).toBeCloseTo(120, 2);
     expect(eligible.unassignedUsdtUsd).toBeCloseTo(80, 2);
-    expect(eligible.totalEligibleUsd).toBeCloseTo(200, 2);
+    expect(eligible.totalEligibleUsd).toBeCloseTo(230, 2);
   });
 });

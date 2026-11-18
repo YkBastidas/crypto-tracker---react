@@ -12,4 +12,5 @@ export type {
   LivePrices,
   CoinTargets,
   SmartTradeRecommendation,
+  TacticalDipConfig,
 } from '../../../shared/types';

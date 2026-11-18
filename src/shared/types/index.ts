@@ -75,6 +75,11 @@ export interface CoinHolding {
   targetBuyPrice: number;  // dca * (1 - buyPct/100)
   targetSellPrice: number; // dca * (1 + sellPct/100)
   tradeSignal: 'BUY' | 'SELL' | 'WATCH';
+  /** Cooldown state derived chronologically from transactions */
+  highestConsumedDipTier?: DipTier;
+  lastDipBuyPrice?: number;
+  lastDipBuyDate?: string;
+  lastDipBuyUsd?: number;
 }
 
 /** Portfolio-level aggregated data */
@@ -92,24 +97,44 @@ export interface PortfolioSummary {
 
 export type DipTier = 0 | 1 | 2 | 3;
 
+export interface TacticalDipConfig {
+  monthlyIncomeUsd: number;
+  tier1Usd: number;
+  tier2Usd: number;
+  tier3Usd: number;
+  tier3MaxFreeUsdtPct: number;
+  biweeklyDcaReserveUsd: number;
+  cooldownAdditionalDropPct: number;
+}
+
 export interface SmartTradeRecommendation {
   ticker: string;
   signal: 'BUY' | 'SELL' | 'WATCH';
   dropFromDcaPct: number;
   pumpFromDcaPct: number;
-  /** Exact USD to buy at livePrice to shift DCA enough to exit Target Buy */
+  /** Informational only: USD needed at livePrice to shift DCA enough to exit Target Buy */
   breakEvenBuyUsd: number;
   breakEvenBuyTokens: number;
   newDcaAfterBreakEven: number;
-  /** Drop depth tier: 1 (8-12%), 2 (12.1-18%), 3 (>18%), 0 (<8%) */
+  /** Drop depth tier: 1 (10-14.9%), 2 (15-21.9%), 3 (>=22%), 0 (<10%) */
   dipTier: DipTier;
   dipTierLabel: string;
-  /** Tactical staged buy restricted by eligible capital & residual reserve */
+  /** Fixed-tier tactical buy bounded by free digital USDT and priority queue (>= $20 or $0) */
   tacticalBuyUsd: number;
   tacticalBuyTokens: number;
   newDcaAfterTactical: number;
   eligibleCapitalUsd: number;
+  freeTacticalUsdtUsd: number;
   residualAfterBuyUsd: number;
+  isCappedByBreakEven?: boolean;
+  isCooldownLocked?: boolean;
+  highestConsumedDipTier?: DipTier;
+  lastDipBuyPrice?: number;
+  lastDipBuyDate?: string;
+  nextUnlockPrice?: number;
+  priorityRank?: number;
+  sharedAmongBuyCount?: number;
+  globalTierBudgetUsd?: number;
   blockedReason?: string;
   concentrationWarning?: string;
   /** Suggested 25% staged profit trim when signal === 'SELL' */

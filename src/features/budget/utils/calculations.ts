@@ -673,23 +673,34 @@ export function calculateReadyToAssignAndRunway(params: {
 
 /**
  * Eligible liquid capital for tactical crypto dip-buying:
- * exclusively Ahorro e Inversión envelope + unassigned Binance USDT.
- * Never touches Emergency Fund, Bolivares, or essential envelopes.
+ * exclusively digital Binance USDT inside Ahorro e Inversión envelope + unassigned Binance USDT.
+ * Never touches physical USD cash, Emergency Fund, Bolivares, or other envelopes.
  */
 export function calculateEligibleInvestmentCapital(movements: LedgerMovement[]): {
   ahorroEnvelopeUsd: number;
   unassignedUsdtUsd: number;
   totalEligibleUsd: number;
+  excludedPhysicalCashUsd: number;
 } {
   const envelopes = calculateEnvelopeSummaries(movements);
+  const ahorroEnv = envelopes.find((e) => e.id === 'ahorro_inversion');
   const ahorroEnvelopeUsd = Math.max(
     0,
-    Number((envelopes.find((e) => e.id === 'ahorro_inversion')?.available ?? 0).toFixed(2)),
+    Number((ahorroEnv?.byMethod.binance ?? 0).toFixed(2)),
+  );
+  const excludedPhysicalCashUsd = Math.max(
+    0,
+    Number((ahorroEnv?.byMethod.efectivo ?? 0).toFixed(2)),
   );
   const unassignedUsdtUsd = Math.max(
     0,
     Number(sumBucketBalance(movements, ['binance_usdt']).toFixed(2)),
   );
   const totalEligibleUsd = Number((ahorroEnvelopeUsd + unassignedUsdtUsd).toFixed(2));
-  return { ahorroEnvelopeUsd, unassignedUsdtUsd, totalEligibleUsd };
+  return {
+    ahorroEnvelopeUsd,
+    unassignedUsdtUsd,
+    totalEligibleUsd,
+    excludedPhysicalCashUsd,
+  };
 }

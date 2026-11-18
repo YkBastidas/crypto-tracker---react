@@ -1,4 +1,4 @@
-import type { CoinMappings, CoinTargets, Transaction } from '../types';
+import type { CoinMappings, CoinTargets, TacticalDipConfig, Transaction } from '../types';
 
 const KEYS = {
   TARGETS: 'coin-targets',
@@ -9,7 +9,18 @@ const KEYS = {
   GOAL_TARGET: 'portfolio-goal-target',
   COIN_ORDER: 'portfolio-coin-order',
   ARCHIVED_COINS: 'portfolio-archived-coins',
+  TACTICAL_DIP_CONFIG: 'portfolio-tactical-dip-config',
 } as const;
+
+export const DEFAULT_TACTICAL_DIP_CONFIG: TacticalDipConfig = {
+  monthlyIncomeUsd: 900,
+  tier1Usd: 45,
+  tier2Usd: 70,
+  tier3Usd: 100,
+  tier3MaxFreeUsdtPct: 40,
+  biweeklyDcaReserveUsd: 50,
+  cooldownAdditionalDropPct: 7.5,
+};
 
 const DEFAULT_GOAL_TARGET = 20_000;
 
@@ -155,4 +166,56 @@ export function saveArchivedCoins(tickers: string[]): void {
     KEYS.ARCHIVED_COINS,
     Array.from(new Set(tickers.map((t) => t.toUpperCase().trim()).filter(Boolean))),
   );
+}
+
+// ── Public API: Tactical Dip-Buying Config ──
+
+function sanitizeNumber(value: unknown, fallback: number, min = 0, max = 1_000_000): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Number(Math.min(max, Math.max(min, value)).toFixed(2));
+}
+
+export function sanitizeTacticalDipConfig(
+  raw: Partial<TacticalDipConfig> | null | undefined,
+): TacticalDipConfig {
+  const src = raw ?? {};
+  return {
+    monthlyIncomeUsd: sanitizeNumber(
+      src.monthlyIncomeUsd,
+      DEFAULT_TACTICAL_DIP_CONFIG.monthlyIncomeUsd,
+      0,
+    ),
+    tier1Usd: sanitizeNumber(src.tier1Usd, DEFAULT_TACTICAL_DIP_CONFIG.tier1Usd, 0),
+    tier2Usd: sanitizeNumber(src.tier2Usd, DEFAULT_TACTICAL_DIP_CONFIG.tier2Usd, 0),
+    tier3Usd: sanitizeNumber(src.tier3Usd, DEFAULT_TACTICAL_DIP_CONFIG.tier3Usd, 0),
+    tier3MaxFreeUsdtPct: sanitizeNumber(
+      src.tier3MaxFreeUsdtPct,
+      DEFAULT_TACTICAL_DIP_CONFIG.tier3MaxFreeUsdtPct,
+      1,
+      100,
+    ),
+    biweeklyDcaReserveUsd: sanitizeNumber(
+      src.biweeklyDcaReserveUsd,
+      DEFAULT_TACTICAL_DIP_CONFIG.biweeklyDcaReserveUsd,
+      0,
+    ),
+    cooldownAdditionalDropPct: sanitizeNumber(
+      src.cooldownAdditionalDropPct,
+      DEFAULT_TACTICAL_DIP_CONFIG.cooldownAdditionalDropPct,
+      0,
+      90,
+    ),
+  };
+}
+
+export function getTacticalDipConfig(): TacticalDipConfig {
+  const stored = getJson<Partial<TacticalDipConfig>>(
+    KEYS.TACTICAL_DIP_CONFIG,
+    DEFAULT_TACTICAL_DIP_CONFIG,
+  );
+  return sanitizeTacticalDipConfig(stored);
+}
+
+export function saveTacticalDipConfig(config: TacticalDipConfig): void {
+  setJson(KEYS.TACTICAL_DIP_CONFIG, sanitizeTacticalDipConfig(config));
 }

@@ -7,9 +7,10 @@ import {
   ChevronUp,
   ExternalLink,
   GripVertical,
+  Lock,
   Sparkles,
 } from 'lucide-react';
-import type { CoinHolding } from '../types';
+import type { CoinHolding, TacticalDipConfig } from '../types';
 import {
   computeSmartTradeRecommendation,
   formatUsd,
@@ -22,6 +23,8 @@ interface CoinCardProps {
   holding: CoinHolding;
   eligibleCapitalUsd?: number;
   totalVolatileCryptoUsd?: number;
+  allVolatileHoldings?: CoinHolding[];
+  tacticalConfig?: TacticalDipConfig;
   onTargetChange?: () => void;
   onArchive?: (ticker: string) => void;
   canMoveLeft?: boolean;
@@ -38,6 +41,8 @@ export function CoinCard({
   holding,
   eligibleCapitalUsd = 0,
   totalVolatileCryptoUsd = 0,
+  allVolatileHoldings,
+  tacticalConfig,
   onTargetChange,
   onArchive,
   canMoveLeft = false,
@@ -61,9 +66,11 @@ export function CoinCard({
             holding,
             eligibleCapitalUsd,
             totalVolatileCryptoUsd,
+            allVolatileHoldings,
+            tacticalConfig,
           })
         : null,
-    [holding, eligibleCapitalUsd, totalVolatileCryptoUsd],
+    [holding, eligibleCapitalUsd, totalVolatileCryptoUsd, allVolatileHoldings, tacticalConfig],
   );
 
   const pv = (val: string) => (isPrivate ? '****' : val);
@@ -226,40 +233,68 @@ export function CoinCard({
 
           {/* Smart Dip-Buying / Profit-Taking Insight */}
           {recommendation && holding.tradeSignal === 'BUY' && (
-            <div className="mt-3 p-2.5 rounded-lg bg-accent-red/10 border border-accent-red/30 text-[11px] space-y-1.5">
-              <div className="flex items-center justify-between gap-1 font-semibold text-accent-red">
+            <div
+              className={`mt-3 p-2.5 rounded-lg border text-[11px] space-y-1.5 ${
+                recommendation.isCooldownLocked
+                  ? 'bg-bg-input/60 border-border'
+                  : 'bg-accent-red/10 border-accent-red/30'
+              }`}
+            >
+              <div
+                className={`flex items-center justify-between gap-1 font-semibold ${
+                  recommendation.isCooldownLocked ? 'text-accent-gold' : 'text-accent-red'
+                }`}
+              >
                 <span className="flex items-center gap-1">
-                  <Sparkles size={12} /> {recommendation.dipTierLabel}
+                  {recommendation.isCooldownLocked ? <Lock size={12} /> : <Sparkles size={12} />}
+                  {recommendation.dipTierLabel}
                 </span>
-                <span>-{recommendation.dropFromDcaPct.toFixed(1)}%</span>
+                <span>
+                  -{recommendation.dropFromDcaPct.toFixed(1)}%
+                  {recommendation.priorityRank && recommendation.tacticalBuyUsd > 0
+                    ? ` · #${recommendation.priorityRank}`
+                    : ''}
+                </span>
               </div>
-              {recommendation.breakEvenBuyUsd > 0 && (
-                <p className="text-text-muted leading-snug">
-                  Para salir de Target Buy:{' '}
-                  <strong className="text-text-primary">
-                    {pv(formatUsd(recommendation.breakEvenBuyUsd))}
-                  </strong>{' '}
-                  <span className="text-[10px]">
-                    ({pv(formatTokens(recommendation.breakEvenBuyTokens, holding.ticker))} → DCA{' '}
-                    {pv(formatUsd(recommendation.newDcaAfterBreakEven))})
-                  </span>
-                </p>
-              )}
               {recommendation.tacticalBuyUsd > 0 ? (
                 <p className="text-text-muted leading-snug">
-                  Compra táctica:{' '}
+                  Compra táctica sugerida:{' '}
                   <strong className="text-accent-gold">
                     {pv(formatUsd(recommendation.tacticalBuyUsd))}
                   </strong>{' '}
                   <span className="text-[10px]">
-                    (de {pv(formatUsd(recommendation.eligibleCapitalUsd))} elegibles · reserva{' '}
-                    {pv(formatUsd(recommendation.residualAfterBuyUsd))})
+                    ({pv(formatTokens(recommendation.tacticalBuyTokens, holding.ticker))} · bloque fijo)
                   </span>
                 </p>
               ) : (
                 recommendation.blockedReason && (
-                  <p className="text-[10px] text-accent-gold">{recommendation.blockedReason}</p>
+                  <p className="text-[10px] text-accent-gold leading-snug">
+                    {recommendation.blockedReason}
+                  </p>
                 )
+              )}
+              {recommendation.lastDipBuyPrice && recommendation.lastDipBuyPrice > 0 && (
+                <p className="text-[10px] text-text-muted/85 leading-snug">
+                  Última compra en caída: {pv(formatUsd(recommendation.lastDipBuyPrice))}
+                  {recommendation.lastDipBuyDate ? ` (${recommendation.lastDipBuyDate.slice(0, 10)})` : ''}
+                  {recommendation.nextUnlockPrice &&
+                    recommendation.highestConsumedDipTier &&
+                    recommendation.highestConsumedDipTier < 3 && (
+                      <> · Desbloqueo ≤ {pv(formatUsd(recommendation.nextUnlockPrice))}</>
+                    )}
+                </p>
+              )}
+              {recommendation.breakEvenBuyUsd > 0 && (
+                <p className="text-[10px] text-text-muted/80 leading-snug">
+                  Info referencial (salir de BUY):{' '}
+                  <strong className="text-text-muted">
+                    {pv(formatUsd(recommendation.breakEvenBuyUsd))}
+                  </strong>{' '}
+                  <span>
+                    ({pv(formatTokens(recommendation.breakEvenBuyTokens, holding.ticker))} → DCA{' '}
+                    {pv(formatUsd(recommendation.newDcaAfterBreakEven))})
+                  </span>
+                </p>
               )}
               {recommendation.concentrationWarning && (
                 <p className="text-[10px] text-accent-gold font-medium">

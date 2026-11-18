@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Transaction, CoinMappings } from '../types';
+import type { Transaction, CoinMappings, TacticalDipConfig } from '../types';
 import {
   DEFAULT_TRANSACTIONS,
   getCoinMappings,
@@ -14,6 +14,9 @@ import {
   saveCustomCoinOrder,
   getArchivedCoins,
   saveArchivedCoins,
+  getTacticalDipConfig,
+  saveTacticalDipConfig,
+  sanitizeTacticalDipConfig,
 } from '../lib/storage';
 
 interface PortfolioState {
@@ -26,6 +29,7 @@ interface PortfolioState {
   goalTarget: number;
   customCoinOrder: string[];
   archivedCoins: string[];
+  tacticalDipConfig: TacticalDipConfig;
   undoTransactions: Transaction[] | null;
   undoLabel: string | null;
 
@@ -39,6 +43,7 @@ interface PortfolioState {
   setCustomCoinOrder: (order: string[]) => void;
   archiveCoin: (ticker: string) => void;
   unarchiveCoin: (ticker: string) => void;
+  setTacticalDipConfig: (patch: Partial<TacticalDipConfig>) => void;
   undoLastPortfolioAction: () => void;
   dismissPortfolioUndo: () => void;
   togglePrivacy: () => void;
@@ -60,6 +65,7 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
   goalTarget: getPortfolioGoal(),
   customCoinOrder: getCustomCoinOrder(),
   archivedCoins: getArchivedCoins(),
+  tacticalDipConfig: getTacticalDipConfig(),
   undoTransactions: null,
   undoLabel: null,
 
@@ -159,6 +165,12 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
     const next = get().archivedCoins.filter((t) => t.toUpperCase() !== clean);
     saveArchivedCoins(next);
     set({ archivedCoins: next });
+  },
+
+  setTacticalDipConfig: (patch) => {
+    const merged = sanitizeTacticalDipConfig({ ...get().tacticalDipConfig, ...patch });
+    saveTacticalDipConfig(merged);
+    set({ tacticalDipConfig: merged });
   },
 
   undoLastPortfolioAction: () => {
