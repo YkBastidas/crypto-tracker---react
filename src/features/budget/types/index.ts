@@ -202,6 +202,12 @@ export interface MonthEndEnvelopeOutcome {
   newBalance: number;
 }
 
+export interface LiveCryptoBalances {
+  binanceCryptoUsd?: number;
+  binancePaxgUsd?: number;
+  walletBtcUsd?: number;
+}
+
 export interface MonthEndSimulationResult {
   date: string;
   initialPhase: 1 | 2;

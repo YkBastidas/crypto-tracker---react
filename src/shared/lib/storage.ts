@@ -6,7 +6,10 @@ const KEYS = {
   API_KEY: 'coingecko-api-key',
   TRANSACTIONS: 'portfolio-transactions',
   STABLECOINS: 'stablecoin-tickers',
+  GOAL_TARGET: 'portfolio-goal-target',
 } as const;
+
+const DEFAULT_GOAL_TARGET = 20_000;
 
 // ── Default coin → CoinGecko ID mappings (ported from coinlist-ids.json) ──
 const DEFAULT_MAPPINGS: CoinMappings = {
@@ -98,4 +101,18 @@ export function getStablecoins(): string[] {
 
 export function saveStablecoins(tickers: string[]): void {
   setJson(KEYS.STABLECOINS, tickers.map((t) => t.toUpperCase().trim()).filter(Boolean));
+}
+
+// ── Public API: Portfolio Goal Target ──
+
+export function getPortfolioGoal(): number {
+  const stored = getJson<number>(KEYS.GOAL_TARGET, DEFAULT_GOAL_TARGET);
+  return typeof stored === 'number' && Number.isFinite(stored) && stored > 0
+    ? stored
+    : DEFAULT_GOAL_TARGET;
+}
+
+export function savePortfolioGoal(target: number): void {
+  if (!Number.isFinite(target) || target <= 0) return;
+  setJson(KEYS.GOAL_TARGET, Number(target.toFixed(2)));
 }

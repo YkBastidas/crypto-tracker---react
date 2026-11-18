@@ -7,6 +7,8 @@ import {
   persistTransactions,
   getStablecoins,
   saveStablecoins,
+  getPortfolioGoal,
+  savePortfolioGoal,
 } from '../lib/storage';
 
 interface PortfolioState {
@@ -16,6 +18,7 @@ interface PortfolioState {
   isPrivate: boolean;
   coinMappings: CoinMappings;
   stablecoins: string[];
+  goalTarget: number;
 
   // Actions
   loadTransactions: (txs: Transaction[]) => void;
@@ -26,6 +29,7 @@ interface PortfolioState {
   updateCoinMapping: (ticker: string, coinGeckoId: string) => void;
   setStablecoins: (tickers: string[]) => void;
   isStablecoin: (ticker: string) => boolean;
+  setGoalTarget: (target: number) => void;
 }
 
 export const usePortfolioStore = create<PortfolioState>((set, get) => ({
@@ -35,6 +39,7 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
   isPrivate: false,
   coinMappings: getCoinMappings(),
   stablecoins: getStablecoins(),
+  goalTarget: getPortfolioGoal(),
 
   loadTransactions: (txs) => {
     persistTransactions(txs);
@@ -73,5 +78,12 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
 
   isStablecoin: (ticker) => {
     return get().stablecoins.includes(ticker.toUpperCase());
+  },
+
+  setGoalTarget: (target) => {
+    if (!Number.isFinite(target) || target <= 0) return;
+    const clean = Number(target.toFixed(2));
+    savePortfolioGoal(clean);
+    set({ goalTarget: clean });
   },
 }));

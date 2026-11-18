@@ -7,6 +7,9 @@ import {
   RefreshCw,
   ChevronDown,
   ChevronUp,
+  Pencil,
+  Check,
+  X,
 } from 'lucide-react';
 import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { ProgressBar } from '../../../shared/ui/ProgressBar';
@@ -14,12 +17,12 @@ import { CoinGrid } from './CoinGrid';
 import { useInvestmentEngine } from '../hooks/useInvestmentEngine';
 import { formatUsd } from '../utils/calculations';
 
-const GOAL_TARGET = 20_000;
-
 export function Dashboard() {
-  const { transactions, isPrivate } = usePortfolioStore();
+  const { transactions, isPrivate, goalTarget, setGoalTarget } = usePortfolioStore();
   const { holdings, summary, loading, error, lastFetched, refreshPrices } = useInvestmentEngine();
   const [showHistory, setShowHistory] = useState(false);
+  const [editingGoal, setEditingGoal] = useState(false);
+  const [goalInput, setGoalInput] = useState(String(goalTarget));
   const [, forceUpdate] = useState(0);
 
   const pv = (val: string) => (isPrivate ? '****' : val);
@@ -136,10 +139,65 @@ export function Dashboard() {
       </div>
 
       {/* Goal Progress */}
-      <div className="border-t border-border pt-6">
+      <div className="border-t border-border pt-6 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs text-text-muted">Meta global del portafolio</span>
+          {editingGoal ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const parsed = parseFloat(goalInput);
+                if (Number.isFinite(parsed) && parsed > 0) {
+                  setGoalTarget(parsed);
+                  setEditingGoal(false);
+                }
+              }}
+              className="flex items-center gap-1.5"
+            >
+              <input
+                type="number"
+                step="0.01"
+                min="1"
+                required
+                value={goalInput}
+                onChange={(e) => setGoalInput(e.target.value)}
+                className="w-32 px-2.5 py-1 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
+              />
+              <button
+                type="submit"
+                title="Guardar meta"
+                className="p-1.5 rounded-lg bg-accent-green/20 border border-accent-green/40 text-accent-green cursor-pointer"
+              >
+                <Check size={13} />
+              </button>
+              <button
+                type="button"
+                title="Cancelar"
+                onClick={() => {
+                  setGoalInput(String(goalTarget));
+                  setEditingGoal(false);
+                }}
+                className="p-1.5 rounded-lg bg-bg-card border border-border text-text-muted cursor-pointer"
+              >
+                <X size={13} />
+              </button>
+            </form>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setGoalInput(String(goalTarget));
+                setEditingGoal(true);
+              }}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-bg-card border border-border text-text-muted hover:text-text-primary hover:border-accent-blue cursor-pointer"
+            >
+              <Pencil size={12} /> Editar meta ({pv(formatUsd(goalTarget))})
+            </button>
+          )}
+        </div>
         <ProgressBar
           current={summary.totalPortfolioValue}
-          target={GOAL_TARGET}
+          target={goalTarget}
           label="Goal Progress"
           isPrivate={isPrivate}
         />

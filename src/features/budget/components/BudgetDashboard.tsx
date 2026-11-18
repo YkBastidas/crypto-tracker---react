@@ -10,6 +10,7 @@ import {
   Pencil,
   Plus,
   PlusCircle,
+  RefreshCw,
   ShieldCheck,
   SlidersHorizontal,
   Smartphone,
@@ -21,6 +22,7 @@ import {
 } from 'lucide-react';
 import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { PrivacyValue } from '../../../shared/ui/PrivacyValue';
+import { useInvestmentEngine } from '../../crypto-portfolio/hooks/useInvestmentEngine';
 import { ENVELOPE_META, PAYMENT_METHOD_LABELS } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
 import type {
@@ -35,6 +37,7 @@ import {
   calculateDaysLeft,
   calculateEmergencyGoalTarget,
   calculateFundSummaries,
+  extractLiveCryptoBalances,
   formatBs,
   formatUsd,
 } from '../utils/calculations';
@@ -100,10 +103,13 @@ export function BudgetDashboard({
     installments,
     customAccounts,
     emergencyGoal,
+    syncCryptoDca,
+    setSyncCryptoDca,
     bcvRate,
     removeMovement,
     removeCustomAccount,
   } = useBudgetStore();
+  const { holdings, loading: dcaLoading, refreshPrices } = useInvestmentEngine();
   const [quickModalOpen, setQuickModalOpen] = useState(false);
   const [createAccountOpen, setCreateAccountOpen] = useState(false);
   const [emergencyGoalOpen, setEmergencyGoalOpen] = useState(false);
@@ -116,9 +122,24 @@ export function BudgetDashboard({
   const [payingExpense, setPayingExpense] = useState<RecurringExpense | null>(null);
   const [payingInstallment, setPayingInstallment] = useState<InstallmentPlan | null>(null);
 
+  const liveCrypto = useMemo(
+    () =>
+      syncCryptoDca && holdings.length > 0
+        ? extractLiveCryptoBalances(holdings)
+        : undefined,
+    [syncCryptoDca, holdings],
+  );
+
+  const hasLiveCryptoMatch = Boolean(
+    liveCrypto &&
+      (liveCrypto.binanceCryptoUsd !== undefined ||
+        liveCrypto.binancePaxgUsd !== undefined ||
+        liveCrypto.walletBtcUsd !== undefined),
+  );
+
   const { funds, totalNetWorth, envelopes } = useMemo(
-    () => calculateFundSummaries(movements, bcvRate, customAccounts),
-    [movements, bcvRate, customAccounts],
+    () => calculateFundSummaries(movements, bcvRate, customAccounts, liveCrypto),
+    [movements, bcvRate, customAccounts, liveCrypto],
   );
 
   const emergencyGoalStats = useMemo(
@@ -199,6 +220,37 @@ export function BudgetDashboard({
             <p className="text-xs text-text-muted mt-1">
               Distribuido en {funds.length} fondos y cuentas activas
             </p>
+            {holdings.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={() => setSyncCryptoDca(!syncCryptoDca)}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border cursor-pointer transition-colors ${
+                    syncCryptoDca && hasLiveCryptoMatch
+                      ? 'bg-accent-green/15 border-accent-green/40 text-accent-green'
+                      : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                  }`}
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      syncCryptoDca && hasLiveCryptoMatch ? 'bg-accent-green' : 'bg-text-muted'
+                    }`}
+                  />
+                  {syncCryptoDca ? 'DCA en vivo activo' : 'Solo Ledger manual'}
+                </button>
+                {syncCryptoDca && (
+                  <button
+                    type="button"
+                    onClick={refreshPrices}
+                    disabled={dcaLoading}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] bg-bg-input border border-border text-text-muted hover:text-accent-blue hover:border-accent-blue disabled:opacity-40 cursor-pointer"
+                  >
+                    <RefreshCw size={11} className={dcaLoading ? 'animate-spin' : ''} />
+                    {dcaLoading ? 'Actualizando...' : 'CoinGecko'}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap gap-2">

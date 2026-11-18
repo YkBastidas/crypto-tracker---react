@@ -1,3 +1,4 @@
+import type { CoinHolding } from '../../../shared/types';
 import { ENVELOPE_META } from '../data/defaultSeed';
 import type {
   AssetBucketId,
@@ -9,6 +10,7 @@ import type {
   FundSummary,
   InstallmentPlan,
   LedgerMovement,
+  LiveCryptoBalances,
   RecurringExpense,
 } from '../types';
 
@@ -300,10 +302,43 @@ function sumCustomBsBalance(
   return { balanceBs, hasBsData };
 }
 
+export function extractLiveCryptoBalances(holdings: CoinHolding[]): LiveCryptoBalances {
+  let cryptoSum = 0;
+  let paxgSum = 0;
+  let btcSum = 0;
+  let hasCrypto = false;
+  let hasPaxg = false;
+  let hasBtc = false;
+
+  for (const h of holdings) {
+    if (h.isStablecoin || h.currentTokens <= 0) continue;
+    const ticker = h.ticker.toUpperCase();
+    const effectiveUsd = h.currentValue > 0 ? h.currentValue : Math.max(0, h.investedUsd);
+
+    if (ticker === 'BTC') {
+      btcSum += effectiveUsd;
+      hasBtc = true;
+    } else if (ticker === 'PAXG') {
+      paxgSum += effectiveUsd;
+      hasPaxg = true;
+    } else {
+      cryptoSum += effectiveUsd;
+      hasCrypto = true;
+    }
+  }
+
+  return {
+    binanceCryptoUsd: hasCrypto ? Number(cryptoSum.toFixed(2)) : undefined,
+    binancePaxgUsd: hasPaxg ? Number(paxgSum.toFixed(2)) : undefined,
+    walletBtcUsd: hasBtc ? Number(btcSum.toFixed(2)) : undefined,
+  };
+}
+
 export function calculateFundSummaries(
   movements: LedgerMovement[],
   bcvRate: number | null = null,
   customAccounts: CustomAccount[] = [],
+  liveCrypto?: LiveCryptoBalances,
 ): {
   funds: FundSummary[];
   totalNetWorth: number;
@@ -318,15 +353,24 @@ export function calculateFundSummaries(
   const { balanceBs, hasBsData } = sumBolivaresBalance(movements, bcvRate);
   const cuentaBolivares =
     hasBsData && bcvRate && bcvRate > 0 ? balanceBs / bcvRate : cuentaBolivaresUsdLedger;
-  const binanceCryptoBal = sumBucketBalance(movements, ['binance_crypto']);
+  const binanceCryptoBal =
+    liveCrypto?.binanceCryptoUsd !== undefined
+      ? Number(liveCrypto.binanceCryptoUsd.toFixed(2))
+      : sumBucketBalance(movements, ['binance_crypto']);
   const binanceUsdtBal = sumBucketBalance(movements, ['binance_usdt']) + binanceSobres;
-  const binancePaxgBal = sumBucketBalance(movements, ['binance_paxg']);
+  const binancePaxgBal =
+    liveCrypto?.binancePaxgUsd !== undefined
+      ? Number(liveCrypto.binancePaxgUsd.toFixed(2))
+      : sumBucketBalance(movements, ['binance_paxg']);
   const inversionesBinance = binanceCryptoBal + binanceUsdtBal + binancePaxgBal;
 
   const emergenciaEfectivoBal = sumBucketBalance(movements, ['emergencias']);
   const emergenciaUsdcBal = sumBucketBalance(movements, ['binance_usdc']);
   const fondoEmergencia = emergenciaEfectivoBal + emergenciaUsdcBal;
-  const billeteraBtc = sumBucketBalance(movements, ['wallet_btc']);
+  const billeteraBtc =
+    liveCrypto?.walletBtcUsd !== undefined
+      ? Number(liveCrypto.walletBtcUsd.toFixed(2))
+      : sumBucketBalance(movements, ['wallet_btc']);
 
   const rawFunds: Omit<FundSummary, 'percentage'>[] = [
     {

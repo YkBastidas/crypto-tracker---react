@@ -56,7 +56,11 @@ interface BudgetState {
   customAccounts: CustomAccount[];
   quincenaConfig: QuincenaConfig;
   emergencyGoal: EmergencyGoalConfig;
+  syncCryptoDca: boolean;
   undoEntry: UndoEntry | null;
+
+  // Live DCA sync
+  setSyncCryptoDca: (enabled: boolean) => void;
 
   // Emergency goal
   updateEmergencyGoal: (patch: Partial<EmergencyGoalConfig>) => void;
@@ -184,11 +188,14 @@ export const useBudgetStore = create<BudgetState>()(
       customAccounts: [],
       quincenaConfig: initialSeed.quincenaConfig,
       emergencyGoal: DEFAULT_EMERGENCY_GOAL,
+      syncCryptoDca: true,
       undoEntry: null,
       bcvRate: null,
       bcvUpdatedAt: null,
       bcvLoading: false,
       bcvError: null,
+
+      setSyncCryptoDca: (enabled) => set({ syncCryptoDca: enabled }),
 
       updateEmergencyGoal: (patch) =>
         set((state) => ({
@@ -820,6 +827,7 @@ export const useBudgetStore = create<BudgetState>()(
         customAccounts: state.customAccounts,
         quincenaConfig: state.quincenaConfig,
         emergencyGoal: state.emergencyGoal,
+        syncCryptoDca: state.syncCryptoDca,
         bcvRate: state.bcvRate,
         bcvUpdatedAt: state.bcvUpdatedAt,
       }),

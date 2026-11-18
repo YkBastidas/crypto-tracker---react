@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CoinHolding } from '../../../shared/types';
 import type {
   CustomAccount,
   EnvelopeRule,
@@ -11,6 +12,7 @@ import {
   calculateEnvelopeSummaries,
   calculateFundSummaries,
   computeQuincenaPreview,
+  extractLiveCryptoBalances,
   getInstallmentArrears,
 } from './calculations';
 
@@ -307,5 +309,71 @@ describe('budget/utils/calculations', () => {
     expect(advanceDueDate('2026-11-18', 'quincenal')).toBe('2026-12-03');
     expect(advanceDueDate('2026-11-18', 'mensual')).toBe('2026-12-18');
     expect(advanceDueDate('2026-11-18', 'anual')).toBe('2027-11-18');
+  });
+
+  it('extracts live DCA crypto balances with offline cost-basis fallback and preserves envelope USDT', () => {
+    const baseHolding: Omit<CoinHolding, 'ticker' | 'currentValue' | 'investedUsd' | 'isStablecoin' | 'currentTokens'> = {
+      coinGeckoId: 'id',
+      totalSpent: 0,
+      soldUsd: 0,
+      dca: 0,
+      livePrice: 0,
+      pnl: 0,
+      pnlPercent: 0,
+      targetBuyPct: 20,
+      targetSellPct: 20,
+      targetBuyPrice: 0,
+      targetSellPrice: 0,
+      tradeSignal: 'WATCH',
+    };
+
+    const holdings: CoinHolding[] = [
+      { ...baseHolding, ticker: 'BTC', isStablecoin: false, currentTokens: 0.01, currentValue: 900, investedUsd: 600 },
+      { ...baseHolding, ticker: 'PAXG', isStablecoin: false, currentTokens: 0.1, currentValue: 0, investedUsd: 250 }, // offline fallback -> 250
+      { ...baseHolding, ticker: 'ETH', isStablecoin: false, currentTokens: 0.2, currentValue: 600, investedUsd: 400 },
+      { ...baseHolding, ticker: 'SOL', isStablecoin: false, currentTokens: 1, currentValue: 200, investedUsd: 150 },
+      { ...baseHolding, ticker: 'USDT', isStablecoin: true, currentTokens: 500, currentValue: 500, investedUsd: 500 }, // ignored (stable)
+    ];
+
+    const live = extractLiveCryptoBalances(holdings);
+    expect(live).toEqual({
+      binanceCryptoUsd: 800, // ETH 600 + SOL 200
+      binancePaxgUsd: 250,   // PAXG offline cost basis fallback
+      walletBtcUsd: 900,
+    });
+
+    const movements: LedgerMovement[] = [
+      {
+        id: 'm1',
+        date: '2026-11-01',
+        bucket: 'imprescindibles',
+        type: 'Ingreso a Sobre',
+        amountUsd: 150,
+        paymentMethod: 'binance_usdt',
+      },
+      {
+        id: 'm2',
+        date: '2026-11-01',
+        bucket: 'binance_usdt',
+        type: 'Transferencia (Entrada)',
+        amountUsd: 50,
+        paymentMethod: 'binance_usdt',
+      },
+    ];
+
+    const { funds, totalNetWorth } = calculateFundSummaries(movements, null, [], live);
+    const binanceFund = funds.find((f) => f.id === 'inversiones_binance')!;
+    const btcFund = funds.find((f) => f.id === 'billetera_btc')!;
+
+    // inversiones_binance = 800 (live crypto) + 250 (live PAXG fallback) + 200 (150 envelope + 50 ledger USDT) = 1250
+    expect(binanceFund.balance).toBeCloseTo(1250, 2);
+    expect(binanceFund.breakdown).toEqual([
+      { label: 'Crypto', amount: 800 },
+      { label: 'USDT', amount: 200 },
+      { label: 'PAXG', amount: 250 },
+    ]);
+    expect(btcFund.balance).toBeCloseTo(900, 2);
+    // 1250 + 900 = 2150
+    expect(totalNetWorth).toBeCloseTo(2150, 2);
   });
 });
