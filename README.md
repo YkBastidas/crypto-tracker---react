@@ -42,7 +42,12 @@ _Vista general del dashboard con balances globales, progreso de metas e históri
 
 - [x] **Fase 1**: Tracker de Cripto y Fiat funcional (Local-First).
 - [x] **Fase 2**: Motor Quincenal, Sobres, Gastos, Cierre Mensual y Tasa BCV.
-- [ ] **Fase 3**: Sincronización opcional en la nube (Supabase) y PWA móvil.
+- [ ] **Fase 3**: Suite de pruebas contables (Vitest), arreglos e integración financiera (Portafolio en vivo, *Ready to Assign*, Dual-Rate BCV/USDT, Flujo de Caja, Gastos Compartidos y Respaldo Unificado).
+- [ ] **Fase 4**: Sincronización opcional en la nube (Supabase) y PWA móvil.
+- [ ] **Fase 5**: Integración Binance API (Read-Only) + DCA Automático.
+- [ ] **Fase 6**: Evolución a SuperApp (*Life OS*): Rutinas interactivas, Habit Tracker y Biblioteca.
+- [ ] **Fase 7**: Smart Command Bar y *AI Life/Wealth Coach*.
+- [ ] **Fase 8**: Empaquetado Móvil (Play Store), Perfiles Regionales Globales y Sostenibilidad.
 
 Consulta el detalle completo y el progreso dinámico en [ROADMAP.md](./ROADMAP.md).
 
