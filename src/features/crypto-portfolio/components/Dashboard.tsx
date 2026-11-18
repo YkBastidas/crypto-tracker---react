@@ -10,22 +10,61 @@ import {
   Pencil,
   Check,
   X,
+  Trash2,
 } from 'lucide-react';
 import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { ProgressBar } from '../../../shared/ui/ProgressBar';
 import { CoinGrid } from './CoinGrid';
 import { useInvestmentEngine } from '../hooks/useInvestmentEngine';
+import { TRANSACTION_TYPES, type Transaction, type TransactionType } from '../types';
 import { formatUsd } from '../utils/calculations';
 
 export function Dashboard() {
-  const { transactions, isPrivate, goalTarget, setGoalTarget } = usePortfolioStore();
+  const {
+    transactions,
+    isPrivate,
+    goalTarget,
+    setGoalTarget,
+    updateTransaction,
+    removeTransaction,
+  } = usePortfolioStore();
   const { holdings, summary, loading, error, lastFetched, refreshPrices } = useInvestmentEngine();
   const [showHistory, setShowHistory] = useState(false);
   const [editingGoal, setEditingGoal] = useState(false);
   const [goalInput, setGoalInput] = useState(String(goalTarget));
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editDate, setEditDate] = useState('');
+  const [editType, setEditType] = useState<TransactionType>('Buy');
+  const [editAsset, setEditAsset] = useState('');
+  const [editTokens, setEditTokens] = useState('');
+  const [editUsd, setEditUsd] = useState('');
   const [, forceUpdate] = useState(0);
 
   const pv = (val: string) => (isPrivate ? '****' : val);
+
+  const startEditRow = (originalIndex: number, tx: Transaction) => {
+    setEditingIndex(originalIndex);
+    setEditDate(tx.date);
+    setEditType(tx.type);
+    setEditAsset(tx.asset);
+    setEditTokens(tx.tokens);
+    setEditUsd(String(tx.usdValue));
+  };
+
+  const handleSaveRow = (originalIndex: number) => {
+    const parsedUsd = parseFloat(editUsd);
+    if (!editAsset.trim() || !editTokens.trim() || !Number.isFinite(parsedUsd) || parsedUsd < 0) {
+      return;
+    }
+    updateTransaction(originalIndex, {
+      date: editDate.trim() || new Date().toISOString().slice(0, 19).replace('T', ' '),
+      type: editType,
+      asset: editAsset.trim().toUpperCase(),
+      tokens: editTokens.trim(),
+      usdValue: Number(parsedUsd.toFixed(2)),
+    });
+    setEditingIndex(null);
+  };
 
   if (transactions.length === 0) {
     return (
@@ -226,27 +265,132 @@ export function Dashboard() {
                   <th className="pb-2 pr-4">Type</th>
                   <th className="pb-2 pr-4">Asset</th>
                   <th className="pb-2 pr-4 text-right">Tokens</th>
-                  <th className="pb-2 text-right">USD Value</th>
+                  <th className="pb-2 pr-4 text-right">USD Value</th>
+                  <th className="pb-2 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {[...transactions]
-                  .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-                  .map((tx, i) => (
-                    <tr key={i} className="border-b border-border/50 hover:bg-white/[0.02]">
-                      <td className="py-2 pr-4 text-text-muted whitespace-nowrap">
-                        {tx.date}
-                      </td>
-                      <td className="py-2 pr-4 whitespace-nowrap">{tx.type}</td>
-                      <td className="py-2 pr-4 font-medium">{pv(tx.asset)}</td>
-                      <td className="py-2 pr-4 text-right font-mono text-xs">
-                        {pv(tx.tokens)}
-                      </td>
-                      <td className="py-2 text-right font-mono text-xs">
-                        {pv(formatUsd(tx.usdValue))}
-                      </td>
-                    </tr>
-                  ))}
+                {transactions
+                  .map((tx, originalIndex) => ({ tx, originalIndex }))
+                  .sort((a, b) => new Date(b.tx.date).getTime() - new Date(a.tx.date).getTime())
+                  .map(({ tx, originalIndex }) => {
+                    const isEditing = editingIndex === originalIndex;
+                    return (
+                      <tr key={originalIndex} className="border-b border-border/50 hover:bg-white/[0.02]">
+                        <td className="py-2 pr-4 text-text-muted whitespace-nowrap">
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              value={editDate}
+                              onChange={(e) => setEditDate(e.target.value)}
+                              className="w-40 px-2 py-1 rounded text-xs bg-bg-input border border-border text-text-primary"
+                            />
+                          ) : (
+                            tx.date
+                          )}
+                        </td>
+                        <td className="py-2 pr-4 whitespace-nowrap">
+                          {isEditing ? (
+                            <select
+                              value={editType}
+                              onChange={(e) => setEditType(e.target.value as TransactionType)}
+                              className="px-2 py-1 rounded text-xs bg-bg-input border border-border text-text-primary"
+                            >
+                              {TRANSACTION_TYPES.map((t) => (
+                                <option key={t} value={t}>
+                                  {t}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            tx.type
+                          )}
+                        </td>
+                        <td className="py-2 pr-4 font-medium">
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              value={editAsset}
+                              onChange={(e) => setEditAsset(e.target.value)}
+                              className="w-20 px-2 py-1 rounded text-xs uppercase bg-bg-input border border-border text-text-primary"
+                            />
+                          ) : (
+                            pv(tx.asset)
+                          )}
+                        </td>
+                        <td className="py-2 pr-4 text-right font-mono text-xs">
+                          {isEditing ? (
+                            <input
+                              type="text"
+                              value={editTokens}
+                              onChange={(e) => setEditTokens(e.target.value)}
+                              className="w-28 px-2 py-1 rounded text-xs text-right bg-bg-input border border-accent-blue text-text-primary"
+                            />
+                          ) : (
+                            pv(tx.tokens)
+                          )}
+                        </td>
+                        <td className="py-2 pr-4 text-right font-mono text-xs">
+                          {isEditing ? (
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={editUsd}
+                              onChange={(e) => setEditUsd(e.target.value)}
+                              className="w-24 px-2 py-1 rounded text-xs text-right bg-bg-input border border-border text-text-primary"
+                            />
+                          ) : (
+                            pv(formatUsd(tx.usdValue))
+                          )}
+                        </td>
+                        <td className="py-2 text-right whitespace-nowrap">
+                          {isEditing ? (
+                            <div className="inline-flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => handleSaveRow(originalIndex)}
+                                title="Guardar cambios"
+                                className="p-1.5 rounded bg-accent-green/20 border border-accent-green/40 text-accent-green cursor-pointer"
+                              >
+                                <Check size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingIndex(null)}
+                                title="Cancelar"
+                                className="p-1.5 rounded bg-bg-input border border-border text-text-muted cursor-pointer"
+                              >
+                                <X size={12} />
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="inline-flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => startEditRow(originalIndex, tx)}
+                                title="Editar transacción"
+                                className="p-1.5 rounded bg-bg-card border border-border text-text-muted hover:text-accent-blue hover:border-accent-blue cursor-pointer"
+                              >
+                                <Pencil size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (editingIndex === originalIndex) setEditingIndex(null);
+                                  removeTransaction(originalIndex);
+                                }}
+                                title="Eliminar transacción"
+                                className="p-1.5 rounded bg-bg-card border border-border text-text-muted hover:text-accent-red hover:border-accent-red cursor-pointer"
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>

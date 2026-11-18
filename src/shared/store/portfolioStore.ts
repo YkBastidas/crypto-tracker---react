@@ -20,11 +20,16 @@ interface PortfolioState {
   coinMappings: CoinMappings;
   stablecoins: string[];
   goalTarget: number;
+  undoTransactions: Transaction[] | null;
+  undoLabel: string | null;
 
   // Actions
   loadTransactions: (txs: Transaction[]) => void;
   addTransaction: (tx: Transaction) => void;
+  updateTransaction: (index: number, patch: Partial<Transaction>) => void;
   removeTransaction: (index: number) => void;
+  undoLastPortfolioAction: () => void;
+  dismissPortfolioUndo: () => void;
   togglePrivacy: () => void;
   setDirty: (dirty: boolean) => void;
   updateCoinMapping: (ticker: string, coinGeckoId: string) => void;
@@ -42,23 +47,67 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
   coinMappings: getCoinMappings(),
   stablecoins: getStablecoins(),
   goalTarget: getPortfolioGoal(),
+  undoTransactions: null,
+  undoLabel: null,
 
   loadTransactions: (txs) => {
     persistTransactions(txs);
-    set({ transactions: txs, isDirty: false });
+    set({ transactions: txs, isDirty: false, undoTransactions: null, undoLabel: null });
   },
 
   addTransaction: (tx) => {
-    const updated = [...get().transactions, tx];
+    const prev = get().transactions;
+    const updated = [...prev, tx];
     persistTransactions(updated);
-    set({ transactions: updated, isDirty: true });
+    set({
+      transactions: updated,
+      isDirty: true,
+      undoTransactions: prev,
+      undoLabel: `Agregada: ${tx.type} ${tx.asset}`,
+    });
+  },
+
+  updateTransaction: (index, patch) => {
+    const prev = get().transactions;
+    const target = prev[index];
+    if (!target) return;
+    const updated = prev.map((tx, i) => (i === index ? { ...tx, ...patch } : tx));
+    persistTransactions(updated);
+    set({
+      transactions: updated,
+      isDirty: true,
+      undoTransactions: prev,
+      undoLabel: `Editada: ${target.type} ${target.asset}`,
+    });
   },
 
   removeTransaction: (index) => {
-    const updated = get().transactions.filter((_, i) => i !== index);
+    const prev = get().transactions;
+    const target = prev[index];
+    if (!target) return;
+    const updated = prev.filter((_, i) => i !== index);
     persistTransactions(updated);
-    set({ transactions: updated, isDirty: true });
+    set({
+      transactions: updated,
+      isDirty: true,
+      undoTransactions: prev,
+      undoLabel: `Eliminada: ${target.type} ${target.asset}`,
+    });
   },
+
+  undoLastPortfolioAction: () => {
+    const prev = get().undoTransactions;
+    if (!prev) return;
+    persistTransactions(prev);
+    set({
+      transactions: prev,
+      isDirty: true,
+      undoTransactions: null,
+      undoLabel: null,
+    });
+  },
+
+  dismissPortfolioUndo: () => set({ undoTransactions: null, undoLabel: null }),
 
   togglePrivacy: () =>
     set((state) => ({ isPrivate: !state.isPrivate })),
@@ -91,6 +140,11 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
 
   resetToDefaultTransactions: () => {
     persistTransactions(DEFAULT_TRANSACTIONS);
-    set({ transactions: DEFAULT_TRANSACTIONS, isDirty: false });
+    set({
+      transactions: DEFAULT_TRANSACTIONS,
+      isDirty: false,
+      undoTransactions: null,
+      undoLabel: null,
+    });
   },
 }));

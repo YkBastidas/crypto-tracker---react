@@ -57,8 +57,18 @@ const NAV_ITEMS: { id: AppView; label: string; shortLabel: string; icon: ReactNo
 ];
 
 export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps) {
-  const { transactions, isDirty, isPrivate, togglePrivacy, setDirty, loadTransactions } =
-    usePortfolioStore();
+  const {
+    transactions,
+    isDirty,
+    isPrivate,
+    togglePrivacy,
+    setDirty,
+    loadTransactions,
+    undoTransactions,
+    undoLabel,
+    undoLastPortfolioAction,
+    dismissPortfolioUndo,
+  } = usePortfolioStore();
   const {
     undoEntry,
     undoLastAction,
@@ -70,6 +80,27 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
     refreshBcvRate,
     setManualBcvRate,
   } = useBudgetStore();
+
+  const activeUndo =
+    activeView === 'crypto' && undoTransactions
+      ? {
+          label: undoLabel ?? 'Cambio en Portafolio',
+          onUndo: undoLastPortfolioAction,
+          onDismiss: dismissPortfolioUndo,
+        }
+      : undoEntry
+        ? {
+            label: undoEntry.label,
+            onUndo: undoLastAction,
+            onDismiss: dismissUndo,
+          }
+        : undoTransactions
+          ? {
+              label: undoLabel ?? 'Cambio en Portafolio',
+              onUndo: undoLastPortfolioAction,
+              onDismiss: dismissPortfolioUndo,
+            }
+          : null;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -375,23 +406,23 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
         onNavigate={(view) => onChangeView(view)}
       />
 
-      {undoEntry && (
+      {activeUndo && (
         <div className="fixed bottom-20 lg:bottom-6 right-4 left-4 sm:left-auto sm:min-w-[320px] z-40 flex items-center justify-between gap-3 bg-bg-card border border-accent-gold/40 rounded-xl px-4 py-3 shadow-2xl">
           <div className="min-w-0">
-            <p className="text-xs font-semibold text-text-primary truncate">{undoEntry.label}</p>
+            <p className="text-xs font-semibold text-text-primary truncate">{activeUndo.label}</p>
             <p className="text-[11px] text-text-muted">¿Te equivocaste? Puedes revertir el cambio.</p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={undoLastAction}
+              onClick={activeUndo.onUndo}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-accent-gold/20 border border-accent-gold/40 text-accent-gold hover:bg-accent-gold/30 cursor-pointer"
             >
               <RotateCcw size={13} /> Deshacer
             </button>
             <button
               type="button"
-              onClick={dismissUndo}
+              onClick={activeUndo.onDismiss}
               title="Cerrar"
               className="p-1 text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer"
             >
