@@ -293,4 +293,88 @@ describe('budget/store & monthEndEngine invariants', () => {
     expect(undoneEnvs.find((e) => e.id === 'imprescindibles')!.available).toBeCloseTo(300, 2);
     expect(undoneEnvs.find((e) => e.id === 'ahorro_inversion')!.available).toBeCloseTo(0, 2);
   });
+
+  it('recordCryptoPortfolioUsdtFlow prioritizes Ahorro USDT, supports cascading overdraft, and Undo restores atomically', () => {
+    const store = useBudgetStore.getState();
+    store.addMovement({
+      date: '2026-11-10',
+      bucket: 'ahorro_inversion',
+      type: 'Ingreso a Sobre',
+      amountUsd: 100,
+      paymentMethod: 'binance_usdt',
+    });
+    store.addMovement({
+      date: '2026-11-10',
+      bucket: 'binance_usdt',
+      type: 'Transferencia (Entrada)',
+      amountUsd: 50,
+      paymentMethod: 'binance_usdt',
+    });
+    store.addMovement({
+      date: '2026-11-10',
+      bucket: 'disfrute',
+      type: 'Ingreso a Sobre',
+      amountUsd: 80,
+      paymentMethod: 'binance_usdt',
+    });
+    store.addMovement({
+      date: '2026-11-10',
+      bucket: 'imprescindibles',
+      type: 'Ingreso a Sobre',
+      amountUsd: 120,
+      paymentMethod: 'binance_usdt',
+    });
+
+    // Spend $200 with allowOverdraftFromOtherEnvelopes: true ->
+    // takes $100 from ahorro_inversion, $50 from unassigned binance_usdt, $50 from disfrute ($30 left in disfrute)
+    useBudgetStore.getState().recordCryptoPortfolioUsdtFlow({
+      date: '2026-11-18',
+      direction: 'out',
+      amountUsd: 200,
+      notes: 'Compra Crypto BTC',
+      allowOverdraftFromOtherEnvelopes: true,
+    });
+
+    const envs = calculateEnvelopeSummaries(useBudgetStore.getState().movements);
+    const funds = calculateFundSummaries(useBudgetStore.getState().movements);
+
+    expect(envs.find((e) => e.id === 'ahorro_inversion')!.byMethod.binance).toBeCloseTo(0, 2);
+    expect(envs.find((e) => e.id === 'disfrute')!.byMethod.binance).toBeCloseTo(30, 2);
+    expect(envs.find((e) => e.id === 'imprescindibles')!.byMethod.binance).toBeCloseTo(120, 2);
+    expect(
+      funds.funds.find((f) => f.id === 'inversiones_binance')?.breakdown?.find((b) => b.label === 'USDT')?.amount,
+    ).toBeCloseTo(150, 2);
+
+    // Memento Undo restores all cascading entries at once
+    useBudgetStore.getState().undoLastAction();
+    const undoneEnvs = calculateEnvelopeSummaries(useBudgetStore.getState().movements);
+    expect(undoneEnvs.find((e) => e.id === 'ahorro_inversion')!.byMethod.binance).toBeCloseTo(100, 2);
+    expect(undoneEnvs.find((e) => e.id === 'disfrute')!.byMethod.binance).toBeCloseTo(80, 2);
+  });
+
+  it('recordCryptoPortfolioUsdcFlow updates Emergency Fund USDC balance in both directions', () => {
+    useBudgetStore.getState().recordCryptoPortfolioUsdcFlow({
+      date: '2026-11-18',
+      direction: 'in',
+      amountUsd: 250,
+      notes: 'Emergencia USDC (Deposit)',
+    });
+
+    let funds = calculateFundSummaries(useBudgetStore.getState().movements);
+    expect(
+      funds.funds.find((f) => f.id === 'fondo_emergencia')?.breakdown?.find((b) => b.label === 'USDC')?.amount,
+    ).toBeCloseTo(250, 2);
+
+    useBudgetStore.getState().recordCryptoPortfolioUsdcFlow({
+      date: '2026-11-18',
+      direction: 'out',
+      amountUsd: 100,
+      notes: 'Emergencia USDC (Withdraw)',
+    });
+
+    funds = calculateFundSummaries(useBudgetStore.getState().movements);
+    expect(
+      funds.funds.find((f) => f.id === 'fondo_emergencia')?.breakdown?.find((b) => b.label === 'USDC')?.amount,
+    ).toBeCloseTo(150, 2);
+  });
 });

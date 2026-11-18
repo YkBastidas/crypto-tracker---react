@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { createDefaultSeed } from '../data/defaultSeed';
+import { createDefaultSeed, ENVELOPE_META } from '../data/defaultSeed';
 import type {
   AccountCurrency,
   AssetBucketId,
@@ -17,7 +17,12 @@ import type {
   QuincenaConfig,
   RecurringExpense,
 } from '../types';
-import { advanceDueDate, type QuincenaPreview } from '../utils/calculations';
+import {
+  advanceDueDate,
+  calculateEligibleInvestmentCapital,
+  calculateEnvelopeSummaries,
+  type QuincenaPreview,
+} from '../utils/calculations';
 import { fetchBcvUsdRate } from '../services/bcvApi';
 import { buildLedgerMovementsFromSimulation } from '../services/monthEndEngine';
 
@@ -88,6 +93,19 @@ interface BudgetState {
 
   // Ledger actions
   addMovement: (movement: Omit<LedgerMovement, 'id'>) => void;
+  recordCryptoPortfolioUsdtFlow: (params: {
+    date: string;
+    direction: 'out' | 'in';
+    amountUsd: number;
+    notes: string;
+    allowOverdraftFromOtherEnvelopes?: boolean;
+  }) => void;
+  recordCryptoPortfolioUsdcFlow: (params: {
+    date: string;
+    direction: 'out' | 'in';
+    amountUsd: number;
+    notes: string;
+  }) => void;
   transferBetweenBuckets: (params: {
     date: string;
     fromBucket: AssetBucketId;
@@ -305,6 +323,145 @@ export const useBudgetStore = create<BudgetState>()(
           bcvRate: Number(rate.toFixed(4)),
           bcvUpdatedAt: new Date().toISOString(),
           bcvError: null,
+        });
+      },
+
+      recordCryptoPortfolioUsdtFlow: ({
+        date,
+        direction,
+        amountUsd,
+        notes,
+        allowOverdraftFromOtherEnvelopes = false,
+      }) => {
+        const cleanAmount = Number(Math.abs(amountUsd).toFixed(2));
+        if (!Number.isFinite(cleanAmount) || cleanAmount <= 0) return;
+
+        set((state) => {
+          if (direction === 'in') {
+            const incoming: LedgerMovement = {
+              id: makeId('mov'),
+              date,
+              bucket: 'ahorro_inversion',
+              type: 'Ingreso a Sobre',
+              amountUsd: cleanAmount,
+              paymentMethod: 'binance_usdt',
+              notes,
+            };
+            return {
+              undoEntry: createUndoSnapshot(notes, state),
+              movements: [incoming, ...state.movements],
+            };
+          }
+
+          const envelopes = calculateEnvelopeSummaries(state.movements);
+          const { unassignedUsdtUsd } = calculateEligibleInvestmentCapital(state.movements);
+          const created: LedgerMovement[] = [];
+          let remaining = cleanAmount;
+
+          // 1. Prioritize Ahorro e Inversión Binance USDT
+          const ahorroEnv = envelopes.find((e) => e.id === 'ahorro_inversion');
+          const ahorroUsdtAvail = Math.max(0, Number((ahorroEnv?.byMethod.binance ?? 0).toFixed(2)));
+          if (ahorroUsdtAvail > 0 && remaining > 0) {
+            const take = Number(Math.min(remaining, ahorroUsdtAvail).toFixed(2));
+            if (take > 0) {
+              created.push({
+                id: makeId('mov'),
+                date,
+                bucket: 'ahorro_inversion',
+                type: 'Barrido a Inversión',
+                amountUsd: take,
+                paymentMethod: 'binance_usdt',
+                notes,
+              });
+              remaining = Number((remaining - take).toFixed(2));
+            }
+          }
+
+          // 2. Next consume unassigned Binance USDT
+          if (remaining > 0.01 && unassignedUsdtUsd > 0) {
+            const take = Number(Math.min(remaining, unassignedUsdtUsd).toFixed(2));
+            if (take > 0) {
+              created.push({
+                id: makeId('mov'),
+                date,
+                bucket: 'binance_usdt',
+                type: 'Transferencia (Salida)',
+                amountUsd: take,
+                paymentMethod: 'binance_usdt',
+                notes,
+              });
+              remaining = Number((remaining - take).toFixed(2));
+            }
+          }
+
+          // 3. Cascade to other envelopes only if overdraft is explicitly allowed
+          if (remaining > 0.01 && allowOverdraftFromOtherEnvelopes) {
+            const fallbackOrder: EnvelopeId[] = [
+              'disfrute',
+              'crecimiento_personal',
+              'imprescindibles',
+              'provisiones_anuales',
+            ];
+            for (const envId of fallbackOrder) {
+              if (remaining <= 0.01) break;
+              const env = envelopes.find((e) => e.id === envId);
+              const avail = Math.max(0, Number((env?.byMethod.binance ?? 0).toFixed(2)));
+              if (avail > 0) {
+                const take = Number(Math.min(remaining, avail).toFixed(2));
+                if (take > 0) {
+                  created.push({
+                    id: makeId('mov'),
+                    date,
+                    bucket: envId,
+                    type: 'Barrido a Inversión',
+                    amountUsd: take,
+                    paymentMethod: 'binance_usdt',
+                    notes: `${notes} (cubierto desde ${ENVELOPE_META[envId].shortName})`,
+                  });
+                  remaining = Number((remaining - take).toFixed(2));
+                }
+              }
+            }
+          }
+
+          // 4. Residual fallback to Ahorro e Inversión if total Binance USDT was exceeded
+          if (remaining > 0.01) {
+            created.push({
+              id: makeId('mov'),
+              date,
+              bucket: 'ahorro_inversion',
+              type: 'Barrido a Inversión',
+              amountUsd: remaining,
+              paymentMethod: 'binance_usdt',
+              notes,
+            });
+          }
+
+          return {
+            undoEntry: createUndoSnapshot(notes, state),
+            movements: [...created, ...state.movements],
+          };
+        });
+      },
+
+      recordCryptoPortfolioUsdcFlow: ({ date, direction, amountUsd, notes }) => {
+        const cleanAmount = Number(Math.abs(amountUsd).toFixed(2));
+        if (!Number.isFinite(cleanAmount) || cleanAmount <= 0) return;
+
+        set((state) => {
+          const movement: LedgerMovement = {
+            id: makeId('mov'),
+            date,
+            bucket: 'binance_usdc',
+            type: direction === 'in' ? 'Barrido a Inversión' : 'Transferencia (Salida)',
+            amountUsd: cleanAmount,
+            paymentMethod: 'binance_usdt',
+            notes,
+          };
+          return {
+            undoEntry: createUndoSnapshot(notes, state),
+            movements: [movement, ...state.movements],
+          };
         });
       },
 

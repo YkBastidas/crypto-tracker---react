@@ -8,6 +8,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
+import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { ENVELOPE_META, PAYMENT_METHOD_LABELS } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
 import type {
@@ -54,6 +55,16 @@ function getEnvelopeMethodBalance(
   if (method === 'binance_usdt') return byMethod.binance;
   if (method === 'bolivares_pago_movil') return byMethod.bolivares;
   return Math.max(0, totalBalance - byMethod.efectivo - byMethod.binance - byMethod.bolivares);
+}
+
+function isUsdtCustodyHolder(bucket: AssetBucketId, method: PaymentMethod): boolean {
+  return bucket === 'binance_usdt' || (ENVELOPE_SET.has(bucket) && method === 'binance_usdt');
+}
+
+function buildPortfolioDateStr(dateIso: string): string {
+  const now = new Date();
+  const timePart = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+  return `${dateIso} ${timePart}`;
 }
 
 const INVESTMENT_BUCKETS = new Set<AssetBucketId>([
@@ -424,16 +435,19 @@ export function QuickMovementModal({
     const finalBsFrom =
       isOriginBs && hasValidRate ? Number((numFrom * effectiveRate).toFixed(2)) : undefined;
 
+    const actualFromMethod = ENVELOPE_SET.has(fromBucket)
+      ? fromMethod
+      : inferDefaultMethod(fromBucket, customAccounts);
+    const actualToMethod = ENVELOPE_SET.has(toBucket)
+      ? toMethod
+      : inferDefaultMethod(toBucket, customAccounts);
+
     transferBetweenBuckets({
       date,
       fromBucket,
       toBucket,
-      fromPaymentMethod: ENVELOPE_SET.has(fromBucket)
-        ? fromMethod
-        : inferDefaultMethod(fromBucket, customAccounts),
-      toPaymentMethod: ENVELOPE_SET.has(toBucket)
-        ? toMethod
-        : inferDefaultMethod(toBucket, customAccounts),
+      fromPaymentMethod: actualFromMethod,
+      toPaymentMethod: actualToMethod,
       amountFrom: numFrom,
       amountTo: finalUsdTo,
       amountBsFrom: finalBsFrom,
@@ -441,6 +455,30 @@ export function QuickMovementModal({
       bcvRateUsed: (isOriginBs || isDestinationBs) && hasValidRate ? effectiveRate : undefined,
       notes: notes.trim() || undefined,
     });
+
+    // Keep Portafolio Crypto USDT balance in sync when USDT leaves or enters Binance
+    const originHoldsUsdt = isUsdtCustodyHolder(fromBucket, actualFromMethod);
+    const destHoldsUsdt = isUsdtCustodyHolder(toBucket, actualToMethod);
+    if (originHoldsUsdt && !destHoldsUsdt) {
+      const cleanAmt = Number(Math.abs(numFrom).toFixed(2));
+      usePortfolioStore.getState().addTransaction({
+        date: buildPortfolioDateStr(date),
+        type: 'Withdraw',
+        asset: 'USDT',
+        tokens: cleanAmt.toFixed(2),
+        usdValue: cleanAmt,
+      });
+    } else if (!originHoldsUsdt && destHoldsUsdt) {
+      const cleanAmt = Number(Math.abs(finalUsdTo).toFixed(2));
+      usePortfolioStore.getState().addTransaction({
+        date: buildPortfolioDateStr(date),
+        type: 'Deposit',
+        asset: 'USDT',
+        tokens: cleanAmt.toFixed(2),
+        usdValue: cleanAmt,
+      });
+    }
+
     setAmountFrom('');
     setAmountTo('');
     setNotes('');
@@ -600,6 +638,26 @@ export function QuickMovementModal({
       bcvRateUsed: (fromIsBs || toIsBs) && hasValidRate ? effectiveRate : undefined,
       notes: notes.trim() || undefined,
     });
+
+    if (multiFromMethod === 'binance_usdt' && multiToMethod !== 'binance_usdt') {
+      const cleanAmt = Number(Math.abs(totalOut).toFixed(2));
+      usePortfolioStore.getState().addTransaction({
+        date: buildPortfolioDateStr(date),
+        type: 'Withdraw',
+        asset: 'USDT',
+        tokens: cleanAmt.toFixed(2),
+        usdValue: cleanAmt,
+      });
+    } else if (multiFromMethod !== 'binance_usdt' && multiToMethod === 'binance_usdt') {
+      const cleanAmt = Number(Math.abs(totalUsdIn).toFixed(2));
+      usePortfolioStore.getState().addTransaction({
+        date: buildPortfolioDateStr(date),
+        type: 'Deposit',
+        asset: 'USDT',
+        tokens: cleanAmt.toFixed(2),
+        usdValue: cleanAmt,
+      });
+    }
 
     setMultiTotalUsd('');
     setMultiReceived('');

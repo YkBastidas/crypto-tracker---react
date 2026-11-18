@@ -32,6 +32,7 @@ interface PortfolioState {
   // Actions
   loadTransactions: (txs: Transaction[]) => void;
   addTransaction: (tx: Transaction) => void;
+  addTransactionsBatch: (txs: Transaction[], label?: string) => void;
   updateTransaction: (index: number, patch: Partial<Transaction>) => void;
   removeTransaction: (index: number) => void;
   removeCoinTransactions: (ticker: string) => void;
@@ -76,6 +77,20 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
       isDirty: true,
       undoTransactions: prev,
       undoLabel: `Agregada: ${tx.type} ${tx.asset}`,
+    });
+  },
+
+  addTransactionsBatch: (txs, label) => {
+    if (txs.length === 0) return;
+    const prev = get().transactions;
+    const updated = [...prev, ...txs];
+    persistTransactions(updated);
+    set({
+      transactions: updated,
+      isDirty: true,
+      undoTransactions: prev,
+      undoLabel:
+        label ?? `Agregadas ${txs.length} transacciones (${txs[0].type} ${txs[0].asset})`,
     });
   },
 
