@@ -11,6 +11,8 @@ import type {
   InstallmentPlan,
   LedgerMovement,
   LiveCryptoBalances,
+  ReadyToAssignAndRunwaySummary,
+  ReadyToAssignItem,
   RecurringExpense,
 } from '../types';
 
@@ -558,5 +560,113 @@ export function computeQuincenaPreview(params: {
     totalAssignedToEnvelopes,
     unallocated,
     isOverAllocated: unallocated < -0.01,
+  };
+}
+
+export function calculateReadyToAssignAndRunway(params: {
+  movements: LedgerMovement[];
+  expenses: RecurringExpense[];
+  installments: InstallmentPlan[];
+  bcvRate?: number | null;
+  customAccounts?: CustomAccount[];
+}): ReadyToAssignAndRunwaySummary {
+  const {
+    movements,
+    expenses,
+    installments,
+    bcvRate = null,
+    customAccounts = [],
+  } = params;
+
+  const items: ReadyToAssignItem[] = [];
+
+  const unassignedUsdt = Math.max(
+    0,
+    Number(sumBucketBalance(movements, ['binance_usdt']).toFixed(2)),
+  );
+  if (unassignedUsdt > 0.01) {
+    items.push({
+      sourceBucket: 'binance_usdt',
+      label: 'Binance USDT (sin sobre)',
+      paymentMethod: 'binance_usdt',
+      amountUsd: unassignedUsdt,
+    });
+  }
+
+  const bsInfo = sumCustomBsBalance(movements, 'banco_bolivares', bcvRate);
+  const usdLedgerBs = sumBucketBalance(movements, ['banco_bolivares']);
+  const unassignedBsUsdRaw =
+    bsInfo.hasBsData && bcvRate && bcvRate > 0 ? bsInfo.balanceBs / bcvRate : usdLedgerBs;
+  const unassignedBsUsd = Math.max(0, Number(unassignedBsUsdRaw.toFixed(2)));
+  const unassignedBsVal = bsInfo.hasBsData
+    ? Math.max(0, Number(bsInfo.balanceBs.toFixed(2)))
+    : bcvRate && bcvRate > 0
+      ? Number((unassignedBsUsd * bcvRate).toFixed(2))
+      : undefined;
+
+  if (unassignedBsUsd > 0.01) {
+    items.push({
+      sourceBucket: 'banco_bolivares',
+      label: 'Cuenta en Bolívares (sin sobre)',
+      paymentMethod: 'bolivares_pago_movil',
+      amountUsd: unassignedBsUsd,
+      amountBs: unassignedBsVal,
+    });
+  }
+
+  const totalReadyToAssignUsd = Number(
+    items.reduce((acc, item) => acc + item.amountUsd, 0).toFixed(2),
+  );
+
+  // Liquid reserve excludes volatile crypto holdings (binance_crypto, paxg, wallet_btc)
+  const { funds, envelopes } = calculateFundSummaries(movements, bcvRate, customAccounts);
+  const getFundBal = (id: FundSummary['id']) =>
+    Math.max(0, funds.find((f) => f.id === id)?.balance ?? 0);
+
+  const binanceUsdtTotal = Math.max(
+    0,
+    sumBucketBalance(movements, ['binance_usdt']) +
+      envelopes.reduce((acc, e) => acc + e.byMethod.binance, 0),
+  );
+  const customLiquid = funds
+    .filter((f) => f.isCustom)
+    .reduce((acc, f) => acc + Math.max(0, f.balance), 0);
+
+  const liquidReserveUsd = Number(
+    (
+      getFundBal('efectivo_sobres') +
+      getFundBal('cuenta_bolivares') +
+      getFundBal('fondo_emergencia') +
+      binanceUsdtTotal +
+      customLiquid
+    ).toFixed(2),
+  );
+
+  const monthlyEssentials = calculateMonthlyEssentials(expenses);
+  const monthlyPayableInstallments = installments.reduce(
+    (acc, p) => acc + getInstallmentBiweeklyQuota(p) * 2,
+    0,
+  );
+  const monthlyBurnRateUsd = Number(
+    (monthlyEssentials + monthlyPayableInstallments).toFixed(2),
+  );
+  const dailyBurnRateUsd = Number((monthlyBurnRateUsd / 30).toFixed(2));
+  const runwayDays =
+    monthlyBurnRateUsd > 0
+      ? Math.floor(liquidReserveUsd / (monthlyBurnRateUsd / 30))
+      : null;
+  const runwayMonths =
+    monthlyBurnRateUsd > 0
+      ? Number((liquidReserveUsd / monthlyBurnRateUsd).toFixed(1))
+      : null;
+
+  return {
+    totalReadyToAssignUsd,
+    items,
+    liquidReserveUsd,
+    monthlyBurnRateUsd,
+    dailyBurnRateUsd,
+    runwayDays,
+    runwayMonths,
   };
 }

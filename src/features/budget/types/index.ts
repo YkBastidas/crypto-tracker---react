@@ -208,6 +208,24 @@ export interface LiveCryptoBalances {
   walletBtcUsd?: number;
 }
 
+export interface ReadyToAssignItem {
+  sourceBucket: 'binance_usdt' | 'banco_bolivares';
+  label: string;
+  paymentMethod: PaymentMethod;
+  amountUsd: number;
+  amountBs?: number;
+}
+
+export interface ReadyToAssignAndRunwaySummary {
+  totalReadyToAssignUsd: number;
+  items: ReadyToAssignItem[];
+  liquidReserveUsd: number;
+  monthlyBurnRateUsd: number;
+  dailyBurnRateUsd: number;
+  runwayDays: number | null;
+  runwayMonths: number | null;
+}
+
 export interface MonthEndSimulationResult {
   date: string;
   initialPhase: 1 | 2;

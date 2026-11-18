@@ -6,6 +6,8 @@ import {
   ArrowUpRight,
   Bitcoin,
   CheckCircle2,
+  Clock,
+  Coins,
   Landmark,
   Pencil,
   Plus,
@@ -31,12 +33,14 @@ import type {
   CustomAccountId,
   FundId,
   InstallmentPlan,
+  ReadyToAssignItem,
   RecurringExpense,
 } from '../types';
 import {
   calculateDaysLeft,
   calculateEmergencyGoalTarget,
   calculateFundSummaries,
+  calculateReadyToAssignAndRunway,
   extractLiveCryptoBalances,
   formatBs,
   formatUsd,
@@ -106,6 +110,7 @@ export function BudgetDashboard({
     syncCryptoDca,
     setSyncCryptoDca,
     bcvRate,
+    transferBetweenBuckets,
     removeMovement,
     removeCustomAccount,
   } = useBudgetStore();
@@ -148,6 +153,61 @@ export function BudgetDashboard({
   );
   const emergencyFundBalance =
     funds.find((f) => f.id === 'fondo_emergencia')?.balance ?? 0;
+
+  const readyAndRunway = useMemo(
+    () =>
+      calculateReadyToAssignAndRunway({
+        movements,
+        expenses,
+        installments,
+        bcvRate,
+        customAccounts,
+      }),
+    [movements, expenses, installments, bcvRate, customAccounts],
+  );
+
+  const handleQuickAssign = (
+    item: ReadyToAssignItem,
+    target: 'ahorro_inversion' | 'imprescindibles' | 'emergencia',
+  ) => {
+    const today = new Date().toISOString().slice(0, 10);
+    let amountToMove = item.amountUsd;
+    let toBucket: AssetBucketId = target === 'emergencia' ? 'emergencias' : target;
+    let toMethod = item.paymentMethod;
+
+    if (target === 'emergencia') {
+      const gap = Math.max(0, Number((emergencyGoalStats.targetUsd - emergencyFundBalance).toFixed(2)));
+      amountToMove = gap > 0 ? Math.min(item.amountUsd, gap) : item.amountUsd;
+      if (item.sourceBucket === 'binance_usdt') {
+        toBucket = 'binance_usdc';
+        toMethod = 'binance_usdt';
+      } else {
+        toBucket = 'emergencias';
+        toMethod = 'efectivo_usd';
+      }
+    }
+
+    if (amountToMove <= 0.01) return;
+
+    const scaledBs =
+      typeof item.amountBs === 'number' && item.amountUsd > 0
+        ? Number(((amountToMove / item.amountUsd) * item.amountBs).toFixed(2))
+        : undefined;
+
+    transferBetweenBuckets({
+      date: today,
+      fromBucket: item.sourceBucket,
+      toBucket,
+      fromPaymentMethod: item.paymentMethod,
+      toPaymentMethod: toMethod,
+      amountFrom: Number(amountToMove.toFixed(2)),
+      amountTo: Number(amountToMove.toFixed(2)),
+      amountBsFrom: scaledBs,
+      amountBsTo: scaledBs,
+      bcvRateUsed: item.sourceBucket === 'banco_bolivares' && bcvRate ? bcvRate : undefined,
+      notes: 'Asignación rápida (Por Asignar)',
+    });
+  };
 
   const bucketLabelMap = useMemo(() => {
     const map: Record<string, string> = { ...BUCKET_LABELS };
@@ -284,6 +344,168 @@ export function BudgetDashboard({
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Ready to Assign (YNAB) + Liquidity Runway */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Por Asignar */}
+        <section className="bg-bg-card border border-border rounded-xl p-4 sm:p-5 flex flex-col justify-between gap-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div
+                className={`p-2 rounded-lg border ${
+                  readyAndRunway.totalReadyToAssignUsd > 0
+                    ? 'bg-accent-gold/15 border-accent-gold/30 text-accent-gold'
+                    : 'bg-accent-green/15 border-accent-green/30 text-accent-green'
+                }`}
+              >
+                <Coins size={18} />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-text-primary">Por Asignar a Sobres</h2>
+                <p className="text-[11px] text-text-muted">
+                  Liquidez libre en cuentas sin trabajo asignado
+                </p>
+              </div>
+            </div>
+            <div
+              className={`text-lg sm:text-xl font-extrabold ${
+                readyAndRunway.totalReadyToAssignUsd > 0
+                  ? 'text-accent-gold'
+                  : 'text-accent-green'
+              }`}
+            >
+              <PrivacyValue
+                value={formatUsd(readyAndRunway.totalReadyToAssignUsd)}
+                isPrivate={isPrivate}
+              />
+            </div>
+          </div>
+
+          {readyAndRunway.totalReadyToAssignUsd > 0 ? (
+            <div className="space-y-2.5">
+              {readyAndRunway.items.map((item) => (
+                <div
+                  key={item.sourceBucket}
+                  className="bg-bg-input/50 border border-border rounded-lg p-3 space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className="font-semibold text-text-primary">{item.label}</span>
+                    <span className="font-bold text-accent-gold">
+                      <PrivacyValue value={formatUsd(item.amountUsd)} isPrivate={isPrivate} />
+                      {typeof item.amountBs === 'number' && item.amountBs > 0 && (
+                        <span className="text-[10px] text-cyan-300 font-normal ml-1.5">
+                          ({formatBs(item.amountBs)})
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleQuickAssign(item, 'ahorro_inversion')}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent-blue/15 border border-accent-blue/35 text-accent-blue hover:bg-accent-blue/25 cursor-pointer"
+                    >
+                      → Ahorro / Inversión
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleQuickAssign(item, 'imprescindibles')}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent-green/15 border border-accent-green/35 text-accent-green hover:bg-accent-green/25 cursor-pointer"
+                    >
+                      → Imprescindibles
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleQuickAssign(item, 'emergencia')}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent-gold/15 border border-accent-gold/35 text-accent-gold hover:bg-accent-gold/25 cursor-pointer"
+                    >
+                      → Fondo Emergencia
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-xs text-accent-green bg-accent-green/10 border border-accent-green/30 rounded-lg px-3 py-2.5">
+              <CheckCircle2 size={15} className="shrink-0" />
+              <span>
+                Presupuesto Base Cero: cada dólar líquido en cuentas tiene un sobre o reserva asignada.
+              </span>
+            </div>
+          )}
+        </section>
+
+        {/* Runway */}
+        <section className="bg-bg-card border border-border rounded-xl p-4 sm:p-5 flex flex-col justify-between gap-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-lg bg-cyan-500/15 border border-cyan-500/30 text-cyan-300">
+                <Clock size={18} />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-text-primary">
+                  Runway (Días de Cobertura)
+                </h2>
+                <p className="text-[11px] text-text-muted">
+                  Resistencia ante 0 ingresos usando solo liquidez disponible
+                </p>
+              </div>
+            </div>
+            {readyAndRunway.runwayDays !== null && (
+              <span
+                className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border ${
+                  readyAndRunway.runwayDays >= 90
+                    ? 'bg-accent-green/15 border-accent-green/35 text-accent-green'
+                    : readyAndRunway.runwayDays >= 30
+                      ? 'bg-accent-gold/15 border-accent-gold/35 text-accent-gold'
+                      : 'bg-accent-red/15 border-accent-red/35 text-accent-red'
+                }`}
+              >
+                {readyAndRunway.runwayDays >= 90
+                  ? 'Sólido'
+                  : readyAndRunway.runwayDays >= 30
+                    ? 'En construcción'
+                    : 'Alerta'}
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-baseline gap-2.5">
+            <span className="text-2xl sm:text-3xl font-extrabold text-text-primary">
+              {readyAndRunway.runwayDays !== null ? `${readyAndRunway.runwayDays} días` : '∞ días'}
+            </span>
+            {readyAndRunway.runwayMonths !== null && (
+              <span className="text-xs text-text-muted font-medium">
+                (≈ {readyAndRunway.runwayMonths} meses)
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-2.5 text-xs bg-bg-input/50 border border-border rounded-lg p-3">
+            <div>
+              <p className="text-[11px] text-text-muted">Liquidez operativa + reserva</p>
+              <p className="font-bold text-text-primary mt-0.5">
+                <PrivacyValue
+                  value={formatUsd(readyAndRunway.liquidReserveUsd)}
+                  isPrivate={isPrivate}
+                />
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-text-muted">Ritmo esencial (Burn Rate)</p>
+              <p className="font-bold text-text-primary mt-0.5">
+                <PrivacyValue
+                  value={`${formatUsd(readyAndRunway.monthlyBurnRateUsd)}/mes`}
+                  isPrivate={isPrivate}
+                />{' '}
+                <span className="text-[10px] font-normal text-text-muted">
+                  (<PrivacyValue value={`${formatUsd(readyAndRunway.dailyBurnRateUsd)}/d`} isPrivate={isPrivate} />)
+                </span>
+              </p>
+            </div>
+          </div>
+        </section>
       </div>
 
       {/* Fondos y Cuentas */}

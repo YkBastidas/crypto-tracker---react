@@ -11,6 +11,7 @@ import {
   advanceDueDate,
   calculateEnvelopeSummaries,
   calculateFundSummaries,
+  calculateReadyToAssignAndRunway,
   computeQuincenaPreview,
   extractLiveCryptoBalances,
   getInstallmentArrears,
@@ -375,5 +376,160 @@ describe('budget/utils/calculations', () => {
     expect(btcFund.balance).toBeCloseTo(900, 2);
     // 1250 + 900 = 2150
     expect(totalNetWorth).toBeCloseTo(2150, 2);
+  });
+
+  it('computes Ready to Assign liquidity, preserves invariance on assignment, and calculates Runway', () => {
+    const movements: LedgerMovement[] = [
+      // Unassigned liquidity in Binance USDT and Banco Bolivares
+      {
+        id: 'u1',
+        date: '2026-11-10',
+        bucket: 'binance_usdt',
+        type: 'Ingreso a Sobre',
+        amountUsd: 150,
+        paymentMethod: 'binance_usdt',
+      },
+      {
+        id: 'u2',
+        date: '2026-11-10',
+        bucket: 'banco_bolivares',
+        type: 'Transferencia (Entrada)',
+        amountUsd: 50,
+        amountBs: 2500,
+        paymentMethod: 'bolivares_pago_movil',
+      },
+      // Already assigned to envelopes + Emergency + Volatile BTC (volatile should NOT inflate liquid runway)
+      {
+        id: 'a1',
+        date: '2026-11-10',
+        bucket: 'imprescindibles',
+        type: 'Ingreso a Sobre',
+        amountUsd: 100,
+        paymentMethod: 'binance_usdt',
+      },
+      {
+        id: 'a2',
+        date: '2026-11-10',
+        bucket: 'emergencias',
+        type: 'Ingreso a Sobre',
+        amountUsd: 600,
+        paymentMethod: 'efectivo_usd',
+      },
+      {
+        id: 'v1',
+        date: '2026-11-10',
+        bucket: 'wallet_btc',
+        type: 'Barrido a Inversión',
+        amountUsd: 5000,
+        paymentMethod: 'otro',
+      },
+    ];
+
+    const expenses: RecurringExpense[] = [
+      {
+        id: 'e1',
+        name: 'Mercado',
+        amountUsd: 150,
+        frequency: 'mensual',
+        nextDueDate: '2026-11-25',
+        envelopeId: 'imprescindibles',
+        active: true,
+      },
+      {
+        id: 'e2',
+        name: 'Seguro',
+        amountUsd: 360,
+        frequency: 'anual', // 360 / 12 = 30/mo
+        nextDueDate: '2027-05-01',
+        envelopeId: 'provisiones_anuales',
+        active: true,
+      },
+    ];
+
+    const installments: InstallmentPlan[] = [
+      {
+        id: 'i1',
+        name: 'Cuota Deuda',
+        direction: 'payable',
+        installmentAmount: 60,
+        frequency: 'quincenal', // 60 * 2 = 120/mo
+        maxCap: 600,
+        paidTotal: 120,
+        paymentsCount: 2,
+      },
+    ];
+
+    // Liquid reserve: 150 (unassigned USDT) + 50 (Bs) + 100 (imp USDT) + 600 (emerg) = 900
+    // Monthly burn: 150 + 30 + 120 = 300/mo -> 10/day -> 90 days (3.0 months)
+    const before = calculateReadyToAssignAndRunway({
+      movements,
+      expenses,
+      installments,
+      bcvRate: 50,
+    });
+
+    expect(before.totalReadyToAssignUsd).toBeCloseTo(200, 2);
+    expect(before.items).toHaveLength(2);
+    expect(before.liquidReserveUsd).toBeCloseTo(900, 2);
+    expect(before.monthlyBurnRateUsd).toBeCloseTo(300, 2);
+    expect(before.dailyBurnRateUsd).toBeCloseTo(10, 2);
+    expect(before.runwayDays).toBe(90);
+    expect(before.runwayMonths).toBe(3);
+
+    const netWorthBefore = calculateFundSummaries(movements, 50).totalNetWorth;
+
+    // Assign all $200 Ready to Assign into envelopes
+    const assignedMovements: LedgerMovement[] = [
+      ...movements,
+      {
+        id: 't1-out',
+        date: '2026-11-18',
+        bucket: 'binance_usdt',
+        type: 'Transferencia (Salida)',
+        amountUsd: 150,
+        paymentMethod: 'binance_usdt',
+      },
+      {
+        id: 't1-in',
+        date: '2026-11-18',
+        bucket: 'ahorro_inversion',
+        type: 'Transferencia (Entrada)',
+        amountUsd: 150,
+        paymentMethod: 'binance_usdt',
+      },
+      {
+        id: 't2-out',
+        date: '2026-11-18',
+        bucket: 'banco_bolivares',
+        type: 'Transferencia (Salida)',
+        amountUsd: 50,
+        amountBs: 2500,
+        paymentMethod: 'bolivares_pago_movil',
+      },
+      {
+        id: 't2-in',
+        date: '2026-11-18',
+        bucket: 'imprescindibles',
+        type: 'Transferencia (Entrada)',
+        amountUsd: 50,
+        amountBs: 2500,
+        paymentMethod: 'bolivares_pago_movil',
+      },
+    ];
+
+    const after = calculateReadyToAssignAndRunway({
+      movements: assignedMovements,
+      expenses,
+      installments,
+      bcvRate: 50,
+    });
+
+    expect(after.totalReadyToAssignUsd).toBe(0);
+    expect(after.items).toHaveLength(0);
+    expect(after.liquidReserveUsd).toBeCloseTo(900, 2);
+    expect(calculateFundSummaries(assignedMovements, 50).totalNetWorth).toBeCloseTo(
+      netWorthBefore,
+      2,
+    );
   });
 });
