@@ -97,6 +97,20 @@ interface BudgetState {
     bcvRateUsed?: number;
     notes?: string;
   }) => void;
+  multiEnvelopeCustodyExchange: (params: {
+    date: string;
+    fromPaymentMethod: PaymentMethod;
+    toPaymentMethod: PaymentMethod;
+    allocations: Array<{
+      bucket: AssetBucketId;
+      amountFrom: number;
+      amountTo: number;
+      amountBsFrom?: number;
+      amountBsTo?: number;
+    }>;
+    bcvRateUsed?: number;
+    notes?: string;
+  }) => void;
   removeMovement: (id: string) => void;
   applyMonthEndRollover: (
     simulation: MonthEndSimulationResult,
@@ -338,6 +352,67 @@ export const useBudgetStore = create<BudgetState>()(
         set((state) => ({
           undoEntry: createUndoSnapshot(`Transferencia de $${cleanFrom}`, state),
           movements: [inMov, outMov, ...state.movements],
+        }));
+      },
+
+      multiEnvelopeCustodyExchange: ({
+        date,
+        fromPaymentMethod,
+        toPaymentMethod,
+        allocations,
+        bcvRateUsed,
+        notes,
+      }) => {
+        if (fromPaymentMethod === toPaymentMethod) return;
+
+        const valid = allocations.filter(
+          (a) =>
+            Number.isFinite(a.amountFrom) &&
+            a.amountFrom > 0 &&
+            Number.isFinite(a.amountTo) &&
+            a.amountTo > 0,
+        );
+        if (valid.length === 0) return;
+
+        const label = notes?.trim() ? ` (${notes.trim()})` : '';
+        const created: LedgerMovement[] = [];
+        let totalFrom = 0;
+
+        for (const item of valid) {
+          const cleanFrom = Number(Math.abs(item.amountFrom).toFixed(2));
+          const cleanTo = Number(Math.abs(item.amountTo).toFixed(2));
+          totalFrom += cleanFrom;
+
+          created.push({
+            id: makeId('mov'),
+            date,
+            bucket: item.bucket,
+            type: 'Transferencia (Entrada)',
+            amountUsd: cleanTo,
+            amountBs: item.amountBsTo,
+            bcvRateUsed,
+            paymentMethod: toPaymentMethod,
+            notes: `Cambio multi-sobre entrada${label}`,
+          });
+          created.push({
+            id: makeId('mov'),
+            date,
+            bucket: item.bucket,
+            type: 'Transferencia (Salida)',
+            amountUsd: cleanFrom,
+            amountBs: item.amountBsFrom,
+            bcvRateUsed,
+            paymentMethod: fromPaymentMethod,
+            notes: `Cambio multi-sobre salida${label}`,
+          });
+        }
+
+        set((state) => ({
+          undoEntry: createUndoSnapshot(
+            `Cambio multi-sobre de $${totalFrom.toFixed(2)}`,
+            state,
+          ),
+          movements: [...created, ...state.movements],
         }));
       },
 

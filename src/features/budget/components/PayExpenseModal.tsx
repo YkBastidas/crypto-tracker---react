@@ -19,10 +19,15 @@ const PAYMENT_OPTIONS: { id: PaymentMethod; label: string; icon: React.ReactNode
 
 export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
   const { markExpensePaid, customAccounts, bcvRate } = useBudgetStore();
-  const [amount, setAmount] = useState(String(expense.amountUsd));
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd');
+  const initialMethod: PaymentMethod = expense.preferredPaymentMethod ?? 'efectivo_usd';
+  const hasValidRateInit = Boolean(bcvRate && bcvRate > 0);
+  const initialInBs = initialMethod === 'bolivares_pago_movil' && hasValidRateInit;
+  const [amount, setAmount] = useState(() =>
+    initialInBs && bcvRate ? (expense.amountUsd * bcvRate).toFixed(2) : String(expense.amountUsd),
+  );
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(initialMethod);
   const [customBucketId, setCustomBucketId] = useState<AssetBucketId | null>(null);
-  const [inputInBs, setInputInBs] = useState(false);
+  const [inputInBs, setInputInBs] = useState(initialInBs);
   const [envelopeId, setEnvelopeId] = useState<EnvelopeId>(() =>
     expense.frequency === 'anual' ? 'provisiones_anuales' : expense.envelopeId,
   );

@@ -19,7 +19,8 @@
 - [x] **Meta del Fondo de Emergencia**: Configurable por *X meses de gastos indispensables* o monto personalizado.
 - [x] **Tasa BCV diaria**: Integración automática con `ve.dolarapi.com` + soporte manual offline.
 - [x] **Registrar Quincena (Wizard)**: Reglas configurables (`%` o `$ fijo`), provisión automática de gastos mensuales y **Sinking Fund (`Provisiones Anuales`)**.
-- [x] **Gastos y Cuentas por Cobrar/Pagar**: Días restantes, prorrateo quincenal, abonos variables, alertas en Dashboard y botón **Deshacer**.
+- [x] **Gastos y Cuentas por Cobrar/Pagar**: Días restantes, prorrateo quincenal, abonos variables, alertas en Dashboard, forma de pago más común por gasto y botón **Deshacer**.
+- [x] **Cambio de Custodia Multi-Sobre**: Conversión en una sola operación (ej. USDT ↔ Efectivo ↔ Bolívares) repartida entre múltiples sobres con sugerencia automática según la forma de pago preferida de cada gasto.
 - [x] **Motor de Cierre Mensual (Rollover & Sweep)**: Simulación previa con protección de gastos cercanos, fondeo de déficit anual y barridos internos (`SWEEP` / `ROLLOVER`).
 - [x] **Guía Rápida ("Cómo usar")**: Buscador local por palabras clave y sinónimos.
 

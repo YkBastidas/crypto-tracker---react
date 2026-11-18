@@ -18,8 +18,16 @@ import type {
   InstallmentDirection,
   InstallmentFrequency,
   InstallmentPlan,
+  PaymentMethod,
   RecurringExpense,
 } from '../types';
+
+const PREFERRED_METHOD_LABELS: Record<PaymentMethod, string> = {
+  efectivo_usd: '💵 Efectivo USD',
+  binance_usdt: '🪙 Binance USDT',
+  bolivares_pago_movil: '🇻🇪 Bolívares',
+  otro: '💼 Otro',
+};
 import {
   calculateDaysLeft,
   formatUsd,
@@ -57,6 +65,7 @@ export function ExpensesAndPayments() {
   const [expFreq, setExpFreq] = useState<ExpenseFrequency>('mensual');
   const [expDate, setExpDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [expEnv, setExpEnv] = useState<EnvelopeId>('imprescindibles');
+  const [expPreferredMethod, setExpPreferredMethod] = useState<PaymentMethod | ''>('');
 
   // New Installment form state
   const [instName, setInstName] = useState('');
@@ -115,6 +124,7 @@ export function ExpensesAndPayments() {
     setExpFreq(item.frequency);
     setExpDate(item.nextDueDate);
     setExpEnv(item.envelopeId);
+    setExpPreferredMethod(item.preferredPaymentMethod ?? '');
     setShowAddExpense(true);
   };
 
@@ -123,6 +133,8 @@ export function ExpensesAndPayments() {
     const amount = parseFloat(expAmount);
     if (!expName.trim() || !Number.isFinite(amount) || amount <= 0) return;
 
+    const preferredPaymentMethod = expPreferredMethod || undefined;
+
     if (editingExpenseId) {
       updateExpense(editingExpenseId, {
         name: expName.trim(),
@@ -130,6 +142,7 @@ export function ExpensesAndPayments() {
         frequency: expFreq,
         nextDueDate: expDate,
         envelopeId: expEnv,
+        preferredPaymentMethod,
       });
     } else {
       addExpense({
@@ -138,12 +151,14 @@ export function ExpensesAndPayments() {
         frequency: expFreq,
         nextDueDate: expDate,
         envelopeId: expEnv,
+        preferredPaymentMethod,
         active: true,
       });
     }
     setEditingExpenseId(null);
     setExpName('');
     setExpAmount('');
+    setExpPreferredMethod('');
     setShowAddExpense(false);
   };
 
@@ -278,6 +293,7 @@ export function ExpensesAndPayments() {
                 setEditingExpenseId(null);
                 setExpName('');
                 setExpAmount('');
+                setExpPreferredMethod('');
                 setShowAddExpense((v) => !v);
               }}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-green/15 border border-accent-green/40 text-accent-green hover:bg-accent-green/25 cursor-pointer"
@@ -341,23 +357,39 @@ export function ExpensesAndPayments() {
             </div>
             <div>
               <label className="text-[11px] text-text-muted block mb-1">Sobre</label>
+              <select
+                value={expEnv}
+                onChange={(e) => setExpEnv(e.target.value as EnvelopeId)}
+                className="w-full px-2 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary"
+              >
+                {(Object.keys(ENVELOPE_META) as EnvelopeId[]).map((id) => (
+                  <option key={id} value={id}>
+                    {ENVELOPE_META[id].shortName}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="sm:col-span-2 lg:col-span-3">
+              <label className="text-[11px] text-text-muted block mb-1">
+                Forma de pago más común (para sugerir cambios de custodia)
+              </label>
               <div className="flex gap-2">
                 <select
-                  value={expEnv}
-                  onChange={(e) => setExpEnv(e.target.value as EnvelopeId)}
-                  className="flex-1 px-2 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary"
+                  value={expPreferredMethod}
+                  onChange={(e) => setExpPreferredMethod(e.target.value as PaymentMethod | '')}
+                  className="flex-1 px-3 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary"
                 >
-                  {(Object.keys(ENVELOPE_META) as EnvelopeId[]).map((id) => (
-                    <option key={id} value={id}>
-                      {ENVELOPE_META[id].shortName}
-                    </option>
-                  ))}
+                  <option value="">Cualquiera / Sin preferencia</option>
+                  <option value="efectivo_usd">Efectivo USD (o Banco USD)</option>
+                  <option value="binance_usdt">Binance USDT (Tarjeta / P2P)</option>
+                  <option value="bolivares_pago_movil">Bolívares / Pago Móvil</option>
+                  <option value="otro">Otro</option>
                 </select>
                 <button
                   type="submit"
-                  className="px-3 py-2 rounded-lg text-xs font-bold bg-accent-blue text-white border-none cursor-pointer"
+                  className="px-4 py-2 rounded-lg text-xs font-bold bg-accent-blue text-white border-none cursor-pointer flex items-center gap-1"
                 >
-                  <Check size={14} />
+                  <Check size={14} /> {editingExpenseId ? 'Guardar' : 'Agregar'}
                 </button>
               </div>
             </div>
@@ -387,6 +419,11 @@ export function ExpensesAndPayments() {
                     <span className="text-[10px] uppercase px-2 py-0.5 rounded bg-bg-input text-text-muted">
                       {item.frequency}
                     </span>
+                    {item.preferredPaymentMethod && (
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-accent-blue/10 border border-accent-blue/25 text-accent-blue font-medium">
+                        {PREFERRED_METHOD_LABELS[item.preferredPaymentMethod]}
+                      </span>
+                    )}
                     <span
                       className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
                         isOverdue

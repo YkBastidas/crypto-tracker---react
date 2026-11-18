@@ -106,6 +106,7 @@ export interface RecurringExpense {
   frequency: ExpenseFrequency;
   nextDueDate: string; // YYYY-MM-DD
   envelopeId: EnvelopeId;
+  preferredPaymentMethod?: PaymentMethod;
   active: boolean;
 }
 
