@@ -85,8 +85,20 @@ export function saveApiKey(key: string): void {
 
 // ── Public API: Transaction Persistence ──
 
+export const DEFAULT_TRANSACTIONS: Transaction[] = [
+  { date: '2026-03-01 10:00:00', type: 'Deposit', asset: 'USDT', tokens: '3200.00', usdValue: 3200 },
+  { date: '2026-03-05 14:20:00', type: 'Buy', asset: 'BTC', tokens: '0.02', usdValue: 1500 },
+  { date: '2026-03-05 14:20:00', type: 'Sell', asset: 'USDT', tokens: '1500.00', usdValue: 1500 },
+  { date: '2026-03-10 11:15:00', type: 'Buy', asset: 'ETH', tokens: '0.25', usdValue: 600 },
+  { date: '2026-03-10 11:15:00', type: 'Sell', asset: 'USDT', tokens: '600.00', usdValue: 600 },
+  { date: '2026-03-12 16:40:00', type: 'Buy', asset: 'SOL', tokens: '2.50', usdValue: 400 },
+  { date: '2026-03-12 16:40:00', type: 'Sell', asset: 'USDT', tokens: '400.00', usdValue: 400 },
+  { date: '2026-03-15 09:30:00', type: 'Buy', asset: 'PAXG', tokens: '0.075', usdValue: 200 },
+  { date: '2026-03-15 09:30:00', type: 'Sell', asset: 'USDT', tokens: '200.00', usdValue: 200 },
+];
+
 export function getPersistedTransactions(): Transaction[] {
-  return getJson<Transaction[]>(KEYS.TRANSACTIONS, []);
+  return getJson<Transaction[]>(KEYS.TRANSACTIONS, DEFAULT_TRANSACTIONS);
 }
 
 export function persistTransactions(transactions: Transaction[]): void {

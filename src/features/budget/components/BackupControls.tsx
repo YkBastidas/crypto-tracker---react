@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { Download, Upload, RotateCcw } from 'lucide-react';
+import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { useBudgetStore } from '../store/budgetStore';
 import type { BudgetSnapshot } from '../types';
 
@@ -42,6 +43,7 @@ export function BackupControls() {
   const handleReset = () => {
     if (window.confirm('¿Restaurar los datos de ejemplo iniciales? Se reemplazarán tus movimientos actuales.')) {
       resetToSeed();
+      usePortfolioStore.getState().resetToDefaultTransactions();
       setFeedback({ type: 'ok', text: 'Datos restaurados al estado inicial.' });
     }
   };

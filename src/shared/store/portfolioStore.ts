@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { Transaction, CoinMappings } from '../types';
 import {
+  DEFAULT_TRANSACTIONS,
   getCoinMappings,
   saveCoinMappings,
   getPersistedTransactions,
@@ -30,6 +31,7 @@ interface PortfolioState {
   setStablecoins: (tickers: string[]) => void;
   isStablecoin: (ticker: string) => boolean;
   setGoalTarget: (target: number) => void;
+  resetToDefaultTransactions: () => void;
 }
 
 export const usePortfolioStore = create<PortfolioState>((set, get) => ({
@@ -85,5 +87,10 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
     const clean = Number(target.toFixed(2));
     savePortfolioGoal(clean);
     set({ goalTarget: clean });
+  },
+
+  resetToDefaultTransactions: () => {
+    persistTransactions(DEFAULT_TRANSACTIONS);
+    set({ transactions: DEFAULT_TRANSACTIONS, isDirty: false });
   },
 }));
