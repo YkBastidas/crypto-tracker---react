@@ -23,6 +23,7 @@ import {
   calculateFundSummaries,
   formatBs,
   formatUsd,
+  isNegativeAdjustmentMovement,
 } from '../utils/calculations';
 
 const ENVELOPE_IDS = Object.keys(ENVELOPE_META) as EnvelopeId[];
@@ -136,6 +137,17 @@ function getBucketBalance(
     return { usd, bs: bcvRate ? usd * bcvRate : 0 };
   }
 
+  if (bucket === 'banco_bolivares') {
+    const { funds } = calculateFundSummaries(movements, bcvRate, customAccounts, undefined, {
+      freeBsPoolMode,
+    });
+    const bsFund = funds.find((f) => f.id === 'cuenta_bolivares');
+    return {
+      usd: Number((bsFund?.balance ?? 0).toFixed(2)),
+      bs: Number((bsFund?.balanceBs ?? 0).toFixed(2)),
+    };
+  }
+
   const isBsBucket = isBsBucketOrAccount(bucket, customAccounts);
   let usd = 0;
   let bs = 0;
@@ -155,7 +167,7 @@ function getBucketBalance(
           : bcvRate
             ? Math.abs(m.amountUsd) * bcvRate
             : 0;
-      const bsSign = m.type === 'Ajuste' && m.amountUsd < 0 ? -1 : sign;
+      const bsSign = isNegativeAdjustmentMovement(m) ? -1 : sign;
       bs += bsSign * mBs;
     }
   }
@@ -299,17 +311,19 @@ export function QuickMovementModal({
         ? safeParsed * effectiveRate
         : 0;
 
-  // Delta calculation for set_balance mode
+  // Delta calculation for set_balance mode (normalize -0 to 0)
   const setBalanceDeltaUsd =
-    inputCurrency === 'BS' && hasValidRate
+    (inputCurrency === 'BS' && hasValidRate
       ? Number(((safeParsed - currentBucketBalance.bs) / effectiveRate).toFixed(2))
-      : Number((safeParsed - currentBucketBalance.usd).toFixed(2));
+      : Number((safeParsed - currentBucketBalance.usd).toFixed(2))) || 0;
   const setBalanceDeltaBs =
-    inputCurrency === 'BS'
+    (inputCurrency === 'BS'
       ? Number((safeParsed - currentBucketBalance.bs).toFixed(2))
       : hasValidRate
         ? Number((setBalanceDeltaUsd * effectiveRate).toFixed(2))
-        : 0;
+        : 0) || 0;
+  const isNegativeSetDelta =
+    inputCurrency === 'BS' ? setBalanceDeltaBs < 0 : setBalanceDeltaUsd < 0;
 
   const isSameTransferTarget =
     fromBucket === toBucket && (!ENVELOPE_SET.has(fromBucket) || fromMethod === toMethod);
@@ -866,9 +880,11 @@ export function QuickMovementModal({
               {direction === 'set_balance' && amount.trim() !== '' && (
                 <p className="text-[11px] text-accent-gold mt-1">
                   Ajuste automático:{' '}
-                  {setBalanceDeltaUsd >= 0 ? '+' : ''}
-                  {formatUsd(setBalanceDeltaUsd)}
-                  {inputCurrency === 'BS' ? ` (${setBalanceDeltaBs >= 0 ? '+' : ''}${formatBs(setBalanceDeltaBs)})` : ''}
+                  {isNegativeSetDelta ? '-' : '+'}
+                  {formatUsd(Math.abs(setBalanceDeltaUsd))}
+                  {inputCurrency === 'BS'
+                    ? ` (${isNegativeSetDelta ? '-' : '+'}${formatBs(Math.abs(setBalanceDeltaBs))})`
+                    : ''}
                 </p>
               )}
 

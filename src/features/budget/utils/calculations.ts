@@ -32,6 +32,17 @@ const OUTFLOW_TYPES = new Set([
   'Transferencia (Salida)',
 ]);
 
+/**
+ * Determines whether a ledger adjustment represents an outflow/reduction.
+ * Supports tiny negative Bolívares adjustments whose USD equivalent rounds to $0.00.
+ */
+export function isNegativeAdjustmentMovement(
+  m: Pick<LedgerMovement, 'type' | 'amountUsd' | 'amountBs'>,
+): boolean {
+  if (m.type !== 'Ajuste') return false;
+  return m.amountUsd < 0 || (typeof m.amountBs === 'number' && m.amountBs < 0);
+}
+
 export function formatUsd(amount: number): string {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
@@ -189,7 +200,7 @@ function computeEnvelopeSummariesWithBsPool(
     if (
       m.type === 'Ingreso a Sobre' ||
       m.type === 'Transferencia (Entrada)' ||
-      (m.type === 'Ajuste' && m.amountUsd >= 0)
+      (m.type === 'Ajuste' && !isNegativeAdjustmentMovement(m))
     ) {
       const amt = Math.abs(m.amountUsd);
       totals[envId].assigned += amt;
@@ -199,7 +210,7 @@ function computeEnvelopeSummariesWithBsPool(
       const amt = Math.abs(m.amountUsd);
       totals[envId].assigned -= amt;
       totals[envId].byMethod[custody] -= amt;
-    } else if (OUTFLOW_TYPES.has(m.type) || (m.type === 'Ajuste' && m.amountUsd < 0)) {
+    } else if (OUTFLOW_TYPES.has(m.type) || isNegativeAdjustmentMovement(m)) {
       const amt = Math.abs(m.amountUsd);
       totals[envId].spent += amt;
       totals[envId].byMethod[custody] -= amt;
@@ -313,7 +324,7 @@ function sumBolivaresBalance(movements: LedgerMovement[], bcvRate: number | null
       m.type === 'Cambio a Bolívares' ||
       m.type === 'Pago de Cuota' ||
       m.type === 'Transferencia (Salida)' ||
-      (m.type === 'Ajuste' && m.amountUsd < 0)
+      isNegativeAdjustmentMovement(m)
     ) {
       balanceBs -= bsVal;
     } else {
@@ -345,7 +356,7 @@ function sumCustomBsBalance(
       m.type === 'Cambio a Bolívares' ||
       m.type === 'Pago de Cuota' ||
       m.type === 'Transferencia (Salida)' ||
-      (m.type === 'Ajuste' && m.amountUsd < 0)
+      isNegativeAdjustmentMovement(m)
     ) {
       balanceBs -= bsVal;
     } else {

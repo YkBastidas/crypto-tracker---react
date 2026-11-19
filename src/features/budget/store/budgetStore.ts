@@ -21,6 +21,7 @@ import {
   advanceDueDate,
   calculateEligibleInvestmentCapital,
   calculateEnvelopeSummaries,
+  isNegativeAdjustmentMovement,
   type QuincenaPreview,
 } from '../utils/calculations';
 import { fetchBcvUsdRate } from '../services/bcvApi';
@@ -217,7 +218,7 @@ function routeBsOutflowMovements(
   state: Pick<BudgetState, 'movements' | 'freeBsPoolMode'>,
   baseMovement: Omit<LedgerMovement, 'id'>,
 ): LedgerMovement[] {
-  const isNegativeAdjustment = baseMovement.type === 'Ajuste' && baseMovement.amountUsd < 0;
+  const isNegativeAdjustment = isNegativeAdjustmentMovement(baseMovement);
   const isOutflow = BS_ROUTABLE_OUTFLOW_TYPES.has(baseMovement.type) || isNegativeAdjustment;
 
   if (
@@ -320,7 +321,8 @@ function routeBsOutflowMovements(
       id: makeId('mov'),
       bucket: slice.bucket,
       amountUsd: isNegativeAdjustment ? -slice.usd : slice.usd,
-      amountBs: sliceBs,
+      amountBs:
+        sliceBs !== undefined ? (isNegativeAdjustment ? -sliceBs : sliceBs) : undefined,
       notes: sliceNote,
       splitGroupId,
       linkedExpense: idx === 0 ? baseMovement.linkedExpense : undefined,

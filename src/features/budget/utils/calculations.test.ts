@@ -16,6 +16,7 @@ import {
   computeQuincenaPreview,
   extractLiveCryptoBalances,
   getInstallmentArrears,
+  isNegativeAdjustmentMovement,
 } from './calculations';
 
 describe('budget/utils/calculations', () => {
@@ -659,5 +660,145 @@ describe('budget/utils/calculations', () => {
       freeBsPoolMode: true,
     });
     expect(poolRta.totalReadyToAssignUsd).toBe(0);
+  });
+
+  it('detects negative adjustments via isNegativeAdjustmentMovement including 0-USD tiny Bs deltas', () => {
+    expect(
+      isNegativeAdjustmentMovement({ type: 'Ajuste', amountUsd: 0, amountBs: -0.01 }),
+    ).toBe(true);
+    expect(
+      isNegativeAdjustmentMovement({ type: 'Ajuste', amountUsd: 0, amountBs: 0.01 }),
+    ).toBe(false);
+    expect(
+      isNegativeAdjustmentMovement({ type: 'Ajuste', amountUsd: -5, amountBs: undefined }),
+    ).toBe(true);
+    expect(
+      isNegativeAdjustmentMovement({ type: 'Ajuste', amountUsd: -5, amountBs: 4500 }),
+    ).toBe(true);
+    expect(
+      isNegativeAdjustmentMovement({ type: 'Ingreso a Sobre', amountUsd: -5, amountBs: -0.01 }),
+    ).toBe(false);
+  });
+
+  it('adjusts Cuenta en Bolívares cleanly from 5509.24 to 5509.23 with envelope Bs balance present', () => {
+    const rate = 948.35;
+    const baseMovements: LedgerMovement[] = [
+      {
+        id: 'm1',
+        date: '2026-11-18',
+        bucket: 'banco_bolivares',
+        type: 'Transferencia (Entrada)',
+        amountUsd: Number((5516.24 / rate).toFixed(2)),
+        amountBs: 5516.24,
+        bcvRateUsed: rate,
+        paymentMethod: 'bolivares_pago_movil',
+      },
+      {
+        id: 'm2',
+        date: '2026-11-18',
+        bucket: 'disfrute',
+        type: 'Gasto en Efectivo',
+        amountUsd: Number((7.0 / rate).toFixed(2)),
+        amountBs: 7.0,
+        bcvRateUsed: rate,
+        paymentMethod: 'bolivares_pago_movil',
+      },
+    ];
+
+    const before = calculateFundSummaries(baseMovements, rate, [], undefined, {
+      freeBsPoolMode: true,
+    });
+    const bsBefore = before.funds.find((f) => f.id === 'cuenta_bolivares')!;
+    expect(bsBefore.balanceBs).toBeCloseTo(5509.24, 2);
+
+    // Setting exact balance to 5509.23 produces deltaBs = -0.01 and deltaUsd = 0 at rate ~948.35
+    const deltaBs = Number((5509.23 - (bsBefore.balanceBs ?? 0)).toFixed(2));
+    const deltaUsd = Number((deltaBs / rate).toFixed(2)) || 0;
+    expect(deltaBs).toBe(-0.01);
+    expect(deltaUsd).toBe(0);
+
+    const adjustedMovements: LedgerMovement[] = [
+      ...baseMovements,
+      {
+        id: 'm3',
+        date: '2026-11-19',
+        bucket: 'banco_bolivares',
+        type: 'Ajuste',
+        amountUsd: deltaUsd,
+        amountBs: deltaBs,
+        bcvRateUsed: rate,
+        paymentMethod: 'bolivares_pago_movil',
+      },
+    ];
+
+    const after = calculateFundSummaries(adjustedMovements, rate, [], undefined, {
+      freeBsPoolMode: true,
+    });
+    const bsAfter = after.funds.find((f) => f.id === 'cuenta_bolivares')!;
+    expect(bsAfter.balanceBs).toBeCloseTo(5509.23, 2);
+  });
+
+  it('applies tiny negative and positive Bs adjustments accurately on custom VES accounts', () => {
+    const rate = 948.35;
+    const customAccounts: CustomAccount[] = [
+      {
+        id: 'acct_ves_1',
+        name: 'Banesco Bs',
+        currency: 'VES',
+        subtitle: 'Cuenta secundaria',
+        createdAt: '2026-11-18',
+      },
+    ];
+
+    const initialMovements: LedgerMovement[] = [
+      {
+        id: 'm1',
+        date: '2026-11-18',
+        bucket: 'acct_ves_1',
+        type: 'Ingreso a Sobre',
+        amountUsd: 10,
+        amountBs: 9483.5,
+        bcvRateUsed: rate,
+        paymentMethod: 'bolivares_pago_movil',
+      },
+    ];
+
+    const afterNeg = calculateFundSummaries(
+      [
+        ...initialMovements,
+        {
+          id: 'm2',
+          date: '2026-11-19',
+          bucket: 'acct_ves_1',
+          type: 'Ajuste',
+          amountUsd: 0,
+          amountBs: -0.01,
+          bcvRateUsed: rate,
+          paymentMethod: 'bolivares_pago_movil',
+        },
+      ],
+      rate,
+      customAccounts,
+    );
+    expect(afterNeg.funds.find((f) => f.id === 'acct_ves_1')!.balanceBs).toBeCloseTo(9483.49, 2);
+
+    const afterPos = calculateFundSummaries(
+      [
+        ...initialMovements,
+        {
+          id: 'm2',
+          date: '2026-11-19',
+          bucket: 'acct_ves_1',
+          type: 'Ajuste',
+          amountUsd: 0,
+          amountBs: 0.01,
+          bcvRateUsed: rate,
+          paymentMethod: 'bolivares_pago_movil',
+        },
+      ],
+      rate,
+      customAccounts,
+    );
+    expect(afterPos.funds.find((f) => f.id === 'acct_ves_1')!.balanceBs).toBeCloseTo(9483.51, 2);
   });
 });

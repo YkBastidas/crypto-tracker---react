@@ -44,6 +44,7 @@ import {
   extractLiveCryptoBalances,
   formatBs,
   formatUsd,
+  isNegativeAdjustmentMovement,
 } from '../utils/calculations';
 import { BackupControls } from './BackupControls';
 import { CreateAccountModal } from './CreateAccountModal';
@@ -1005,7 +1006,7 @@ export function BudgetDashboard({
                 m.type === 'Cambio a Bolívares' ||
                 m.type === 'Pago de Cuota' ||
                 m.type === 'Transferencia (Salida)' ||
-                (m.type === 'Ajuste' && m.amountUsd < 0);
+                isNegativeAdjustmentMovement(m);
 
               return (
                 <div
