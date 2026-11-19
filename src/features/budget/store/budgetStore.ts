@@ -62,10 +62,14 @@ interface BudgetState {
   quincenaConfig: QuincenaConfig;
   emergencyGoal: EmergencyGoalConfig;
   syncCryptoDca: boolean;
+  freeBsPoolMode: boolean;
   undoEntry: UndoEntry | null;
 
   // Live DCA sync
   setSyncCryptoDca: (enabled: boolean) => void;
+
+  // Shared free Bs float mode
+  setFreeBsPoolMode: (enabled: boolean) => void;
 
   // Emergency goal
   updateEmergencyGoal: (patch: Partial<EmergencyGoalConfig>) => void;
@@ -183,6 +187,148 @@ const DEFAULT_EMERGENCY_GOAL: EmergencyGoalConfig = {
   customAmount: 1000,
 };
 
+const ENVELOPE_BUCKET_IDS = Object.keys(ENVELOPE_META) as EnvelopeId[];
+const ENVELOPE_BUCKET_SET = new Set<AssetBucketId>(ENVELOPE_BUCKET_IDS);
+const BS_ROUTABLE_OUTFLOW_TYPES = new Set([
+  'Gasto en Efectivo',
+  'Cambio a Bolívares',
+  'Pago de Cuota',
+]);
+
+function sumUnassignedBsUsd(movements: LedgerMovement[]): number {
+  let total = 0;
+  for (const m of movements) {
+    if (m.bucket !== 'banco_bolivares') continue;
+    if (
+      m.type === 'Gasto en Efectivo' ||
+      m.type === 'Cambio a Bolívares' ||
+      m.type === 'Pago de Cuota' ||
+      m.type === 'Transferencia (Salida)'
+    ) {
+      total -= Math.abs(m.amountUsd);
+    } else {
+      total += m.amountUsd;
+    }
+  }
+  return Math.max(0, Number(total.toFixed(2)));
+}
+
+function routeBsOutflowMovements(
+  state: Pick<BudgetState, 'movements' | 'freeBsPoolMode'>,
+  baseMovement: Omit<LedgerMovement, 'id'>,
+): LedgerMovement[] {
+  const isNegativeAdjustment = baseMovement.type === 'Ajuste' && baseMovement.amountUsd < 0;
+  const isOutflow = BS_ROUTABLE_OUTFLOW_TYPES.has(baseMovement.type) || isNegativeAdjustment;
+
+  if (
+    !state.freeBsPoolMode ||
+    !isOutflow ||
+    baseMovement.paymentMethod !== 'bolivares_pago_movil' ||
+    !ENVELOPE_BUCKET_SET.has(baseMovement.bucket)
+  ) {
+    return [{ ...baseMovement, id: makeId('mov') }];
+  }
+
+  const cleanUsd = Number(Math.abs(baseMovement.amountUsd).toFixed(2));
+  if (!Number.isFinite(cleanUsd) || cleanUsd <= 0) {
+    return [{ ...baseMovement, id: makeId('mov') }];
+  }
+
+  const envelopes = calculateEnvelopeSummaries(state.movements, { freeBsPoolMode: true });
+  const targetEnvId = baseMovement.bucket as EnvelopeId;
+  const targetBsAvail = Math.max(
+    0,
+    Number((envelopes.find((e) => e.id === targetEnvId)?.byMethod.bolivares ?? 0).toFixed(2)),
+  );
+
+  if (targetBsAvail >= cleanUsd - 0.009) {
+    return [{ ...baseMovement, id: makeId('mov') }];
+  }
+
+  const allocations: Array<{ bucket: AssetBucketId; usd: number }> = [];
+  let remaining = cleanUsd;
+
+  if (targetBsAvail > 0.009) {
+    const takeTarget = Number(Math.min(remaining, targetBsAvail).toFixed(2));
+    if (takeTarget > 0) {
+      allocations.push({ bucket: targetEnvId, usd: takeTarget });
+      remaining = Number((remaining - takeTarget).toFixed(2));
+    }
+  }
+
+  const freeBankBs = sumUnassignedBsUsd(state.movements);
+  if (remaining > 0.009 && freeBankBs > 0.009) {
+    const takeBank = Number(Math.min(remaining, freeBankBs).toFixed(2));
+    if (takeBank > 0) {
+      allocations.push({ bucket: 'banco_bolivares', usd: takeBank });
+      remaining = Number((remaining - takeBank).toFixed(2));
+    }
+  }
+
+  if (remaining > 0.009) {
+    for (const donorId of ENVELOPE_BUCKET_IDS) {
+      if (donorId === targetEnvId || remaining <= 0.009) continue;
+      const donorBs = Math.max(
+        0,
+        Number((envelopes.find((e) => e.id === donorId)?.byMethod.bolivares ?? 0).toFixed(2)),
+      );
+      if (donorBs <= 0.009) continue;
+      const takeDonor = Number(Math.min(remaining, donorBs).toFixed(2));
+      if (takeDonor > 0) {
+        allocations.push({ bucket: donorId, usd: takeDonor });
+        remaining = Number((remaining - takeDonor).toFixed(2));
+      }
+    }
+  }
+
+  // If no positive Bs balance remains anywhere, charge any residual to banco_bolivares so the envelope stays >= 0
+  if (remaining > 0.009) {
+    const existingBank = allocations.find((a) => a.bucket === 'banco_bolivares');
+    if (existingBank) {
+      existingBank.usd = Number((existingBank.usd + remaining).toFixed(2));
+    } else {
+      allocations.push({ bucket: 'banco_bolivares', usd: remaining });
+    }
+  }
+
+  const totalBs =
+    typeof baseMovement.amountBs === 'number' ? Math.abs(baseMovement.amountBs) : undefined;
+  const splitGroupId = allocations.length > 1 ? makeId('split') : undefined;
+  const targetShortName = ENVELOPE_META[targetEnvId]?.shortName ?? targetEnvId;
+  let assignedBs = 0;
+
+  return allocations.map((slice, idx) => {
+    const isLast = idx === allocations.length - 1;
+    const sliceBs =
+      totalBs !== undefined
+        ? isLast
+          ? Number(Math.max(0, totalBs - assignedBs).toFixed(2))
+          : Number(((slice.usd / cleanUsd) * totalBs).toFixed(2))
+        : undefined;
+    if (sliceBs !== undefined) assignedBs += sliceBs;
+
+    const baseNote = baseMovement.notes?.trim() || baseMovement.type;
+    let sliceNote = baseMovement.notes;
+    if (slice.bucket === 'banco_bolivares') {
+      sliceNote = `${baseNote} (Saldo Libre Bs · ${targetShortName})`;
+    } else if (slice.bucket !== targetEnvId) {
+      sliceNote = `${baseNote} (Sobrante Bs → ${targetShortName})`;
+    }
+
+    return {
+      ...baseMovement,
+      id: makeId('mov'),
+      bucket: slice.bucket,
+      amountUsd: isNegativeAdjustment ? -slice.usd : slice.usd,
+      amountBs: sliceBs,
+      notes: sliceNote,
+      splitGroupId,
+      linkedExpense: idx === 0 ? baseMovement.linkedExpense : undefined,
+      linkedInstallment: idx === 0 ? baseMovement.linkedInstallment : undefined,
+    };
+  });
+}
+
 function createUndoSnapshot(
   label: string,
   state: Pick<BudgetState, 'movements' | 'expenses' | 'installments' | 'customAccounts'>,
@@ -207,6 +353,7 @@ export const useBudgetStore = create<BudgetState>()(
       quincenaConfig: initialSeed.quincenaConfig,
       emergencyGoal: DEFAULT_EMERGENCY_GOAL,
       syncCryptoDca: true,
+      freeBsPoolMode: true,
       undoEntry: null,
       bcvRate: null,
       bcvUpdatedAt: null,
@@ -214,6 +361,8 @@ export const useBudgetStore = create<BudgetState>()(
       bcvError: null,
 
       setSyncCryptoDca: (enabled) => set({ syncCryptoDca: enabled }),
+
+      setFreeBsPoolMode: (enabled) => set({ freeBsPoolMode: enabled }),
 
       updateEmergencyGoal: (patch) =>
         set((state) => ({
@@ -466,10 +615,13 @@ export const useBudgetStore = create<BudgetState>()(
       },
 
       addMovement: (movement) =>
-        set((state) => ({
-          undoEntry: createUndoSnapshot(`Movimiento: ${movement.notes || movement.type}`, state),
-          movements: [{ ...movement, id: makeId('mov') }, ...state.movements],
-        })),
+        set((state) => {
+          const routed = routeBsOutflowMovements(state, movement);
+          return {
+            undoEntry: createUndoSnapshot(`Movimiento: ${movement.notes || movement.type}`, state),
+            movements: [...routed, ...state.movements],
+          };
+        }),
 
       transferBetweenBuckets: ({
         date,
@@ -585,17 +737,24 @@ export const useBudgetStore = create<BudgetState>()(
         const target = state.movements.find((m) => m.id === id);
         if (!target) return;
 
+        const targetGroup = target.splitGroupId
+          ? state.movements.filter((m) => m.splitGroupId === target.splitGroupId)
+          : [target];
+        const removedIds = new Set(targetGroup.map((m) => m.id));
+
+        const expenseLink = targetGroup.find((m) => m.linkedExpense)?.linkedExpense;
         let nextExpenses = state.expenses;
-        if (target.linkedExpense) {
-          const { id: expenseId, previousDueDate } = target.linkedExpense;
+        if (expenseLink) {
+          const { id: expenseId, previousDueDate } = expenseLink;
           nextExpenses = state.expenses.map((e) =>
             e.id === expenseId ? { ...e, nextDueDate: previousDueDate } : e,
           );
         }
 
+        const instLink = targetGroup.find((m) => m.linkedInstallment)?.linkedInstallment;
         let nextInstallments = state.installments;
-        if (target.linkedInstallment) {
-          const { id: instId, amount, previousDueDate } = target.linkedInstallment;
+        if (instLink) {
+          const { id: instId, amount, previousDueDate } = instLink;
           nextInstallments = state.installments.map((p) =>
             p.id === instId
               ? {
@@ -613,7 +772,7 @@ export const useBudgetStore = create<BudgetState>()(
             `Eliminado: ${target.notes || target.type}`,
             state,
           ),
-          movements: state.movements.filter((m) => m.id !== id),
+          movements: state.movements.filter((m) => !removedIds.has(m.id)),
           expenses: nextExpenses,
           installments: nextInstallments,
         });
@@ -787,31 +946,29 @@ export const useBudgetStore = create<BudgetState>()(
             ? 'Cambio a Bolívares'
             : 'Gasto en Efectivo';
 
+        const routedMovs = logToLedger
+          ? routeBsOutflowMovements(state, {
+              date: todayIso,
+              bucket: targetBucket,
+              type: movementType,
+              amountUsd: Number(Math.abs(amountUsd).toFixed(2)),
+              amountBs,
+              bcvRateUsed: rate,
+              paymentMethod,
+              notes: `Pago: ${target.name}`,
+              linkedExpense: {
+                id: target.id,
+                previousDueDate,
+              },
+            })
+          : [];
+
         set({
           undoEntry: createUndoSnapshot(`Pago: ${target.name}`, state),
           expenses: state.expenses.map((e) =>
             e.id === id ? { ...e, nextDueDate: nextDue } : e,
           ),
-          movements: logToLedger
-            ? [
-                {
-                  id: makeId('mov'),
-                  date: todayIso,
-                  bucket: targetBucket,
-                  type: movementType,
-                  amountUsd: Number(Math.abs(amountUsd).toFixed(2)),
-                  amountBs,
-                  bcvRateUsed: rate,
-                  paymentMethod,
-                  notes: `Pago: ${target.name}`,
-                  linkedExpense: {
-                    id: target.id,
-                    previousDueDate,
-                  },
-                },
-                ...state.movements,
-              ]
-            : state.movements,
+          movements: logToLedger ? [...routedMovs, ...state.movements] : state.movements,
         });
       },
 
@@ -872,6 +1029,26 @@ export const useBudgetStore = create<BudgetState>()(
           ? advanceDueDate(previousDueDate, plan.frequency)
           : undefined;
 
+        const baseInstallmentMov: Omit<LedgerMovement, 'id'> = {
+          date: todayIso,
+          bucket: targetBucket,
+          type: movementType,
+          amountUsd: cleanAmount,
+          amountBs,
+          bcvRateUsed: rate,
+          paymentMethod,
+          notes: `${isReceivable ? 'Cobro' : 'Cuota'} #${plan.paymentsCount + 1}: ${plan.name}`,
+          linkedInstallment: {
+            id: plan.id,
+            amount: cleanAmount,
+            previousDueDate,
+          },
+        };
+
+        const routedMovs = isReceivable
+          ? [{ ...baseInstallmentMov, id: makeId('mov') }]
+          : routeBsOutflowMovements(state, baseInstallmentMov);
+
         set({
           undoEntry: createUndoSnapshot(
             `${isReceivable ? 'Cobro' : 'Cuota'} #${plan.paymentsCount + 1}: ${plan.name}`,
@@ -888,25 +1065,7 @@ export const useBudgetStore = create<BudgetState>()(
                 }
               : p,
           ),
-          movements: [
-            {
-              id: makeId('mov'),
-              date: todayIso,
-              bucket: targetBucket,
-              type: movementType,
-              amountUsd: cleanAmount,
-              amountBs,
-              bcvRateUsed: rate,
-              paymentMethod,
-              notes: `${isReceivable ? 'Cobro' : 'Cuota'} #${plan.paymentsCount + 1}: ${plan.name}`,
-              linkedInstallment: {
-                id: plan.id,
-                amount: cleanAmount,
-                previousDueDate,
-              },
-            },
-            ...state.movements,
-          ],
+          movements: [...routedMovs, ...state.movements],
         });
       },
 
@@ -918,6 +1077,7 @@ export const useBudgetStore = create<BudgetState>()(
           customAccounts,
           quincenaConfig,
           emergencyGoal,
+          freeBsPoolMode,
         } = get();
         return {
           version: 1,
@@ -928,6 +1088,7 @@ export const useBudgetStore = create<BudgetState>()(
           customAccounts,
           quincenaConfig,
           emergencyGoal,
+          freeBsPoolMode,
         };
       },
 
@@ -948,6 +1109,7 @@ export const useBudgetStore = create<BudgetState>()(
           customAccounts: Array.isArray(snapshot.customAccounts) ? snapshot.customAccounts : [],
           quincenaConfig: snapshot.quincenaConfig,
           emergencyGoal: snapshot.emergencyGoal ?? DEFAULT_EMERGENCY_GOAL,
+          freeBsPoolMode: snapshot.freeBsPoolMode ?? true,
           undoEntry: null,
         });
         return true;
@@ -959,6 +1121,7 @@ export const useBudgetStore = create<BudgetState>()(
           ...seed,
           customAccounts: [],
           emergencyGoal: DEFAULT_EMERGENCY_GOAL,
+          freeBsPoolMode: true,
           undoEntry: null,
         });
       },
@@ -985,6 +1148,7 @@ export const useBudgetStore = create<BudgetState>()(
         quincenaConfig: state.quincenaConfig,
         emergencyGoal: state.emergencyGoal,
         syncCryptoDca: state.syncCryptoDca,
+        freeBsPoolMode: state.freeBsPoolMode,
         bcvRate: state.bcvRate,
         bcvUpdatedAt: state.bcvUpdatedAt,
       }),

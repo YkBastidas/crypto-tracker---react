@@ -109,6 +109,8 @@ export function BudgetDashboard({
     emergencyGoal,
     syncCryptoDca,
     setSyncCryptoDca,
+    freeBsPoolMode,
+    setFreeBsPoolMode,
     bcvRate,
     transferBetweenBuckets,
     removeMovement,
@@ -143,8 +145,11 @@ export function BudgetDashboard({
   );
 
   const { funds, totalNetWorth, envelopes } = useMemo(
-    () => calculateFundSummaries(movements, bcvRate, customAccounts, liveCrypto),
-    [movements, bcvRate, customAccounts, liveCrypto],
+    () =>
+      calculateFundSummaries(movements, bcvRate, customAccounts, liveCrypto, {
+        freeBsPoolMode,
+      }),
+    [movements, bcvRate, customAccounts, liveCrypto, freeBsPoolMode],
   );
 
   const emergencyGoalStats = useMemo(
@@ -162,8 +167,9 @@ export function BudgetDashboard({
         installments,
         bcvRate,
         customAccounts,
+        freeBsPoolMode,
       }),
-    [movements, expenses, installments, bcvRate, customAccounts],
+    [movements, expenses, installments, bcvRate, customAccounts, freeBsPoolMode],
   );
 
   const handleQuickAssign = (
@@ -619,6 +625,47 @@ export function BudgetDashboard({
                         ≈ <PrivacyValue value={formatUsd(fund.balance)} isPrivate={isPrivate} /> USD
                         {bcvRate ? ' (BCV)' : ''}
                       </p>
+                      {fund.id === 'cuenta_bolivares' && (
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={freeBsPoolMode}
+                          onClick={() => setFreeBsPoolMode(!freeBsPoolMode)}
+                          title={
+                            freeBsPoolMode
+                              ? 'Activo: gastos en Bs usan tu Saldo Libre para no dejar sobres en negativo'
+                              : 'Estricto: cada sobre solo usa sus propios Bs (puede quedar en negativo)'
+                          }
+                          className={`mt-2 inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-[10px] font-semibold border cursor-pointer transition-colors ${
+                            freeBsPoolMode
+                              ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-200 hover:bg-cyan-500/25'
+                              : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                          }`}
+                        >
+                          <span
+                            aria-hidden="true"
+                            className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors ${
+                              freeBsPoolMode ? 'bg-cyan-400' : 'bg-white/20'
+                            }`}
+                          >
+                            <span
+                              className={`inline-block h-3 w-3 transform rounded-full bg-bg-primary shadow transition-transform ${
+                                freeBsPoolMode ? 'translate-x-3.5' : 'translate-x-0.5'
+                              }`}
+                            />
+                          </span>
+                          <span>
+                            Bs:{' '}
+                            <span className={freeBsPoolMode ? 'text-cyan-300 font-bold' : 'text-text-muted/60'}>
+                              Saldo Libre
+                            </span>
+                            <span className="text-text-muted/40 mx-1">/</span>
+                            <span className={!freeBsPoolMode ? 'text-text-primary font-bold' : 'text-text-muted/60'}>
+                              Estricto
+                            </span>
+                          </span>
+                        </button>
+                      )}
                     </div>
                   ) : (
                     <div className="text-xl font-bold text-text-primary">
@@ -703,9 +750,46 @@ export function BudgetDashboard({
       {/* 4 Sobres Operativos */}
       <section>
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-text-muted">
-            Saldo Disponible por Sobre (Partidas)
-          </h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-bold uppercase tracking-wider text-text-muted">
+              Saldo Disponible por Sobre (Partidas)
+            </h2>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={freeBsPoolMode}
+              onClick={() => setFreeBsPoolMode(!freeBsPoolMode)}
+              title="Al gastar en Bs más de lo que tiene el sobre, descuenta el excedente del saldo libre en Bolívares para no dejar el sobre en negativo"
+              className={`inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-[11px] font-semibold border cursor-pointer transition-colors ${
+                freeBsPoolMode
+                  ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-200 hover:bg-cyan-500/25'
+                  : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+              }`}
+            >
+              <span
+                aria-hidden="true"
+                className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors ${
+                  freeBsPoolMode ? 'bg-cyan-400' : 'bg-white/20'
+                }`}
+              >
+                <span
+                  className={`inline-block h-3 w-3 transform rounded-full bg-bg-primary shadow transition-transform ${
+                    freeBsPoolMode ? 'translate-x-3.5' : 'translate-x-0.5'
+                  }`}
+                />
+              </span>
+              <span>
+                Bs:{' '}
+                <span className={freeBsPoolMode ? 'text-cyan-300 font-bold' : 'text-text-muted/60'}>
+                  Saldo Libre
+                </span>
+                <span className="text-text-muted/40 mx-1">/</span>
+                <span className={!freeBsPoolMode ? 'text-text-primary font-bold' : 'text-text-muted/60'}>
+                  Estricto
+                </span>
+              </span>
+            </button>
+          </div>
           <button
             type="button"
             onClick={() => setMonthEndOpen(true)}

@@ -154,7 +154,13 @@ export function calculateEmergencyGoalTarget(
   return { targetUsd, monthlyEssentials };
 }
 
-export function calculateEnvelopeSummaries(movements: LedgerMovement[]): EnvelopeSummary[] {
+function computeEnvelopeSummariesWithBsPool(
+  movements: LedgerMovement[],
+  options?: { freeBsPoolMode?: boolean },
+): {
+  envelopes: EnvelopeSummary[];
+  absorbedFromUnassignedBsUsd: number;
+} {
   const totals: Record<
     EnvelopeId,
     {
@@ -200,9 +206,45 @@ export function calculateEnvelopeSummaries(movements: LedgerMovement[]): Envelop
     }
   }
 
+  let absorbedFromUnassignedBsUsd = 0;
+
+  // Shared free Bs float mode: absorb negative Bs custody on envelopes using free banco_bolivares first,
+  // then surplus Bs remaining in other envelopes so total Net Worth & total Bs stay invariant
+  if (options?.freeBsPoolMode) {
+    let unassignedBsAvail = Math.max(0, sumBucketBalance(movements, ['banco_bolivares']));
+
+    for (const envId of ENVELOPE_IDS) {
+      if (totals[envId].byMethod.bolivares >= -0.001) continue;
+      let deficit = -totals[envId].byMethod.bolivares;
+
+      if (unassignedBsAvail > 0) {
+        const takeUnassigned = Math.min(deficit, unassignedBsAvail);
+        unassignedBsAvail -= takeUnassigned;
+        absorbedFromUnassignedBsUsd += takeUnassigned;
+        totals[envId].byMethod.bolivares += takeUnassigned;
+        totals[envId].spent = Math.max(0, totals[envId].spent - takeUnassigned);
+        deficit -= takeUnassigned;
+      }
+
+      if (deficit > 0.001) {
+        for (const donorId of ENVELOPE_IDS) {
+          if (donorId === envId || deficit <= 0.001) continue;
+          const donorAvail = Math.max(0, totals[donorId].byMethod.bolivares);
+          if (donorAvail <= 0.001) continue;
+          const takeDonor = Math.min(deficit, donorAvail);
+          totals[donorId].byMethod.bolivares -= takeDonor;
+          totals[donorId].spent += takeDonor;
+          totals[envId].byMethod.bolivares += takeDonor;
+          totals[envId].spent = Math.max(0, totals[envId].spent - takeDonor);
+          deficit -= takeDonor;
+        }
+      }
+    }
+  }
+
   const totalAssigned = ENVELOPE_IDS.reduce((acc, id) => acc + totals[id].assigned, 0);
 
-  return ENVELOPE_IDS.map((id) => {
+  const envelopes = ENVELOPE_IDS.map((id) => {
     const { assigned, spent, byMethod } = totals[id];
     const available = assigned - spent;
     return {
@@ -215,6 +257,15 @@ export function calculateEnvelopeSummaries(movements: LedgerMovement[]): Envelop
       byMethod,
     };
   });
+
+  return { envelopes, absorbedFromUnassignedBsUsd };
+}
+
+export function calculateEnvelopeSummaries(
+  movements: LedgerMovement[],
+  options?: { freeBsPoolMode?: boolean },
+): EnvelopeSummary[] {
+  return computeEnvelopeSummariesWithBsPool(movements, options).envelopes;
 }
 
 function sumBucketBalance(movements: LedgerMovement[], buckets: AssetBucketId[]): number {
@@ -341,17 +392,24 @@ export function calculateFundSummaries(
   bcvRate: number | null = null,
   customAccounts: CustomAccount[] = [],
   liveCrypto?: LiveCryptoBalances,
+  options?: { freeBsPoolMode?: boolean },
 ): {
   funds: FundSummary[];
   totalNetWorth: number;
   envelopes: EnvelopeSummary[];
 } {
-  const envelopes = calculateEnvelopeSummaries(movements);
+  const { envelopes, absorbedFromUnassignedBsUsd } = computeEnvelopeSummariesWithBsPool(
+    movements,
+    options,
+  );
   const efectivoSobres = envelopes.reduce((acc, e) => acc + e.byMethod.efectivo, 0);
   const bolivaresSobres = envelopes.reduce((acc, e) => acc + e.byMethod.bolivares, 0);
   const binanceSobres = envelopes.reduce((acc, e) => acc + e.byMethod.binance, 0);
 
-  const cuentaBolivaresUsdLedger = sumBucketBalance(movements, ['banco_bolivares']) + bolivaresSobres;
+  const cuentaBolivaresUsdLedger =
+    sumBucketBalance(movements, ['banco_bolivares']) -
+    absorbedFromUnassignedBsUsd +
+    bolivaresSobres;
   const { balanceBs, hasBsData } = sumBolivaresBalance(movements, bcvRate);
   const cuentaBolivares =
     hasBsData && bcvRate && bcvRate > 0 ? balanceBs / bcvRate : cuentaBolivaresUsdLedger;
@@ -569,6 +627,7 @@ export function calculateReadyToAssignAndRunway(params: {
   installments: InstallmentPlan[];
   bcvRate?: number | null;
   customAccounts?: CustomAccount[];
+  freeBsPoolMode?: boolean;
 }): ReadyToAssignAndRunwaySummary {
   const {
     movements,
@@ -576,6 +635,7 @@ export function calculateReadyToAssignAndRunway(params: {
     installments,
     bcvRate = null,
     customAccounts = [],
+    freeBsPoolMode = false,
   } = params;
 
   const items: ReadyToAssignItem[] = [];
@@ -604,7 +664,7 @@ export function calculateReadyToAssignAndRunway(params: {
       ? Number((unassignedBsUsd * bcvRate).toFixed(2))
       : undefined;
 
-  if (unassignedBsUsd > 0.01) {
+  if (!freeBsPoolMode && unassignedBsUsd > 0.01) {
     items.push({
       sourceBucket: 'banco_bolivares',
       label: 'Cuenta en Bolívares (sin sobre)',
@@ -619,7 +679,13 @@ export function calculateReadyToAssignAndRunway(params: {
   );
 
   // Liquid reserve excludes volatile crypto holdings (binance_crypto, paxg, wallet_btc)
-  const { funds, envelopes } = calculateFundSummaries(movements, bcvRate, customAccounts);
+  const { funds, envelopes } = calculateFundSummaries(
+    movements,
+    bcvRate,
+    customAccounts,
+    undefined,
+    { freeBsPoolMode },
+  );
   const getFundBal = (id: FundSummary['id']) =>
     Math.max(0, funds.find((f) => f.id === id)?.balance ?? 0);
 

@@ -592,4 +592,72 @@ describe('budget/utils/calculations', () => {
     expect(eligible.unassignedUsdtUsd).toBeCloseTo(80, 2);
     expect(eligible.totalEligibleUsd).toBeCloseTo(230, 2);
   });
+
+  it('absorbs negative Bs envelope custody against free Bs pool when freeBsPoolMode is active while preserving net worth and bank Bs', () => {
+    const movements: LedgerMovement[] = [
+      {
+        id: 'm1',
+        date: '2026-11-18',
+        bucket: 'banco_bolivares',
+        type: 'Transferencia (Entrada)',
+        amountUsd: 21.09,
+        amountBs: 20000,
+        bcvRateUsed: 948.35,
+        paymentMethod: 'bolivares_pago_movil',
+      },
+      {
+        id: 'm2',
+        date: '2026-11-18',
+        bucket: 'disfrute',
+        type: 'Ingreso a Sobre',
+        amountUsd: 50,
+        paymentMethod: 'efectivo_usd',
+      },
+      {
+        id: 'm3',
+        date: '2026-11-18',
+        bucket: 'disfrute',
+        type: 'Cambio a Bolívares',
+        amountUsd: 20,
+        amountBs: 18967,
+        bcvRateUsed: 948.35,
+        paymentMethod: 'bolivares_pago_movil',
+      },
+    ];
+
+    // Strict mode: disfrute shows -$20 in Bs custody and +$21.09 sits in Ready to Assign
+    const strictSummary = calculateFundSummaries(movements, null, [], undefined, {
+      freeBsPoolMode: false,
+    });
+    const strictDisfrute = strictSummary.envelopes.find((e) => e.id === 'disfrute')!;
+    expect(strictDisfrute.byMethod.bolivares).toBeCloseTo(-20, 2);
+    expect(strictDisfrute.available).toBeCloseTo(30, 2);
+    const strictRta = calculateReadyToAssignAndRunway({
+      movements,
+      expenses: [],
+      installments: [],
+      bcvRate: 948.35,
+      freeBsPoolMode: false,
+    });
+    expect(strictRta.totalReadyToAssignUsd).toBeCloseTo(21.09, 2);
+
+    // Free Bs pool mode: deficit absorbed by banco_bolivares, net worth & Cuenta en Bolívares unchanged, ReadyToAssign = $0
+    const poolSummary = calculateFundSummaries(movements, null, [], undefined, {
+      freeBsPoolMode: true,
+    });
+    const poolDisfrute = poolSummary.envelopes.find((e) => e.id === 'disfrute')!;
+    expect(poolDisfrute.byMethod.bolivares).toBeCloseTo(0, 2);
+    expect(poolDisfrute.available).toBeCloseTo(50, 2);
+    expect(poolSummary.funds.find((f) => f.id === 'cuenta_bolivares')!.balance).toBeCloseTo(1.09, 2);
+    expect(poolSummary.totalNetWorth).toBeCloseTo(strictSummary.totalNetWorth, 2);
+
+    const poolRta = calculateReadyToAssignAndRunway({
+      movements,
+      expenses: [],
+      installments: [],
+      bcvRate: 948.35,
+      freeBsPoolMode: true,
+    });
+    expect(poolRta.totalReadyToAssignUsd).toBe(0);
+  });
 });

@@ -377,4 +377,94 @@ describe('budget/store & monthEndEngine invariants', () => {
       funds.funds.find((f) => f.id === 'fondo_emergencia')?.breakdown?.find((b) => b.label === 'USDC')?.amount,
     ).toBeCloseTo(150, 2);
   });
+
+  it('routes Bs expenses to free Bs pool without leaving envelopes negative when freeBsPoolMode is enabled, and supports atomic removal', () => {
+    const store = useBudgetStore.getState();
+    store.setManualBcvRate(948.35);
+    expect(store.freeBsPoolMode).toBe(true);
+
+    // Exchanged 20,000 Bs ($21.09) into free Bs bank float, plus $5 partial Bs inside Disfrute & $50 Efectivo in Disfrute
+    store.addMovement({
+      date: '2026-11-19',
+      bucket: 'banco_bolivares',
+      type: 'Transferencia (Entrada)',
+      amountUsd: 16.09,
+      amountBs: 15258.95,
+      bcvRateUsed: 948.35,
+      paymentMethod: 'bolivares_pago_movil',
+      notes: 'Cambio USDT a Bs saldo libre',
+    });
+    store.addMovement({
+      date: '2026-11-19',
+      bucket: 'disfrute',
+      type: 'Ingreso a Sobre',
+      amountUsd: 5,
+      amountBs: 4741.75,
+      bcvRateUsed: 948.35,
+      paymentMethod: 'bolivares_pago_movil',
+    });
+    store.addMovement({
+      date: '2026-11-19',
+      bucket: 'disfrute',
+      type: 'Ingreso a Sobre',
+      amountUsd: 50,
+      paymentMethod: 'efectivo_usd',
+    });
+
+    useBudgetStore.getState().addExpense({
+      name: 'Cena en Bs',
+      amountUsd: 20,
+      frequency: 'mensual',
+      nextDueDate: '2026-11-20',
+      envelopeId: 'disfrute',
+      preferredPaymentMethod: 'bolivares_pago_movil',
+      active: true,
+    });
+    const exp = useBudgetStore.getState().expenses[0];
+
+    // Pay $20 (18,967 Bs) from Disfrute -> consumes $5 from Disfrute Bs + $15 from banco_bolivares free float
+    useBudgetStore.getState().markExpensePaid(exp.id, {
+      logToLedger: true,
+      paymentMethod: 'bolivares_pago_movil',
+      amountUsd: 20,
+      amountBs: 18967,
+      bcvRateUsed: 948.35,
+      envelopeId: 'disfrute',
+    });
+
+    const stateAfter = useBudgetStore.getState();
+    const { funds, envelopes } = calculateFundSummaries(
+      stateAfter.movements,
+      948.35,
+      [],
+      undefined,
+      { freeBsPoolMode: true },
+    );
+    const disfrute = envelopes.find((e) => e.id === 'disfrute')!;
+    const bsFund = funds.find((f) => f.id === 'cuenta_bolivares')!;
+
+    expect(disfrute.byMethod.bolivares).toBeCloseTo(0, 2); // Never negative!
+    expect(disfrute.available).toBeCloseTo(50, 2); // Physical $50 in Disfrute intact
+    expect(bsFund.balanceBs).toBeCloseTo(20000.7 - 18967, 1); // Leftover petty cash stays in banco_bolivares
+
+    // Deleting either leg of the split removes the entire split expense atomically and reverts due date
+    const splitLeg = stateAfter.movements.find((m) => m.bucket === 'banco_bolivares' && m.splitGroupId)!;
+    useBudgetStore.getState().removeMovement(splitLeg.id);
+    expect(useBudgetStore.getState().expenses[0].nextDueDate).toBe('2026-11-20');
+    const restoredEnvs = calculateEnvelopeSummaries(useBudgetStore.getState().movements);
+    expect(restoredEnvs.find((e) => e.id === 'disfrute')!.byMethod.bolivares).toBeCloseTo(5, 2);
+
+    // With strict mode disabled, spending $20 Bs without routing leaves disfrute Bs negative (-$15)
+    useBudgetStore.getState().setFreeBsPoolMode(false);
+    useBudgetStore.getState().markExpensePaid(exp.id, {
+      logToLedger: true,
+      paymentMethod: 'bolivares_pago_movil',
+      amountUsd: 20,
+      amountBs: 18967,
+      bcvRateUsed: 948.35,
+      envelopeId: 'disfrute',
+    });
+    const strictEnvs = calculateEnvelopeSummaries(useBudgetStore.getState().movements);
+    expect(strictEnvs.find((e) => e.id === 'disfrute')!.byMethod.bolivares).toBeCloseTo(-15, 2);
+  });
 });

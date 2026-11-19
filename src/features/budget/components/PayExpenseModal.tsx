@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Banknote, CheckCircle2, Coins, Smartphone, Wallet, X } from 'lucide-react';
 import { ENVELOPE_META } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
 import type { AssetBucketId, EnvelopeId, PaymentMethod, RecurringExpense } from '../types';
-import { formatBs, formatUsd } from '../utils/calculations';
+import { calculateEnvelopeSummaries, formatBs, formatUsd } from '../utils/calculations';
 
 interface PayExpenseModalProps {
   expense: RecurringExpense;
@@ -18,7 +18,14 @@ const PAYMENT_OPTIONS: { id: PaymentMethod; label: string; icon: React.ReactNode
 ];
 
 export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
-  const { markExpensePaid, customAccounts, bcvRate } = useBudgetStore();
+  const {
+    markExpensePaid,
+    customAccounts,
+    bcvRate,
+    movements,
+    freeBsPoolMode,
+    setFreeBsPoolMode,
+  } = useBudgetStore();
   const initialMethod: PaymentMethod = expense.preferredPaymentMethod ?? 'efectivo_usd';
   const hasValidRateInit = Boolean(bcvRate && bcvRate > 0);
   const initialInBs = initialMethod === 'bolivares_pago_movil' && hasValidRateInit;
@@ -38,6 +45,18 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
   const parsedVal = parseFloat(amount) || 0;
   const computedUsd = inputInBs && hasValidRate ? parsedVal / effectiveRate : parsedVal;
   const computedBs = inputInBs ? parsedVal : hasValidRate ? parsedVal * effectiveRate : 0;
+
+  const envBsAvail = useMemo(
+    () =>
+      calculateEnvelopeSummaries(movements, { freeBsPoolMode }).find((e) => e.id === envelopeId)
+        ?.byMethod.bolivares ?? 0,
+    [movements, freeBsPoolMode, envelopeId],
+  );
+  const bsExceedsEnvelope =
+    logToLedger &&
+    !customBucketId &&
+    paymentMethod === 'bolivares_pago_movil' &&
+    computedUsd > Math.max(0, envBsAvail) + 0.01;
 
   const handleSelectMethod = (next: PaymentMethod) => {
     setCustomBucketId(null);
@@ -204,6 +223,55 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
               </select>
             </div>
           </div>
+
+          {bsExceedsEnvelope && (
+            <div
+              className={`rounded-xl p-2.5 border text-[11px] flex items-center justify-between gap-2 ${
+                freeBsPoolMode
+                  ? 'bg-cyan-500/10 border-cyan-500/35 text-cyan-200'
+                  : 'bg-accent-gold/10 border-accent-gold/35 text-accent-gold'
+              }`}
+            >
+              <span className="leading-snug">
+                {freeBsPoolMode
+                  ? `ℹ️ Modo Saldo Libre Bs: el excedente sobre los Bs de ${ENVELOPE_META[envelopeId].shortName} (${formatUsd(Math.max(0, envBsAvail))}) saldrá de tu saldo libre en Cuenta en Bolívares.`
+                  : `⚠️ ${ENVELOPE_META[envelopeId].shortName} solo tiene ${formatUsd(Math.max(0, envBsAvail))} en Bs y quedará con custodia Bs en negativo.`}
+              </span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={freeBsPoolMode}
+                onClick={() => setFreeBsPoolMode(!freeBsPoolMode)}
+                className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-semibold border cursor-pointer shrink-0 transition-colors ${
+                  freeBsPoolMode
+                    ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-200'
+                    : 'bg-bg-card border-border text-text-muted hover:text-text-primary'
+                }`}
+              >
+                <span
+                  aria-hidden="true"
+                  className={`relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full transition-colors ${
+                    freeBsPoolMode ? 'bg-cyan-400' : 'bg-white/20'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-2.5 w-2.5 transform rounded-full bg-bg-primary shadow transition-transform ${
+                      freeBsPoolMode ? 'translate-x-3' : 'translate-x-0.5'
+                    }`}
+                  />
+                </span>
+                <span>
+                  <span className={freeBsPoolMode ? 'text-cyan-300 font-bold' : 'text-text-muted/60'}>
+                    Saldo Libre
+                  </span>
+                  <span className="text-text-muted/40 mx-0.5">/</span>
+                  <span className={!freeBsPoolMode ? 'text-text-primary font-bold' : 'text-text-muted/60'}>
+                    Estricto
+                  </span>
+                </span>
+              </button>
+            </div>
+          )}
 
           <label className="flex items-center justify-between gap-3 bg-bg-input/50 border border-border rounded-xl p-3 cursor-pointer">
             <div>

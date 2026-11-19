@@ -72,6 +72,7 @@ export interface LedgerMovement {
   paymentMethod?: PaymentMethod;
   notes?: string;
   quincenaId?: string;
+  splitGroupId?: string;
   linkedExpense?: {
     id: string;
     previousDueDate: string;
@@ -145,6 +146,7 @@ export interface BudgetSnapshot {
   quincenaConfig: QuincenaConfig;
   customAccounts?: CustomAccount[];
   emergencyGoal?: EmergencyGoalConfig;
+  freeBsPoolMode?: boolean;
 }
 
 export interface FundSummary {

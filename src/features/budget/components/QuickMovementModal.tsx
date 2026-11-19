@@ -125,9 +125,12 @@ function getBucketBalance(
   movements: ReturnType<typeof useBudgetStore.getState>['movements'],
   bcvRate: number | null,
   customAccounts: CustomAccount[],
+  freeBsPoolMode: boolean,
 ): { usd: number; bs: number } {
   if (ENVELOPE_SET.has(bucket)) {
-    const { envelopes } = calculateFundSummaries(movements, bcvRate, customAccounts);
+    const { envelopes } = calculateFundSummaries(movements, bcvRate, customAccounts, undefined, {
+      freeBsPoolMode,
+    });
     const found = envelopes.find((e) => e.id === bucket);
     const usd = found?.available ?? 0;
     return { usd, bs: bcvRate ? usd * bcvRate : 0 };
@@ -175,6 +178,8 @@ export function QuickMovementModal({
     movements,
     expenses,
     customAccounts,
+    freeBsPoolMode,
+    setFreeBsPoolMode,
     addMovement,
     transferBetweenBuckets,
     multiEnvelopeCustodyExchange,
@@ -229,13 +234,13 @@ export function QuickMovementModal({
   );
 
   const currentBucketBalance = useMemo(
-    () => getBucketBalance(bucket, movements, bcvRate, customAccounts),
-    [bucket, movements, bcvRate, customAccounts],
+    () => getBucketBalance(bucket, movements, bcvRate, customAccounts, freeBsPoolMode),
+    [bucket, movements, bcvRate, customAccounts, freeBsPoolMode],
   );
 
   const envelopeSummaries = useMemo(
-    () => calculateEnvelopeSummaries(movements),
-    [movements],
+    () => calculateEnvelopeSummaries(movements, { freeBsPoolMode }),
+    [movements, freeBsPoolMode],
   );
 
   const multiEnvelopeMeta = useMemo(() => {
@@ -934,6 +939,65 @@ export function QuickMovementModal({
                 />
               </div>
             </div>
+
+            {direction === 'out' &&
+              paymentMethod === 'bolivares_pago_movil' &&
+              ENVELOPE_SET.has(bucket) &&
+              (() => {
+                const envBsAvail = Math.max(
+                  0,
+                  envelopeSummaries.find((e) => e.id === bucket)?.byMethod.bolivares ?? 0,
+                );
+                if (computedUsdFromInput <= envBsAvail + 0.01) return null;
+                return (
+                  <div
+                    className={`rounded-xl p-2.5 border text-[11px] flex items-center justify-between gap-2 ${
+                      freeBsPoolMode
+                        ? 'bg-cyan-500/10 border-cyan-500/35 text-cyan-200'
+                        : 'bg-accent-gold/10 border-accent-gold/35 text-accent-gold'
+                    }`}
+                  >
+                    <span className="leading-snug">
+                      {freeBsPoolMode
+                        ? `ℹ️ Modo Saldo Libre Bs: el excedente sobre los Bs del sobre (${formatUsd(envBsAvail)}) se descontará de tu saldo libre en Bs.`
+                        : `⚠️ Este sobre solo tiene ${formatUsd(envBsAvail)} en Bs y quedará con custodia Bs en negativo.`}
+                    </span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={freeBsPoolMode}
+                      onClick={() => setFreeBsPoolMode(!freeBsPoolMode)}
+                      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px] font-semibold border cursor-pointer shrink-0 transition-colors ${
+                        freeBsPoolMode
+                          ? 'bg-cyan-500/15 border-cyan-500/40 text-cyan-200'
+                          : 'bg-bg-card border-border text-text-muted hover:text-text-primary'
+                      }`}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full transition-colors ${
+                          freeBsPoolMode ? 'bg-cyan-400' : 'bg-white/20'
+                        }`}
+                      >
+                        <span
+                          className={`inline-block h-2.5 w-2.5 transform rounded-full bg-bg-primary shadow transition-transform ${
+                            freeBsPoolMode ? 'translate-x-3' : 'translate-x-0.5'
+                          }`}
+                        />
+                      </span>
+                      <span>
+                        <span className={freeBsPoolMode ? 'text-cyan-300 font-bold' : 'text-text-muted/60'}>
+                          Saldo Libre
+                        </span>
+                        <span className="text-text-muted/40 mx-0.5">/</span>
+                        <span className={!freeBsPoolMode ? 'text-text-primary font-bold' : 'text-text-muted/60'}>
+                          Estricto
+                        </span>
+                      </span>
+                    </button>
+                  </div>
+                );
+              })()}
 
             {/* Notes */}
             <div>
