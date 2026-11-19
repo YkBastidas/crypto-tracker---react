@@ -105,6 +105,8 @@ export interface TacticalDipConfig {
   tier3MaxFreeUsdtPct: number;
   biweeklyDcaReserveUsd: number;
   cooldownAdditionalDropPct: number;
+  /** Capitulation escape hatch % drop below last Tier 3 buy to unlock another buy without waiting for rebound */
+  tier3EscapeDropPct?: number;
 }
 
 export interface SmartTradeRecommendation {
@@ -128,6 +130,9 @@ export interface SmartTradeRecommendation {
   residualAfterBuyUsd: number;
   isCappedByBreakEven?: boolean;
   isCooldownLocked?: boolean;
+  isTier3EscapeUnlocked?: boolean;
+  isGroupOverweightTrimmed?: boolean;
+  groupDriftPct?: number;
   highestConsumedDipTier?: DipTier;
   lastDipBuyPrice?: number;
   lastDipBuyDate?: string;

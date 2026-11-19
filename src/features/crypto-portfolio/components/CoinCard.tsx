@@ -10,7 +10,7 @@ import {
   Lock,
   Sparkles,
 } from 'lucide-react';
-import type { CoinHolding, TacticalDipConfig } from '../types';
+import type { CoinHolding, TacticalDipConfig, TargetAllocations } from '../types';
 import {
   computeSmartTradeRecommendation,
   formatUsd,
@@ -25,6 +25,7 @@ interface CoinCardProps {
   totalVolatileCryptoUsd?: number;
   allVolatileHoldings?: CoinHolding[];
   tacticalConfig?: TacticalDipConfig;
+  targetAllocations?: TargetAllocations;
   onTargetChange?: () => void;
   onArchive?: (ticker: string) => void;
   canMoveLeft?: boolean;
@@ -43,6 +44,7 @@ export function CoinCard({
   totalVolatileCryptoUsd = 0,
   allVolatileHoldings,
   tacticalConfig,
+  targetAllocations,
   onTargetChange,
   onArchive,
   canMoveLeft = false,
@@ -68,9 +70,17 @@ export function CoinCard({
             totalVolatileCryptoUsd,
             allVolatileHoldings,
             tacticalConfig,
+            targetAllocations,
           })
         : null,
-    [holding, eligibleCapitalUsd, totalVolatileCryptoUsd, allVolatileHoldings, tacticalConfig],
+    [
+      holding,
+      eligibleCapitalUsd,
+      totalVolatileCryptoUsd,
+      allVolatileHoldings,
+      tacticalConfig,
+      targetAllocations,
+    ],
   );
 
   const pv = (val: string) => (isPrivate ? '****' : val);
@@ -263,7 +273,12 @@ export function CoinCard({
                     {pv(formatUsd(recommendation.tacticalBuyUsd))}
                   </strong>{' '}
                   <span className="text-[10px]">
-                    ({pv(formatTokens(recommendation.tacticalBuyTokens, holding.ticker))} · bloque fijo)
+                    ({pv(formatTokens(recommendation.tacticalBuyTokens, holding.ticker))} · bloque fijo
+                    {recommendation.isGroupOverweightTrimmed &&
+                    recommendation.groupDriftPct !== undefined
+                      ? ` · 50% por sobrepeso (+${recommendation.groupDriftPct.toFixed(1)}%)`
+                      : ''}
+                    {recommendation.isTier3EscapeUnlocked ? ' · Capitulación Nivel 3' : ''})
                   </span>
                 </p>
               ) : (
@@ -277,11 +292,9 @@ export function CoinCard({
                 <p className="text-[10px] text-text-muted/85 leading-snug">
                   Última compra en caída: {pv(formatUsd(recommendation.lastDipBuyPrice))}
                   {recommendation.lastDipBuyDate ? ` (${recommendation.lastDipBuyDate.slice(0, 10)})` : ''}
-                  {recommendation.nextUnlockPrice &&
-                    recommendation.highestConsumedDipTier &&
-                    recommendation.highestConsumedDipTier < 3 && (
-                      <> · Desbloqueo ≤ {pv(formatUsd(recommendation.nextUnlockPrice))}</>
-                    )}
+                  {recommendation.nextUnlockPrice && (
+                    <> · Desbloqueo ≤ {pv(formatUsd(recommendation.nextUnlockPrice))}</>
+                  )}
                 </p>
               )}
               {recommendation.breakEvenBuyUsd > 0 && (

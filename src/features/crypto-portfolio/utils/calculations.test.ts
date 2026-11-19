@@ -225,7 +225,7 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(recDiscarded.blockedReason).toContain('< $20');
   });
 
-  it('prioritizes deeper drop on simultaneous BUY alerts and discards sub-$20 remainder without cutting leader', () => {
+  it('prioritizes deeper drop on simultaneous BUY alerts when groups are within +5% target and discards sub-$20 remainder', () => {
     const txs: Transaction[] = [
       { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '20', usdValue: 2000 }, // DCA = $100
       { date: '2026-04-01', type: 'Buy', asset: 'PAXG', tokens: '2', usdValue: 200 },   // DCA = $100
@@ -243,18 +243,21 @@ describe('crypto-portfolio/utils/calculations', () => {
     );
     const btc = holdings.find((h) => h.ticker === 'BTC')!;
     const paxg = holdings.find((h) => h.ticker === 'PAXG')!;
+    const matchedTargets = { 'GROUP:BTC': 90, 'GROUP:GOLD': 10 }; // ~90.9% BTC (drift +0.9% <= +5%)
 
     const recBtc = computeSmartTradeRecommendation({
       holding: btc,
       eligibleCapitalUsd: 401.88,
       totalVolatileCryptoUsd: btc.currentValue + paxg.currentValue,
       allVolatileHoldings: holdings,
+      targetAllocations: matchedTargets,
     });
     const recPaxg = computeSmartTradeRecommendation({
       holding: paxg,
       eligibleCapitalUsd: 401.88,
       totalVolatileCryptoUsd: btc.currentValue + paxg.currentValue,
       allVolatileHoldings: holdings,
+      targetAllocations: matchedTargets,
     });
 
     // BTC takes full Tier 1 block ($45); PAXG is discarded ($0) with priority message, never cut or inflated
@@ -265,6 +268,62 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(recPaxg.blockedReason).toContain('Prioridad asignada a BTC');
   });
 
+  it('halves tactical block and deprioritizes groups overweight by >+5%, favoring underweight groups', () => {
+    const txs: Transaction[] = [
+      { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '10', usdValue: 1000 },   // @ $89.25 = $892.50 (59.5%)
+      { date: '2026-04-01', type: 'Buy', asset: 'ETH', tokens: '5', usdValue: 500 },     // @ $108 = $540 (36%, WATCH)
+      { date: '2026-04-01', type: 'Buy', asset: 'PAXG', tokens: '0.75', usdValue: 75 },  // @ $89.72 = $67.29 (4.5%)
+    ];
+    const customTargets: CoinTargets = {
+      BTC: { buy: 10, sell: 30 },
+      ETH: { buy: 10, sell: 30 },
+      PAXG: { buy: 10, sell: 30 },
+    };
+    const holdings = computeHoldings(
+      txs,
+      { BTC: 'bitcoin', ETH: 'ethereum', PAXG: 'pax-gold' },
+      { bitcoin: { usd: 89.25 }, ethereum: { usd: 108 }, 'pax-gold': { usd: 89.72 } },
+      customTargets,
+      stablecoins,
+    );
+    const btc = holdings.find((h) => h.ticker === 'BTC')!;
+    const paxg = holdings.find((h) => h.ticker === 'PAXG')!;
+    const totalUsd = holdings.reduce((acc, h) => acc + h.currentValue, 0);
+    const groupTargets = { 'GROUP:BTC': 50, 'GROUP:ETH': 40, 'GROUP:GOLD': 10 };
+
+    // When only BTC triggers BUY while overweight (+9.5% > +5%), block is halved ($45 -> $22.50)
+    const soloOverweightBtc = computeSmartTradeRecommendation({
+      holding: btc,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings.filter((h) => h.ticker !== 'PAXG'),
+      targetAllocations: groupTargets,
+    });
+    expect(soloOverweightBtc.isGroupOverweightTrimmed).toBe(true);
+    expect(soloOverweightBtc.tacticalBuyUsd).toBe(22.5);
+
+    // When both overweight BTC (-10.75%) and underweight PAXG (-10.28%) trigger BUY, PAXG takes Priority #1 ($45)
+    const recPaxg = computeSmartTradeRecommendation({
+      holding: paxg,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: groupTargets,
+    });
+    const recBtc = computeSmartTradeRecommendation({
+      holding: btc,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: groupTargets,
+    });
+    expect(recPaxg.priorityRank).toBe(1);
+    expect(recPaxg.tacticalBuyUsd).toBe(45);
+    expect(recBtc.priorityRank).toBe(2);
+    expect(recBtc.tacticalBuyUsd).toBe(0);
+    expect(recBtc.blockedReason).toContain('Prioridad asignada a PAXG');
+  });
+
   it('enforces dual-filter cooldown after a dip buy, prevents phantom Tier 2 trigger, unlocks on >=7.5% extra drop, and resets on rebound', () => {
     const customTargets: CoinTargets = {
       BTC: { buy: 10, sell: 30 },
@@ -273,7 +332,7 @@ describe('crypto-portfolio/utils/calculations', () => {
     const txsWithRecentDipBuy: Transaction[] = [
       { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '10', usdValue: 1000 },   // DCA = $100
       { date: '2026-04-10', type: 'Buy', asset: 'BTC', tokens: '0.56', usdValue: 49.98 }, // executed at $89.25 (-10.75%, Nivel 1)
-      { date: '2026-04-01', type: 'Buy', asset: 'PAXG', tokens: '2', usdValue: 200 },     // PAXG has NO dip buy yet
+      { date: '2026-04-01', type: 'Buy', asset: 'PAXG', tokens: '1', usdValue: 100 },     // PAXG (~8.7%, no dip buy yet)
     ];
 
     // Case A: Still in Nivel 1 (-10.75%) -> BTC locked in Cooldown; PAXG becomes priority #1 and gets $45
@@ -512,5 +571,49 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(report).toContain('COMPRAR $45.00');
     expect(report).toContain('BEAM:');
     expect(report).toContain('## Prompt para la IA');
+  });
+
+  it('unlocks Tier 3 Cooldown via capitulation escape hatch when price drops >=15% below last Tier 3 buy', () => {
+    const txsTier3: Transaction[] = [
+      { date: '2026-04-01', type: 'Buy', asset: 'ETH', tokens: '10', usdValue: 1000 }, // DCA = $100
+      { date: '2026-04-15', type: 'Buy', asset: 'ETH', tokens: '1', usdValue: 78 },     // executed at $78 (-22%, Tier 3 consumed)
+    ];
+    const ethTargets: CoinTargets = { ETH: { buy: 20, sell: 40 } };
+
+    // -10.26% below $78 ($70): stays locked, exposes capitulation unlock threshold $66.30 (-15%)
+    const [lockedEth] = computeHoldings(
+      txsTier3,
+      coinMappings,
+      { ethereum: { usd: 70 } },
+      ethTargets,
+      stablecoins,
+    );
+    expect(lockedEth.highestConsumedDipTier).toBe(3);
+    const recLocked = computeSmartTradeRecommendation({
+      holding: lockedEth,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: lockedEth.currentValue,
+    });
+    expect(recLocked.isCooldownLocked).toBe(true);
+    expect(recLocked.tacticalBuyUsd).toBe(0);
+    expect(recLocked.nextUnlockPrice).toBeCloseTo(66.3, 2);
+    expect(recLocked.blockedReason).toContain('capitulación');
+
+    // -16.67% below $78 ($65 <= $66.30): capitulation escape hatch unlocks Tier 3 ($100)
+    const [unlockedEth] = computeHoldings(
+      txsTier3,
+      coinMappings,
+      { ethereum: { usd: 65 } },
+      ethTargets,
+      stablecoins,
+    );
+    const recEscaped = computeSmartTradeRecommendation({
+      holding: unlockedEth,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: unlockedEth.currentValue,
+    });
+    expect(recEscaped.isCooldownLocked).toBe(false);
+    expect(recEscaped.isTier3EscapeUnlocked).toBe(true);
+    expect(recEscaped.tacticalBuyUsd).toBe(100);
   });
 });

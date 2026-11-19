@@ -12,7 +12,11 @@ import type {
   TargetAllocations,
 } from '../types';
 import type { CoinMappings } from '../../../shared/types';
-import { DEFAULT_TACTICAL_DIP_CONFIG, sanitizeTacticalDipConfig } from '../../../shared/lib/storage';
+import {
+  DEFAULT_TACTICAL_DIP_CONFIG,
+  DEFAULT_TARGET_ALLOCATIONS,
+  sanitizeTacticalDipConfig,
+} from '../../../shared/lib/storage';
 
 export { DEFAULT_TACTICAL_DIP_CONFIG };
 
@@ -33,6 +37,7 @@ export function recommendTacticalTiersFromIncome(monthlyIncomeUsd: number): Tact
     tier3MaxFreeUsdtPct: DEFAULT_TACTICAL_DIP_CONFIG.tier3MaxFreeUsdtPct,
     biweeklyDcaReserveUsd: roundTo5(cleanIncome * (50 / 900), 0),
     cooldownAdditionalDropPct: DEFAULT_TACTICAL_DIP_CONFIG.cooldownAdditionalDropPct,
+    tier3EscapeDropPct: DEFAULT_TACTICAL_DIP_CONFIG.tier3EscapeDropPct,
   };
 }
 
@@ -364,12 +369,65 @@ function computeTierInfo(
 
 const MIN_COIN_ORDER_USD = 20;
 
+const GROUP_OVERWEIGHT_THRESHOLD_PCT = 5;
+
+function computeGroupDriftForHolding(
+  holding: CoinHolding,
+  allVolatileHoldings: CoinHolding[] | undefined,
+  totalVolatileCryptoUsd: number,
+  explicitTargets?: TargetAllocations,
+): { groupDriftPct?: number; isGroupOverweight: boolean } {
+  if (holding.isStablecoin || holding.currentValue <= 0) {
+    return { isGroupOverweight: false };
+  }
+
+  const pool = (
+    allVolatileHoldings && allVolatileHoldings.length > 0 ? allVolatileHoldings : [holding]
+  ).filter((h) => !h.isStablecoin && h.currentValue > 0);
+
+  const distinctGroups = new Set(pool.map((h) => classifyCryptoGroup(h.ticker).id));
+  // Guard: avoid penalizing isolated single-asset unit checks when no explicit target was supplied
+  if (!explicitTargets && distinctGroups.size < 2) {
+    return { isGroupOverweight: false };
+  }
+
+  const denomUsd =
+    allVolatileHoldings && allVolatileHoldings.length > 0
+      ? pool.reduce((acc, h) => acc + h.currentValue, 0)
+      : Math.max(totalVolatileCryptoUsd, holding.currentValue);
+  if (denomUsd <= 0) {
+    return { isGroupOverweight: false };
+  }
+
+  const targetGroupId = classifyCryptoGroup(holding.ticker).id;
+  const targets = explicitTargets ?? DEFAULT_TARGET_ALLOCATIONS;
+  const groupTargetPct = targets[targetGroupId] ?? targets[targetGroupId.toUpperCase()];
+  if (typeof groupTargetPct !== 'number' || !Number.isFinite(groupTargetPct)) {
+    return { isGroupOverweight: false };
+  }
+
+  const groupValueUsd =
+    allVolatileHoldings && allVolatileHoldings.length > 0
+      ? pool
+          .filter((h) => classifyCryptoGroup(h.ticker).id === targetGroupId)
+          .reduce((acc, h) => acc + h.currentValue, 0)
+      : holding.currentValue;
+
+  const groupCurrentPct = (groupValueUsd / denomUsd) * 100;
+  const groupDriftPct = Number((groupCurrentPct - groupTargetPct).toFixed(2));
+  return {
+    groupDriftPct,
+    isGroupOverweight: groupDriftPct > GROUP_OVERWEIGHT_THRESHOLD_PCT,
+  };
+}
+
 function evaluateCooldown(
   holding: CoinHolding,
   dipTier: DipTier,
   config: TacticalDipConfig,
 ): {
   isCooldownLocked: boolean;
+  isTier3EscapeUnlocked?: boolean;
   nextUnlockPrice?: number;
   cooldownReason?: string;
 } {
@@ -396,10 +454,21 @@ function evaluateCooldown(
   }
 
   if (consumedTier >= 3) {
+    const escapeDropReq = config.tier3EscapeDropPct ?? 15;
+    const escapeUnlockPrice = Number(
+      (lastBuyPrice * (1 - escapeDropReq / 100)).toFixed(decimals),
+    );
+    if (dipTier >= 3 && dropSinceLastBuyPct >= escapeDropReq) {
+      return {
+        isCooldownLocked: false,
+        isTier3EscapeUnlocked: true,
+        nextUnlockPrice: escapeUnlockPrice,
+      };
+    }
     return {
       isCooldownLocked: true,
-      nextUnlockPrice,
-      cooldownReason: `Cooldown Nivel 3 cumplido (última compra ${formatUsd(lastBuyPrice)}). Esperar rebote sobre Target Buy para reiniciar ciclo.`,
+      nextUnlockPrice: escapeUnlockPrice,
+      cooldownReason: `Cooldown Nivel 3 cumplido (${formatUsd(lastBuyPrice)}). Desbloquea al rebotar sobre Target Buy o por capitulación (-${escapeDropReq}% extra ≤ ${formatUsd(escapeUnlockPrice)}).`,
     };
   }
 
@@ -422,52 +491,78 @@ function evaluateCooldown(
 
 function allocatePriorityDipBudget(
   activeBuyHoldings: CoinHolding[],
+  allVolatileHoldings: CoinHolding[] | undefined,
+  totalVolatileCryptoUsd: number,
   maxSpendable: number,
   config: TacticalDipConfig,
+  explicitTargets?: TargetAllocations,
 ): {
   allocations: Record<string, number>;
   ranks: Record<string, number>;
   blockedReasons: Record<string, string>;
+  overweightFlags: Record<string, boolean>;
   globalTierBudgetUsd: number;
   activeCoinCount: number;
 } {
   const candidates = activeBuyHoldings.map((h) => {
     const drop = h.dca > 0 && h.livePrice > 0 ? ((h.dca - h.livePrice) / h.dca) * 100 : 0;
     const { rawTacticalUsd } = computeTierInfo(drop, true, config);
+    const { groupDriftPct, isGroupOverweight } = computeGroupDriftForHolding(
+      h,
+      allVolatileHoldings ?? activeBuyHoldings,
+      totalVolatileCryptoUsd,
+      explicitTargets,
+    );
+    const effectiveTacticalUsd = isGroupOverweight
+      ? Number((Math.max(0, rawTacticalUsd) * 0.5).toFixed(2))
+      : Number(Math.max(0, rawTacticalUsd).toFixed(2));
     return {
       ticker: h.ticker.toUpperCase(),
       displayTicker: h.ticker,
       drop,
       investedUsd: h.investedUsd,
-      rawTacticalUsd: Number(Math.max(0, rawTacticalUsd).toFixed(2)),
+      groupDriftPct,
+      isGroupOverweight,
+      effectiveTacticalUsd,
     };
   });
 
-  // Deterministic priority queue: deepest % drop vs DCA -> largest invested capital -> ticker asc
+  // Priority queue: underweight/balanced groups before overweight (>+5%), then deepest drop -> lowest drift -> investedUsd desc
   const prioritized = [...candidates].sort(
-    (a, b) => b.drop - a.drop || b.investedUsd - a.investedUsd || a.ticker.localeCompare(b.ticker),
+    (a, b) =>
+      Number(a.isGroupOverweight) - Number(b.isGroupOverweight) ||
+      b.drop - a.drop ||
+      (a.groupDriftPct ?? 0) - (b.groupDriftPct ?? 0) ||
+      b.investedUsd - a.investedUsd ||
+      a.ticker.localeCompare(b.ticker),
   );
 
   const globalTierBudgetUsd = Number(
-    Math.min(maxSpendable, Math.max(...prioritized.map((c) => c.rawTacticalUsd), 0)).toFixed(2),
+    Math.min(maxSpendable, Math.max(...prioritized.map((c) => c.effectiveTacticalUsd), 0)).toFixed(
+      2,
+    ),
   );
 
   const allocations: Record<string, number> = {};
   const ranks: Record<string, number> = {};
   const blockedReasons: Record<string, string> = {};
+  const overweightFlags: Record<string, boolean> = {};
   let remainingBudget = globalTierBudgetUsd;
   let leaderTicker: string | null = null;
   let fundedCount = 0;
 
   prioritized.forEach((item, index) => {
     ranks[item.ticker] = index + 1;
-    const desired = Number(Math.min(item.rawTacticalUsd, remainingBudget).toFixed(2));
+    overweightFlags[item.ticker] = item.isGroupOverweight;
+    const desired = Number(Math.min(item.effectiveTacticalUsd, remainingBudget).toFixed(2));
 
     if (desired < MIN_COIN_ORDER_USD) {
       allocations[item.ticker] = 0;
       blockedReasons[item.ticker] = leaderTicker
         ? `Prioridad asignada a ${leaderTicker} · Remanente < $${MIN_COIN_ORDER_USD}`
-        : `Esperar mayor caída / Monto < $${MIN_COIN_ORDER_USD}`;
+        : item.isGroupOverweight
+          ? `Sobreponderado (+${(item.groupDriftPct ?? 0).toFixed(1)}%) · Monto reducido < $${MIN_COIN_ORDER_USD}`
+          : `Esperar mayor caída / Monto < $${MIN_COIN_ORDER_USD}`;
       return;
     }
 
@@ -481,14 +576,16 @@ function allocatePriorityDipBudget(
     allocations,
     ranks,
     blockedReasons,
+    overweightFlags,
     globalTierBudgetUsd,
     activeCoinCount: fundedCount,
   };
 }
 
 /**
- * Fixed-tier Tactical Dip-Buying engine with Dual-Filter Cooldown & Priority Queue.
+ * Fixed-tier Tactical Dip-Buying engine with Dual-Filter Cooldown, Group Overweight Guard & Priority Queue.
  * - Uses fixed blocks anchored to monthly income ($45 / $70 / $100) bounded by free Binance USDT (after DCA reserve).
+ * - Halves tactical block (-50%) and deprioritizes assets whose strategic group exceeds target by > +5%.
  * - Never uses breakEvenBuyUsd to size or cap orders (informational only).
  * - Discards micro-orders (< $20) instead of inflating them.
  */
@@ -498,6 +595,7 @@ export function computeSmartTradeRecommendation(params: {
   totalVolatileCryptoUsd: number;
   allVolatileHoldings?: CoinHolding[];
   tacticalConfig?: Partial<TacticalDipConfig>;
+  targetAllocations?: TargetAllocations;
 }): SmartTradeRecommendation {
   const {
     holding,
@@ -505,6 +603,7 @@ export function computeSmartTradeRecommendation(params: {
     totalVolatileCryptoUsd,
     allVolatileHoldings,
     tacticalConfig,
+    targetAllocations,
   } = params;
   const config = sanitizeTacticalDipConfig({
     ...DEFAULT_TACTICAL_DIP_CONFIG,
@@ -539,6 +638,12 @@ export function computeSmartTradeRecommendation(params: {
     config,
   );
   const cooldown = evaluateCooldown(holding, dipTier, config);
+  const { groupDriftPct, isGroupOverweight } = computeGroupDriftForHolding(
+    holding,
+    allVolatileHoldings,
+    totalVolatileCryptoUsd,
+    targetAllocations,
+  );
 
   const maxSpendable = Number(
     Math.min(
@@ -552,6 +657,7 @@ export function computeSmartTradeRecommendation(params: {
   let newDcaAfterTactical = dca;
   let blockedReason: string | undefined;
   let isCooldownLocked = false;
+  let isGroupOverweightTrimmed = false;
   let priorityRank: number | undefined;
   let sharedAmongBuyCount: number | undefined;
   let globalTierBudgetUsd: number | undefined;
@@ -576,23 +682,37 @@ export function computeSmartTradeRecommendation(params: {
       });
 
       if (activeBuyPeers.length > 1) {
-        const shared = allocatePriorityDipBudget(activeBuyPeers, maxSpendable, config);
+        const shared = allocatePriorityDipBudget(
+          activeBuyPeers,
+          allVolatileHoldings,
+          totalVolatileCryptoUsd,
+          maxSpendable,
+          config,
+          targetAllocations,
+        );
         const key = holding.ticker.toUpperCase();
         tacticalBuyUsd = shared.allocations[key] ?? 0;
         priorityRank = shared.ranks[key];
+        isGroupOverweightTrimmed = Boolean(shared.overweightFlags[key] && tacticalBuyUsd > 0);
         sharedAmongBuyCount = shared.activeCoinCount > 1 ? shared.activeCoinCount : undefined;
         globalTierBudgetUsd = shared.globalTierBudgetUsd;
         if (tacticalBuyUsd === 0) {
           blockedReason = shared.blockedReasons[key];
         }
       } else {
-        const candidateUsd = Number(Math.min(rawTacticalUsd, maxSpendable).toFixed(2));
+        const effectiveRaw = isGroupOverweight
+          ? Number((rawTacticalUsd * 0.5).toFixed(2))
+          : rawTacticalUsd;
+        const candidateUsd = Number(Math.min(effectiveRaw, maxSpendable).toFixed(2));
         globalTierBudgetUsd = candidateUsd;
         if (candidateUsd < MIN_COIN_ORDER_USD) {
           tacticalBuyUsd = 0;
-          blockedReason = `Esperar mayor caída / Monto < $${MIN_COIN_ORDER_USD}`;
+          blockedReason = isGroupOverweight
+            ? `Sobreponderado (+${(groupDriftPct ?? 0).toFixed(1)}%) · Monto reducido < $${MIN_COIN_ORDER_USD}`
+            : `Esperar mayor caída / Monto < $${MIN_COIN_ORDER_USD}`;
         } else {
           tacticalBuyUsd = candidateUsd;
+          isGroupOverweightTrimmed = isGroupOverweight;
           priorityRank = 1;
         }
       }
@@ -635,6 +755,9 @@ export function computeSmartTradeRecommendation(params: {
     residualAfterBuyUsd,
     isCappedByBreakEven: false,
     isCooldownLocked,
+    isTier3EscapeUnlocked: cooldown.isTier3EscapeUnlocked,
+    isGroupOverweightTrimmed,
+    groupDriftPct,
     highestConsumedDipTier: holding.highestConsumedDipTier,
     lastDipBuyPrice: holding.lastDipBuyPrice,
     lastDipBuyDate: holding.lastDipBuyDate,

@@ -35,6 +35,7 @@ export const DEFAULT_TACTICAL_DIP_CONFIG: TacticalDipConfig = {
   tier3MaxFreeUsdtPct: 40,
   biweeklyDcaReserveUsd: 50,
   cooldownAdditionalDropPct: 7.5,
+  tier3EscapeDropPct: 15,
 };
 
 const DEFAULT_GOAL_TARGET = 20_000;
@@ -218,6 +219,12 @@ export function sanitizeTacticalDipConfig(
       src.cooldownAdditionalDropPct,
       DEFAULT_TACTICAL_DIP_CONFIG.cooldownAdditionalDropPct,
       0,
+      90,
+    ),
+    tier3EscapeDropPct: sanitizeNumber(
+      src.tier3EscapeDropPct,
+      DEFAULT_TACTICAL_DIP_CONFIG.tier3EscapeDropPct ?? 15,
+      5,
       90,
     ),
   };

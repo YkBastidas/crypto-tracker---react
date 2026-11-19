@@ -241,6 +241,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
         totalVolatileCryptoUsd,
         allVolatileHoldings: cryptoHoldings,
         tacticalConfig: tacticalDipConfig,
+        targetAllocations,
       });
     }
     return buildAiPortfolioReportMarkdown({
@@ -266,6 +267,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
     totalEligibleUsd,
     excludedPhysicalCashUsd,
     tacticalDipConfig,
+    targetAllocations,
     totalVolatileCryptoUsd,
     groupExposure,
     coinExposure,
@@ -790,6 +792,23 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
                   className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
                 />
               </label>
+
+              <label className="block">
+                <span className="text-[10px] text-text-muted block mb-1">Escape Nivel 3 (%)</span>
+                <input
+                  type="number"
+                  min={5}
+                  max={50}
+                  step={1}
+                  value={tacticalDipConfig.tier3EscapeDropPct ?? 15}
+                  onChange={(e) =>
+                    setTacticalDipConfig({
+                      tier3EscapeDropPct: Math.max(5, parseFloat(e.target.value) || 15),
+                    })
+                  }
+                  className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
+                />
+              </label>
             </div>
           </div>
         )}
@@ -809,6 +828,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
                   totalVolatileCryptoUsd={totalVolatileCryptoUsd}
                   allVolatileHoldings={cryptoHoldings}
                   tacticalConfig={tacticalDipConfig}
+                  targetAllocations={targetAllocations}
                   onTargetChange={onTargetChange}
                   onArchive={(t) => archiveCoin(t)}
                   draggable={sortMode === 'manual'}

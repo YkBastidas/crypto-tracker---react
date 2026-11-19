@@ -74,6 +74,7 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
     loadTransactions,
     archivedCoins,
     tacticalDipConfig,
+    targetAllocations,
     undoTransactions,
     undoLabel,
     undoLastPortfolioAction,
@@ -117,9 +118,16 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
           totalVolatileCryptoUsd: totalVolatileUsd,
           allVolatileHoldings: volatileHoldings,
           tacticalConfig: tacticalDipConfig,
+          targetAllocations,
         }),
       }));
-  }, [holdings, archivedCoins, eligibleCapital.totalEligibleUsd, tacticalDipConfig]);
+  }, [
+    holdings,
+    archivedCoins,
+    eligibleCapital.totalEligibleUsd,
+    tacticalDipConfig,
+    targetAllocations,
+  ]);
 
   const actionableAlertsCount = useMemo(
     () =>
