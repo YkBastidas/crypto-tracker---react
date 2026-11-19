@@ -228,44 +228,44 @@ describe('crypto-portfolio/utils/calculations', () => {
   it('prioritizes deeper drop on simultaneous BUY alerts when groups are within +5% target and discards sub-$20 remainder', () => {
     const txs: Transaction[] = [
       { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '20', usdValue: 2000 }, // DCA = $100
-      { date: '2026-04-01', type: 'Buy', asset: 'PAXG', tokens: '2', usdValue: 200 },   // DCA = $100
+      { date: '2026-04-01', type: 'Buy', asset: 'ETH', tokens: '2', usdValue: 200 },   // DCA = $100
     ];
     const customTargets: CoinTargets = {
-      BTC: { buy: 10, sell: 30 },  // targetBuyPrice = $90
-      PAXG: { buy: 10, sell: 30 }, // targetBuyPrice = $90
+      BTC: { buy: 10, sell: 30 }, // targetBuyPrice = $90
+      ETH: { buy: 10, sell: 30 }, // targetBuyPrice = $90
     };
     const holdings = computeHoldings(
       txs,
-      { BTC: 'bitcoin', PAXG: 'pax-gold' },
-      { bitcoin: { usd: 89.24165 }, 'pax-gold': { usd: 89.721 } }, // BTC -10.76%, PAXG -10.28%
+      { BTC: 'bitcoin', ETH: 'ethereum' },
+      { bitcoin: { usd: 89.24165 }, ethereum: { usd: 89.721 } }, // BTC -10.76%, ETH -10.28% (both Crypto Tier 1)
       customTargets,
       stablecoins,
     );
     const btc = holdings.find((h) => h.ticker === 'BTC')!;
-    const paxg = holdings.find((h) => h.ticker === 'PAXG')!;
-    const matchedTargets = { 'GROUP:BTC': 90, 'GROUP:GOLD': 10 }; // ~90.9% BTC (drift +0.9% <= +5%)
+    const eth = holdings.find((h) => h.ticker === 'ETH')!;
+    const matchedTargets = { 'GROUP:BTC': 90, 'GROUP:ETH': 10 }; // ~90.9% BTC (drift +0.9% <= +5%)
 
     const recBtc = computeSmartTradeRecommendation({
       holding: btc,
       eligibleCapitalUsd: 401.88,
-      totalVolatileCryptoUsd: btc.currentValue + paxg.currentValue,
+      totalVolatileCryptoUsd: btc.currentValue + eth.currentValue,
       allVolatileHoldings: holdings,
       targetAllocations: matchedTargets,
     });
-    const recPaxg = computeSmartTradeRecommendation({
-      holding: paxg,
+    const recEth = computeSmartTradeRecommendation({
+      holding: eth,
       eligibleCapitalUsd: 401.88,
-      totalVolatileCryptoUsd: btc.currentValue + paxg.currentValue,
+      totalVolatileCryptoUsd: btc.currentValue + eth.currentValue,
       allVolatileHoldings: holdings,
       targetAllocations: matchedTargets,
     });
 
-    // BTC takes full Tier 1 block ($45); PAXG is discarded ($0) with priority message, never cut or inflated
+    // BTC takes full Tier 1 block ($45); ETH is discarded ($0) with priority message, never cut or inflated
     expect(recBtc.tacticalBuyUsd).toBe(45);
     expect(recBtc.priorityRank).toBe(1);
-    expect(recPaxg.tacticalBuyUsd).toBe(0);
-    expect(recPaxg.priorityRank).toBe(2);
-    expect(recPaxg.blockedReason).toContain('Prioridad asignada a BTC');
+    expect(recEth.tacticalBuyUsd).toBe(0);
+    expect(recEth.priorityRank).toBe(2);
+    expect(recEth.blockedReason).toContain('Prioridad asignada a BTC');
   });
 
   it('halves tactical block and deprioritizes groups overweight by >+5%, favoring underweight groups', () => {
@@ -277,7 +277,7 @@ describe('crypto-portfolio/utils/calculations', () => {
     const customTargets: CoinTargets = {
       BTC: { buy: 10, sell: 30 },
       ETH: { buy: 10, sell: 30 },
-      PAXG: { buy: 10, sell: 30 },
+      PAXG: { buy: 5, sell: 15 },
     };
     const holdings = computeHoldings(
       txs,
@@ -302,7 +302,7 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(soloOverweightBtc.isGroupOverweightTrimmed).toBe(true);
     expect(soloOverweightBtc.tacticalBuyUsd).toBe(22.5);
 
-    // When both overweight BTC (-10.75%) and underweight PAXG (-10.28%) trigger BUY, PAXG takes Priority #1 ($45)
+    // When both overweight BTC (-10.75%, Tier 1) and underweight PAXG (-10.28%, Gold Tier 2) trigger BUY, PAXG takes Priority #1 ($70)
     const recPaxg = computeSmartTradeRecommendation({
       holding: paxg,
       eligibleCapitalUsd: 400,
@@ -318,7 +318,8 @@ describe('crypto-portfolio/utils/calculations', () => {
       targetAllocations: groupTargets,
     });
     expect(recPaxg.priorityRank).toBe(1);
-    expect(recPaxg.tacticalBuyUsd).toBe(45);
+    expect(recPaxg.dipTier).toBe(2);
+    expect(recPaxg.tacticalBuyUsd).toBe(70);
     expect(recBtc.priorityRank).toBe(2);
     expect(recBtc.tacticalBuyUsd).toBe(0);
     expect(recBtc.blockedReason).toContain('Prioridad asignada a PAXG');
@@ -327,15 +328,15 @@ describe('crypto-portfolio/utils/calculations', () => {
   it('enforces dual-filter cooldown after a dip buy, prevents phantom Tier 2 trigger, unlocks on >=7.5% extra drop, and resets on rebound', () => {
     const customTargets: CoinTargets = {
       BTC: { buy: 10, sell: 30 },
-      PAXG: { buy: 10, sell: 30 },
+      PAXG: { buy: 5, sell: 15 },
     };
     const txsWithRecentDipBuy: Transaction[] = [
       { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '10', usdValue: 1000 },   // DCA = $100
       { date: '2026-04-10', type: 'Buy', asset: 'BTC', tokens: '0.56', usdValue: 49.98 }, // executed at $89.25 (-10.75%, Nivel 1)
-      { date: '2026-04-01', type: 'Buy', asset: 'PAXG', tokens: '1', usdValue: 100 },     // PAXG (~8.7%, no dip buy yet)
+      { date: '2026-04-01', type: 'Buy', asset: 'PAXG', tokens: '1', usdValue: 100 },     // PAXG -10.3% -> Gold Tier 2 ($70)
     ];
 
-    // Case A: Still in Nivel 1 (-10.75%) -> BTC locked in Cooldown; PAXG becomes priority #1 and gets $45
+    // Case A: Still in Nivel 1 (-10.75%) -> BTC locked in Cooldown; PAXG becomes priority #1 and gets Gold Tier 2 ($70)
     const holdingsNivel1 = computeHoldings(
       txsWithRecentDipBuy,
       { BTC: 'bitcoin', PAXG: 'pax-gold' },
@@ -365,7 +366,8 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(recBtcN1.isCooldownLocked).toBe(true);
     expect(recBtcN1.tacticalBuyUsd).toBe(0);
     expect(recBtcN1.blockedReason).toContain('Cooldown Nivel 1 cumplido');
-    expect(recPaxgN1.tacticalBuyUsd).toBe(45); // Cooldown-locked BTC does not block unlocked PAXG
+    expect(recPaxgN1.dipTier).toBe(2);
+    expect(recPaxgN1.tacticalBuyUsd).toBe(70); // Cooldown-locked BTC does not block unlocked PAXG
 
     // Case B: Enters Nivel 2 vs DCA (-15.5% @ $84), but extra drop from $89.25 is only 5.88% (< 7.5%) -> still locked
     const [btcPhantomN2] = computeHoldings(
@@ -615,5 +617,209 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(recEscaped.isCooldownLocked).toBe(false);
     expect(recEscaped.isTier3EscapeUnlocked).toBe(true);
     expect(recEscaped.tacticalBuyUsd).toBe(100);
+  });
+
+  it('applies Defensive Gold volatility profile (5/8/12% tiers, -3.5% cooldown, -8% N3 escape) to PAXG', () => {
+    const paxgMap: CoinMappings = { PAXG: 'pax-gold' };
+    const paxgTarget: CoinTargets = { PAXG: { buy: 5, sell: 15 } };
+    const baseTxs: Transaction[] = [
+      { date: '2026-04-01', type: 'Buy', asset: 'PAXG', tokens: '10', usdValue: 1000 }, // DCA = $100
+    ];
+
+    const [t1] = computeHoldings(baseTxs, paxgMap, { 'pax-gold': { usd: 94.5 } }, paxgTarget, stablecoins);
+    const recT1 = computeSmartTradeRecommendation({
+      holding: t1,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: t1.currentValue,
+    });
+    expect(recT1.volatilityProfile).toBe('defensive_gold');
+    expect(recT1.dipTier).toBe(1);
+    expect(recT1.tacticalBuyUsd).toBe(45);
+
+    const [t2] = computeHoldings(baseTxs, paxgMap, { 'pax-gold': { usd: 88.9 } }, paxgTarget, stablecoins);
+    const recT2 = computeSmartTradeRecommendation({
+      holding: t2,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: t2.currentValue,
+    });
+    expect(recT2.dipTier).toBe(2);
+    expect(recT2.tacticalBuyUsd).toBe(70);
+
+    const [t3] = computeHoldings(baseTxs, paxgMap, { 'pax-gold': { usd: 87.5 } }, paxgTarget, stablecoins);
+    const recT3 = computeSmartTradeRecommendation({
+      holding: t3,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: t3.currentValue,
+    });
+    expect(recT3.dipTier).toBe(3);
+    expect(recT3.tacticalBuyUsd).toBe(100);
+
+    // Cooldown after Tier 1 buy at $94.50 (-5.5%): at $91.50 (-3.17% extra < 3.5%) stays locked; at $88.90 (-5.93% extra >= 3.5%) unlocks Tier 2 ($70)
+    const afterN1Txs: Transaction[] = [
+      ...baseTxs,
+      { date: '2026-04-10', type: 'Buy', asset: 'PAXG', tokens: '1', usdValue: 94.5 },
+    ];
+    const [paxgLocked] = computeHoldings(afterN1Txs, paxgMap, { 'pax-gold': { usd: 91.5 } }, paxgTarget, stablecoins);
+    const recLocked = computeSmartTradeRecommendation({
+      holding: paxgLocked,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: paxgLocked.currentValue,
+    });
+    expect(paxgLocked.highestConsumedDipTier).toBe(1);
+    expect(recLocked.dipTier).toBe(2);
+    expect(recLocked.isCooldownLocked).toBe(true);
+
+    const [paxgUnlocked] = computeHoldings(afterN1Txs, paxgMap, { 'pax-gold': { usd: 88.9 } }, paxgTarget, stablecoins);
+    const recUnlocked = computeSmartTradeRecommendation({
+      holding: paxgUnlocked,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: paxgUnlocked.currentValue,
+    });
+    expect(recUnlocked.dipTier).toBe(2);
+    expect(recUnlocked.isCooldownLocked).toBe(false);
+    expect(recUnlocked.tacticalBuyUsd).toBe(70);
+
+    // Tier 3 escape hatch for Gold (-8% below $87.50 = $80.50)
+    const afterN3Txs: Transaction[] = [
+      ...baseTxs,
+      { date: '2026-04-12', type: 'Buy', asset: 'PAXG', tokens: '1', usdValue: 87.5 },
+    ];
+    const [paxgN3Locked] = computeHoldings(afterN3Txs, paxgMap, { 'pax-gold': { usd: 82.25 } }, paxgTarget, stablecoins);
+    const recN3Locked = computeSmartTradeRecommendation({
+      holding: paxgN3Locked,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: paxgN3Locked.currentValue,
+    });
+    expect(recN3Locked.isCooldownLocked).toBe(true);
+    expect(recN3Locked.nextUnlockPrice).toBeCloseTo(80.5, 2);
+
+    const [paxgN3Escape] = computeHoldings(afterN3Txs, paxgMap, { 'pax-gold': { usd: 80.06 } }, paxgTarget, stablecoins);
+    const recN3Escape = computeSmartTradeRecommendation({
+      holding: paxgN3Escape,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: paxgN3Escape.currentValue,
+    });
+    expect(recN3Escape.isCooldownLocked).toBe(false);
+    expect(recN3Escape.isTier3EscapeUnlocked).toBe(true);
+    expect(recN3Escape.tacticalBuyUsd).toBe(100);
+  });
+
+  it('prioritizes Gold Tier 2 (-11.1%) over Crypto Tier 1 (-11.5%) when neither group is overweight', () => {
+    const txs: Transaction[] = [
+      { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '10', usdValue: 1000 }, // @ 88.50 -> $885
+      { date: '2026-04-01', type: 'Buy', asset: 'PAXG', tokens: '2', usdValue: 200 },  // @ 88.90 -> $177.80
+    ];
+    const holdings = computeHoldings(
+      txs,
+      { BTC: 'bitcoin', PAXG: 'pax-gold' },
+      { bitcoin: { usd: 88.5 }, 'pax-gold': { usd: 88.9 } },
+      { BTC: { buy: 10, sell: 30 }, PAXG: { buy: 5, sell: 15 } },
+      stablecoins,
+    );
+    const btc = holdings.find((h) => h.ticker === 'BTC')!;
+    const paxg = holdings.find((h) => h.ticker === 'PAXG')!;
+    const totalUsd = btc.currentValue + paxg.currentValue;
+    const balancedTargets = { 'GROUP:BTC': 85, 'GROUP:GOLD': 15 };
+
+    const recPaxg = computeSmartTradeRecommendation({
+      holding: paxg,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: balancedTargets,
+    });
+    const recBtc = computeSmartTradeRecommendation({
+      holding: btc,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: balancedTargets,
+    });
+
+    expect(recPaxg.dipTier).toBe(2);
+    expect(recBtc.dipTier).toBe(1);
+    expect(recPaxg.priorityRank).toBe(1);
+    expect(recPaxg.tacticalBuyUsd).toBe(70);
+    expect(recBtc.priorityRank).toBe(2);
+    expect(recBtc.tacticalBuyUsd).toBe(0);
+    expect(recBtc.blockedReason).toContain('Prioridad asignada a PAXG');
+  });
+
+  it('tracks BNB Gas (Fee) drag explaining -13.3% price variation vs -14.1% net P&L and discloses both in AI report', () => {
+    const bnbTxs: Transaction[] = [
+      { date: '2026-03-02 23:24:23', type: 'Buy', asset: 'BNB', tokens: '0.00204588', usdValue: 1.85 },
+      { date: '2026-03-02 23:24:36', type: 'Buy', asset: 'BNB', tokens: '0.01', usdValue: 9.4962 },
+      { date: '2026-03-02 23:24:44', type: 'Buy', asset: 'BNB', tokens: '0.017', usdValue: 15.53477 },
+      { date: '2026-03-02 23:24:53', type: 'Buy', asset: 'BNB', tokens: '0.024', usdValue: 20.65824 },
+      { date: '2026-03-02 23:25:12', type: 'Gas (Fee)', asset: 'BNB', tokens: '0.00096605', usdValue: 0 },
+      { date: '2026-03-02 23:25:23', type: 'Earn (Staking)', asset: 'BNB', tokens: '0.00000029', usdValue: 0 },
+      { date: '2026-03-02 23:25:36', type: 'Buy', asset: 'BNB', tokens: '0.012', usdValue: 7.94652 },
+      { date: '2026-03-02 23:25:44', type: 'Buy', asset: 'BNB', tokens: '0.121', usdValue: 75.72301 },
+      { date: '2026-06-05 10:59:01', type: 'Buy', asset: 'BNB', tokens: '0.051', usdValue: 29.69934 },
+      { date: '2026-08-21 06:32:16', type: 'Buy', asset: 'BNB', tokens: '0.035', usdValue: 19.705 },
+      { date: '2026-08-21 06:32:51', type: 'Gas (Fee)', asset: 'BNB', tokens: '0.00165142', usdValue: 0 },
+    ];
+    const [bnb] = computeHoldings(
+      bnbTxs,
+      { BNB: 'binancecoin' },
+      { binancecoin: { usd: 575.89 } },
+      { BNB: { buy: 15, sell: 30 } },
+      stablecoins,
+    );
+
+    expect(bnb.currentTokens).toBeCloseTo(0.2694287, 7);
+    expect(bnb.gasTokens).toBeCloseTo(0.00261747, 8);
+    expect(bnb.dca).toBeCloseTo(663.91, 2);
+    expect(bnb.pnl).toBeCloseTo(-25.45, 2);
+    expect(bnb.pnlPercent).toBeCloseTo(-0.1409, 3);
+    const purePricePct = ((bnb.livePrice - bnb.dca) / bnb.dca) * 100;
+    expect(purePricePct).toBeCloseTo(-13.3, 1);
+
+    const groupExposure = computePortfolioExposure({
+      holdings: [bnb],
+      mode: 'group',
+      targetAllocations: { 'GROUP:ALTS': 5 },
+    });
+    const coinExposure = computePortfolioExposure({
+      holdings: [bnb],
+      mode: 'coin',
+      targetAllocations: { BNB: 5 },
+    });
+    const recBnb = computeSmartTradeRecommendation({
+      holding: bnb,
+      eligibleCapitalUsd: 350,
+      totalVolatileCryptoUsd: bnb.currentValue,
+      allVolatileHoldings: [bnb],
+    });
+    const markdown = buildAiPortfolioReportMarkdown({
+      generatedAt: '2026-11-19',
+      holdings: [bnb],
+      eligibleCapital: {
+        ahorroEnvelopeUsd: 200,
+        unassignedUsdtUsd: 150,
+        totalEligibleUsd: 350,
+        excludedPhysicalCashUsd: 50,
+      },
+      tacticalConfig: {
+        monthlyIncomeUsd: 900,
+        tier1Usd: 45,
+        tier2Usd: 70,
+        tier3Usd: 100,
+        tier3MaxFreeUsdtPct: 40,
+        biweeklyDcaReserveUsd: 50,
+        cooldownAdditionalDropPct: 7.5,
+        goldCooldownAdditionalDropPct: 3.5,
+        goldTier3EscapeDropPct: 8,
+      },
+      recommendations: { BNB: recBnb },
+      groupExposure,
+      coinExposure,
+    });
+
+    expect(markdown).toContain('Perfil Defensivo Oro (PAXG, XAUT)');
+    expect(markdown).toContain('Nota de auditoría (BNB)');
+    expect(markdown).toContain('-13.3%');
+    expect(markdown).toContain('-14.1%');
+    expect(markdown).toContain('0.0026 BNB');
   });
 });

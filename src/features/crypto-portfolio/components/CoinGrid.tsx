@@ -668,6 +668,12 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
               </div>
             </div>
 
+            <p className="text-[10px] text-text-muted leading-snug">
+              <strong className="text-text-primary">Crypto:</strong> N1 10–14.9% · N2 15–21.9% · N3 ≥22%
+              <span className="mx-1.5 opacity-40">|</span>
+              <strong className="text-accent-gold">Oro (PAXG/XAUT):</strong> N1 5–7.9% · N2 8–11.9% · N3 ≥12%
+            </p>
+
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs">
               <div className="col-span-2 sm:col-span-3 lg:col-span-2 flex items-end gap-2">
                 <label className="flex-1 block">
@@ -687,11 +693,18 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
                 </label>
                 <button
                   type="button"
-                  onClick={() =>
-                    setTacticalDipConfig(
-                      recommendTacticalTiersFromIncome(tacticalDipConfig.monthlyIncomeUsd),
-                    )
-                  }
+                  onClick={() => {
+                    const recommended = recommendTacticalTiersFromIncome(
+                      tacticalDipConfig.monthlyIncomeUsd,
+                    );
+                    setTacticalDipConfig({
+                      monthlyIncomeUsd: recommended.monthlyIncomeUsd,
+                      tier1Usd: recommended.tier1Usd,
+                      tier2Usd: recommended.tier2Usd,
+                      tier3Usd: recommended.tier3Usd,
+                      biweeklyDcaReserveUsd: recommended.biweeklyDcaReserveUsd,
+                    });
+                  }}
                   className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-blue/20 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/30 cursor-pointer shrink-0"
                 >
                   Recalcular tramos
@@ -699,7 +712,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
               </div>
 
               <label className="block">
-                <span className="text-[10px] text-text-muted block mb-1">Nivel 1 (10–14.9%) $</span>
+                <span className="text-[10px] text-text-muted block mb-1">Bloque Nivel 1 ($)</span>
                 <input
                   type="number"
                   min={0}
@@ -713,7 +726,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
               </label>
 
               <label className="block">
-                <span className="text-[10px] text-text-muted block mb-1">Nivel 2 (15–21.9%) $</span>
+                <span className="text-[10px] text-text-muted block mb-1">Bloque Nivel 2 ($)</span>
                 <input
                   type="number"
                   min={0}
@@ -727,7 +740,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
               </label>
 
               <label className="block">
-                <span className="text-[10px] text-text-muted block mb-1">Nivel 3 (≥22%) $</span>
+                <span className="text-[10px] text-text-muted block mb-1">Bloque Nivel 3 ($)</span>
                 <input
                   type="number"
                   min={0}
@@ -777,7 +790,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
               </label>
 
               <label className="block">
-                <span className="text-[10px] text-text-muted block mb-1">Caída Extra Cooldown %</span>
+                <span className="text-[10px] text-text-muted block mb-1">Cooldown Crypto %</span>
                 <input
                   type="number"
                   min={0}
@@ -794,7 +807,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
               </label>
 
               <label className="block">
-                <span className="text-[10px] text-text-muted block mb-1">Escape Nivel 3 (%)</span>
+                <span className="text-[10px] text-text-muted block mb-1">Escape N3 Crypto (%)</span>
                 <input
                   type="number"
                   min={5}
@@ -807,6 +820,40 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
                     })
                   }
                   className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
+                />
+              </label>
+
+              <label className="block">
+                <span className="text-[10px] text-accent-gold block mb-1">Cooldown Oro (PAXG) %</span>
+                <input
+                  type="number"
+                  min={0.5}
+                  max={30}
+                  step={0.5}
+                  value={tacticalDipConfig.goldCooldownAdditionalDropPct ?? 3.5}
+                  onChange={(e) =>
+                    setTacticalDipConfig({
+                      goldCooldownAdditionalDropPct: Math.max(0.5, parseFloat(e.target.value) || 3.5),
+                    })
+                  }
+                  className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-gold"
+                />
+              </label>
+
+              <label className="block">
+                <span className="text-[10px] text-accent-gold block mb-1">Escape N3 Oro (%)</span>
+                <input
+                  type="number"
+                  min={3}
+                  max={50}
+                  step={0.5}
+                  value={tacticalDipConfig.goldTier3EscapeDropPct ?? 8}
+                  onChange={(e) =>
+                    setTacticalDipConfig({
+                      goldTier3EscapeDropPct: Math.max(3, parseFloat(e.target.value) || 8),
+                    })
+                  }
+                  className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-gold"
                 />
               </label>
             </div>

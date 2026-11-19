@@ -16,4 +16,5 @@ export type {
   SmartTradeRecommendation,
   TacticalDipConfig,
   TargetAllocations,
+  VolatilityProfileId,
 } from '../../../shared/types';

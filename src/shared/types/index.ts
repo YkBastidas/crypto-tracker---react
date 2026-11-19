@@ -62,6 +62,8 @@ export interface CoinHolding {
   coinGeckoId: string | null;
   isStablecoin: boolean;
   currentTokens: number;
+  /** Cumulative tokens consumed by Gas (Fee) transactions */
+  gasTokens?: number;
   totalSpent: number;      // sum of Buy USD
   soldUsd: number;         // sum of Sell USD
   investedUsd: number;     // totalSpent - soldUsd
@@ -97,6 +99,8 @@ export interface PortfolioSummary {
 
 export type DipTier = 0 | 1 | 2 | 3;
 
+export type VolatilityProfileId = 'crypto' | 'defensive_gold';
+
 export interface TacticalDipConfig {
   monthlyIncomeUsd: number;
   tier1Usd: number;
@@ -107,11 +111,16 @@ export interface TacticalDipConfig {
   cooldownAdditionalDropPct: number;
   /** Capitulation escape hatch % drop below last Tier 3 buy to unlock another buy without waiting for rebound */
   tier3EscapeDropPct?: number;
+  /** Defensive Gold (PAXG/XAUT) cooldown additional drop % (default 3.5%) */
+  goldCooldownAdditionalDropPct?: number;
+  /** Defensive Gold (PAXG/XAUT) Tier 3 capitulation escape drop % (default 8%) */
+  goldTier3EscapeDropPct?: number;
 }
 
 export interface SmartTradeRecommendation {
   ticker: string;
   signal: 'BUY' | 'SELL' | 'WATCH';
+  volatilityProfile?: VolatilityProfileId;
   dropFromDcaPct: number;
   pumpFromDcaPct: number;
   /** Informational only: USD needed at livePrice to shift DCA enough to exit Target Buy */

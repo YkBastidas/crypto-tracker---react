@@ -36,6 +36,8 @@ export const DEFAULT_TACTICAL_DIP_CONFIG: TacticalDipConfig = {
   biweeklyDcaReserveUsd: 50,
   cooldownAdditionalDropPct: 7.5,
   tier3EscapeDropPct: 15,
+  goldCooldownAdditionalDropPct: 3.5,
+  goldTier3EscapeDropPct: 8,
 };
 
 const DEFAULT_GOAL_TARGET = 20_000;
@@ -59,6 +61,7 @@ const DEFAULT_MAPPINGS: CoinMappings = {
 const DEFAULT_TARGETS: CoinTargets = {
   BTC: { buy: 15, sell: 30 },
   WBETH: { buy: 20, sell: 40 },
+  PAXG: { buy: 5, sell: 15 },
   BNSOL: { buy: 25, sell: 50 },
   BNB: { buy: 15, sell: 30 },
   '0G': { buy: 100, sell: 50 },
@@ -226,6 +229,18 @@ export function sanitizeTacticalDipConfig(
       DEFAULT_TACTICAL_DIP_CONFIG.tier3EscapeDropPct ?? 15,
       5,
       90,
+    ),
+    goldCooldownAdditionalDropPct: sanitizeNumber(
+      src.goldCooldownAdditionalDropPct,
+      DEFAULT_TACTICAL_DIP_CONFIG.goldCooldownAdditionalDropPct ?? 3.5,
+      0.5,
+      30,
+    ),
+    goldTier3EscapeDropPct: sanitizeNumber(
+      src.goldTier3EscapeDropPct,
+      DEFAULT_TACTICAL_DIP_CONFIG.goldTier3EscapeDropPct ?? 8,
+      3,
+      50,
     ),
   };
 }

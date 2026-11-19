@@ -217,6 +217,24 @@ export function CoinCard({
             )}
           </span>
         </div>
+        {!holding.isStablecoin &&
+          holding.gasTokens !== undefined &&
+          holding.gasTokens > 0 &&
+          holding.dca > 0 &&
+          holding.livePrice > 0 && (
+            <div className="flex justify-between text-[10px] text-text-muted/80 pt-0.5">
+              <span>Gas/Fees: -{pv(formatTokens(holding.gasTokens, holding.ticker))}</span>
+              {!isPrivate && (
+                <span>
+                  Δ precio:{' '}
+                  {(() => {
+                    const priceDeltaPct = ((holding.livePrice - holding.dca) / holding.dca) * 100;
+                    return `${priceDeltaPct >= 0 ? '+' : ''}${priceDeltaPct.toFixed(1)}%`;
+                  })()}
+                </span>
+              )}
+            </div>
+          )}
       </div>
 
       {!holding.isStablecoin && (
