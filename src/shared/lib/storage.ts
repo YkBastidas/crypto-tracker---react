@@ -1,4 +1,10 @@
-import type { CoinMappings, CoinTargets, TacticalDipConfig, Transaction } from '../types';
+import type {
+  CoinMappings,
+  CoinTargets,
+  TacticalDipConfig,
+  TargetAllocations,
+  Transaction,
+} from '../types';
 
 const KEYS = {
   TARGETS: 'coin-targets',
@@ -10,7 +16,16 @@ const KEYS = {
   COIN_ORDER: 'portfolio-coin-order',
   ARCHIVED_COINS: 'portfolio-archived-coins',
   TACTICAL_DIP_CONFIG: 'portfolio-tactical-dip-config',
+  TARGET_ALLOCATIONS: 'portfolio-target-allocations',
 } as const;
+
+export const DEFAULT_TARGET_ALLOCATIONS: TargetAllocations = {
+  'GROUP:BTC': 50,
+  'GROUP:ETH': 20,
+  'GROUP:SOL': 15,
+  'GROUP:GOLD': 10,
+  'GROUP:ALTS': 5,
+};
 
 export const DEFAULT_TACTICAL_DIP_CONFIG: TacticalDipConfig = {
   monthlyIncomeUsd: 900,
@@ -218,4 +233,33 @@ export function getTacticalDipConfig(): TacticalDipConfig {
 
 export function saveTacticalDipConfig(config: TacticalDipConfig): void {
   setJson(KEYS.TACTICAL_DIP_CONFIG, sanitizeTacticalDipConfig(config));
+}
+
+// ── Public API: Portfolio Target Allocations (%) ──
+
+export function sanitizeTargetAllocations(
+  raw: Record<string, unknown> | null | undefined,
+): TargetAllocations {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_TARGET_ALLOCATIONS };
+  const clean: TargetAllocations = {};
+  for (const [key, val] of Object.entries(raw)) {
+    const cleanKey = key.trim().toUpperCase();
+    if (!cleanKey) continue;
+    if (typeof val === 'number' && Number.isFinite(val) && val >= 0) {
+      clean[cleanKey] = Number(Math.min(100, val).toFixed(2));
+    }
+  }
+  return clean;
+}
+
+export function getTargetAllocations(): TargetAllocations {
+  const stored = getJson<Record<string, unknown>>(
+    KEYS.TARGET_ALLOCATIONS,
+    DEFAULT_TARGET_ALLOCATIONS,
+  );
+  return sanitizeTargetAllocations(stored);
+}
+
+export function saveTargetAllocations(targets: TargetAllocations): void {
+  setJson(KEYS.TARGET_ALLOCATIONS, sanitizeTargetAllocations(targets));
 }

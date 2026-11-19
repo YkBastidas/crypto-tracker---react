@@ -6,7 +6,9 @@ import type {
   Transaction,
 } from '../../../shared/types';
 import {
+  buildAiPortfolioReportMarkdown,
   computeHoldings,
+  computePortfolioExposure,
   computePortfolioSummary,
   computeSmartTradeRecommendation,
   recommendTacticalTiersFromIncome,
@@ -375,5 +377,140 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(rec.suggestedSellTokens).toBeCloseTo(0.25, 6);
     expect(rec.suggestedSellUsd).toBeCloseTo(37.5, 2);
     expect(rec.concentrationWarning).toBeDefined();
+  });
+
+  it('computes portfolio exposure by strategic group and by coin with optional USDT liquidity and rebalance deltas', () => {
+    const txs: Transaction[] = [
+      { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '1', usdValue: 500 },
+      { date: '2026-04-01', type: 'Buy', asset: 'WBETH', tokens: '1', usdValue: 300 },
+      { date: '2026-04-01', type: 'Buy', asset: 'PAXG', tokens: '1', usdValue: 150 },
+      { date: '2026-04-01', type: 'Buy', asset: 'BNB', tokens: '1', usdValue: 50 },
+    ];
+    const mappings: CoinMappings = {
+      BTC: 'bitcoin',
+      WBETH: 'wrapped-beacon-eth',
+      PAXG: 'pax-gold',
+      BNB: 'binancecoin',
+    };
+    const prices: LivePrices = {
+      bitcoin: { usd: 600 },             // 60% of $1000
+      'wrapped-beacon-eth': { usd: 200 }, // 20% of $1000
+      'pax-gold': { usd: 150 },           // 15% of $1000
+      binancecoin: { usd: 50 },           // 5% of $1000
+    };
+    const holdings = computeHoldings(txs, mappings, prices, targets, stablecoins);
+
+    const groupResult = computePortfolioExposure({
+      holdings,
+      mode: 'group',
+      includeDigitalUsdt: false,
+      targetAllocations: {
+        'GROUP:BTC': 50,
+        'GROUP:ETH': 20,
+        'GROUP:SOL': 10,
+        'GROUP:GOLD': 10,
+        'GROUP:ALTS': 10,
+      },
+    });
+
+    expect(groupResult.totalBaseUsd).toBeCloseTo(1000, 2);
+    const btcGroup = groupResult.items.find((i) => i.id === 'GROUP:BTC')!;
+    const ethGroup = groupResult.items.find((i) => i.id === 'GROUP:ETH')!;
+    const solGroup = groupResult.items.find((i) => i.id === 'GROUP:SOL')!;
+    const altsGroup = groupResult.items.find((i) => i.id === 'GROUP:ALTS')!;
+
+    expect(btcGroup.currentPct).toBeCloseTo(60, 2);
+    expect(btcGroup.rebalanceStatus).toBe('OVERWEIGHT');
+    expect(btcGroup.rebalanceDeltaUsd).toBeCloseTo(-100, 2);
+
+    expect(ethGroup.tickers).toEqual(['WBETH']);
+    expect(ethGroup.rebalanceStatus).toBe('BALANCED');
+
+    expect(solGroup.valueUsd).toBe(0);
+    expect(solGroup.rebalanceStatus).toBe('UNDERWEIGHT');
+    expect(solGroup.rebalanceDeltaUsd).toBeCloseTo(100, 2);
+
+    expect(altsGroup.currentPct).toBeCloseTo(5, 2);
+    expect(altsGroup.rebalanceDeltaUsd).toBeCloseTo(50, 2);
+
+    const coinWithUsdt = computePortfolioExposure({
+      holdings,
+      mode: 'coin',
+      includeDigitalUsdt: true,
+      digitalUsdtUsd: 250,
+      targetAllocations: { BTC: 50, USDT_LIQUID: 20 },
+    });
+    expect(coinWithUsdt.totalBaseUsd).toBeCloseTo(1250, 2);
+    const usdtSlice = coinWithUsdt.items.find((i) => i.id === 'USDT_LIQUID')!;
+    expect(usdtSlice.isLiquidity).toBe(true);
+    expect(usdtSlice.currentPct).toBeCloseTo(20, 2);
+    expect(usdtSlice.rebalanceStatus).toBe('BALANCED');
+  });
+
+  it('builds structured Markdown portfolio and liquidity report for AI analysis', () => {
+    const txs: Transaction[] = [
+      { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '1', usdValue: 1000 },
+      { date: '2026-04-01', type: 'Buy', asset: 'BEAM', tokens: '100', usdValue: 50 },
+      { date: '2026-04-10', type: 'Sell', asset: 'BEAM', tokens: '100', usdValue: 80 },
+    ];
+    const holdings = computeHoldings(
+      txs,
+      { BTC: 'bitcoin', BEAM: 'beam-2' },
+      { bitcoin: { usd: 880 }, 'beam-2': { usd: 0.7 } },
+      { BTC: { buy: 10, sell: 25 } },
+      stablecoins,
+    );
+    const active = holdings.filter((h) => h.ticker === 'BTC');
+    const archived = holdings.filter((h) => h.ticker === 'BEAM');
+
+    const groupExposure = computePortfolioExposure({
+      holdings: active,
+      mode: 'group',
+      targetAllocations: { 'GROUP:BTC': 60 },
+    });
+    const coinExposure = computePortfolioExposure({
+      holdings: active,
+      mode: 'coin',
+      targetAllocations: { BTC: 60 },
+    });
+    const recBtc = computeSmartTradeRecommendation({
+      holding: active[0],
+      eligibleCapitalUsd: 350,
+      totalVolatileCryptoUsd: active[0].currentValue,
+      allVolatileHoldings: active,
+    });
+
+    const report = buildAiPortfolioReportMarkdown({
+      generatedAt: '2026-11-19',
+      holdings: active,
+      archivedHoldings: archived,
+      eligibleCapital: {
+        ahorroEnvelopeUsd: 200,
+        unassignedUsdtUsd: 150,
+        totalEligibleUsd: 350,
+        excludedPhysicalCashUsd: 100,
+      },
+      tacticalConfig: {
+        monthlyIncomeUsd: 900,
+        tier1Usd: 45,
+        tier2Usd: 70,
+        tier3Usd: 100,
+        tier3MaxFreeUsdtPct: 40,
+        biweeklyDcaReserveUsd: 50,
+        cooldownAdditionalDropPct: 7.5,
+      },
+      recommendations: { BTC: recBtc },
+      groupExposure,
+      coinExposure,
+    });
+
+    expect(report).toContain('# Resumen de Portafolio Crypto y Liquidez para Análisis (2026-11-19)');
+    expect(report).toContain('$350.00');
+    expect(report).toContain('Liquidez táctica neta disponible hoy:** $300.00');
+    expect(report).toContain('Efectivo físico excluido: $100.00');
+    expect(report).toContain('| BTC |');
+    expect(report).toContain('COMPRAR $45.00');
+    expect(report).toContain('BEAM:');
+    expect(report).toContain('## Prompt para la IA');
   });
 });

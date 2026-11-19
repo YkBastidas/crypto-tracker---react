@@ -1,25 +1,62 @@
 import { useMemo, useState, type DragEvent } from 'react';
 import {
   ArrowUpDown,
+  Bot,
+  Check,
   ChevronDown,
   Coins,
+  Copy,
+  Download,
+  PieChart,
   RotateCcw,
   SlidersHorizontal,
+  Target,
   Trash2,
   TrendingUp,
   Trophy,
+  X,
 } from 'lucide-react';
 import { useBudgetStore } from '../../budget/store/budgetStore';
 import { calculateEligibleInvestmentCapital } from '../../budget/utils/calculations';
 import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { CoinCard } from './CoinCard';
-import type { CoinHolding } from '../types';
+import type { CoinHolding, SmartTradeRecommendation } from '../types';
 import {
   DEFAULT_TACTICAL_DIP_CONFIG,
+  buildAiPortfolioReportMarkdown,
+  computePortfolioExposure,
+  computeSmartTradeRecommendation,
   formatTokens,
   formatUsd,
   recommendTacticalTiersFromIncome,
 } from '../utils/calculations';
+
+const EXPOSURE_GROUP_COLORS: Record<string, string> = {
+  'GROUP:BTC': 'bg-amber-400',
+  'GROUP:ETH': 'bg-sky-400',
+  'GROUP:SOL': 'bg-violet-400',
+  'GROUP:GOLD': 'bg-yellow-300',
+  'GROUP:ALTS': 'bg-rose-400',
+  USDT_LIQUID: 'bg-emerald-400',
+};
+
+const EXPOSURE_FALLBACK_PALETTE = [
+  'bg-amber-400',
+  'bg-sky-400',
+  'bg-violet-400',
+  'bg-rose-400',
+  'bg-cyan-400',
+  'bg-orange-400',
+  'bg-fuchsia-400',
+  'bg-lime-400',
+];
+
+function getExposureSegmentColor(id: string, idx: number): string {
+  return (
+    EXPOSURE_GROUP_COLORS[id.toUpperCase()] ??
+    EXPOSURE_FALLBACK_PALETTE[idx % EXPOSURE_FALLBACK_PALETTE.length]
+  );
+}
 
 export type PortfolioSortMode =
   | 'manual'
@@ -78,6 +115,11 @@ function sortHoldingsList(
 export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
   const [showAllCryptos, setShowAllCryptos] = useState(false);
   const [showTacticalPanel, setShowTacticalPanel] = useState(false);
+  const [showAiPanel, setShowAiPanel] = useState(false);
+  const [aiCopied, setAiCopied] = useState(false);
+  const [exposureMode, setExposureMode] = useState<'group' | 'coin'>('group');
+  const [includeUsdtInExposure, setIncludeUsdtInExposure] = useState(false);
+  const [showTargetEditor, setShowTargetEditor] = useState(false);
   const [sortMode, setSortMode] = useState<PortfolioSortMode>('manual');
   const [draggedTicker, setDraggedTicker] = useState<string | null>(null);
   const [confirmDeleteTicker, setConfirmDeleteTicker] = useState<string | null>(null);
@@ -88,11 +130,14 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
     customCoinOrder,
     archivedCoins,
     tacticalDipConfig,
+    targetAllocations,
     setCustomCoinOrder,
     archiveCoin,
     unarchiveCoin,
     removeCoinTransactions,
     setTacticalDipConfig,
+    setTargetAllocation,
+    resetTargetAllocations,
   } = usePortfolioStore();
 
   const pv = (val: string) => (isPrivate ? '****' : val);
@@ -150,6 +195,104 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
     [holdings, archivedSet],
   );
 
+  const groupExposure = useMemo(
+    () =>
+      computePortfolioExposure({
+        holdings: cryptoHoldings,
+        mode: 'group',
+        includeDigitalUsdt: includeUsdtInExposure,
+        digitalUsdtUsd: totalEligibleUsd,
+        targetAllocations,
+      }),
+    [cryptoHoldings, includeUsdtInExposure, totalEligibleUsd, targetAllocations],
+  );
+
+  const coinExposure = useMemo(
+    () =>
+      computePortfolioExposure({
+        holdings: cryptoHoldings,
+        mode: 'coin',
+        includeDigitalUsdt: includeUsdtInExposure,
+        digitalUsdtUsd: totalEligibleUsd,
+        targetAllocations,
+      }),
+    [cryptoHoldings, includeUsdtInExposure, totalEligibleUsd, targetAllocations],
+  );
+
+  const activeExposure = exposureMode === 'group' ? groupExposure : coinExposure;
+
+  const targetSumPct = useMemo(
+    () =>
+      Number(
+        activeExposure.items
+          .reduce((acc, item) => acc + (item.targetPct ?? 0), 0)
+          .toFixed(1),
+      ),
+    [activeExposure.items],
+  );
+
+  const aiReportMarkdown = useMemo(() => {
+    if (!showAiPanel) return '';
+    const recommendations: Record<string, SmartTradeRecommendation> = {};
+    for (const h of cryptoHoldings) {
+      recommendations[h.ticker.toUpperCase()] = computeSmartTradeRecommendation({
+        holding: h,
+        eligibleCapitalUsd: totalEligibleUsd,
+        totalVolatileCryptoUsd,
+        allVolatileHoldings: cryptoHoldings,
+        tacticalConfig: tacticalDipConfig,
+      });
+    }
+    return buildAiPortfolioReportMarkdown({
+      holdings: cryptoHoldings,
+      archivedHoldings,
+      eligibleCapital: {
+        ahorroEnvelopeUsd,
+        unassignedUsdtUsd,
+        totalEligibleUsd,
+        excludedPhysicalCashUsd,
+      },
+      tacticalConfig: tacticalDipConfig,
+      recommendations,
+      groupExposure,
+      coinExposure,
+    });
+  }, [
+    showAiPanel,
+    cryptoHoldings,
+    archivedHoldings,
+    ahorroEnvelopeUsd,
+    unassignedUsdtUsd,
+    totalEligibleUsd,
+    excludedPhysicalCashUsd,
+    tacticalDipConfig,
+    totalVolatileCryptoUsd,
+    groupExposure,
+    coinExposure,
+  ]);
+
+  const handleCopyAiReport = async () => {
+    if (!aiReportMarkdown) return;
+    try {
+      await navigator.clipboard.writeText(aiReportMarkdown);
+      setAiCopied(true);
+      setTimeout(() => setAiCopied(false), 2500);
+    } catch {
+      setAiCopied(false);
+    }
+  };
+
+  const handleDownloadAiReport = () => {
+    if (!aiReportMarkdown) return;
+    const blob = new Blob([aiReportMarkdown], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `resumen-portafolio-ia-${new Date().toISOString().slice(0, 10)}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const reorderSection = (
     sectionList: CoinHolding[],
     otherSectionList: CoinHolding[],
@@ -191,6 +334,194 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
 
   return (
     <div className="space-y-8">
+      {/* Portfolio Exposure & Rebalancing Bar */}
+      {cryptoHoldings.length > 0 && (
+        <section className="bg-bg-card border border-border rounded-xl p-4 space-y-3.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2 flex-wrap">
+              <PieChart size={16} className="text-accent-blue shrink-0" />
+              <h3 className="text-xs font-bold uppercase tracking-wider text-text-primary">
+                Exposición y Balanceo del Portafolio
+              </h3>
+              <span className="text-[11px] text-text-muted">
+                · Base: <strong className="text-text-primary">{pv(formatUsd(activeExposure.totalBaseUsd))}</strong>
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              <div className="inline-flex rounded-lg border border-border bg-bg-input p-0.5 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => setExposureMode('group')}
+                  className={`px-2.5 py-1 rounded-md font-medium cursor-pointer transition-colors ${
+                    exposureMode === 'group'
+                      ? 'bg-accent-blue/20 text-accent-blue'
+                      : 'text-text-muted hover:text-text-primary'
+                  }`}
+                >
+                  Por Grupo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExposureMode('coin')}
+                  className={`px-2.5 py-1 rounded-md font-medium cursor-pointer transition-colors ${
+                    exposureMode === 'coin'
+                      ? 'bg-accent-blue/20 text-accent-blue'
+                      : 'text-text-muted hover:text-text-primary'
+                  }`}
+                >
+                  Por Moneda
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setIncludeUsdtInExposure((prev) => !prev)}
+                className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium border cursor-pointer transition-colors ${
+                  includeUsdtInExposure
+                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                    : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                }`}
+              >
+                {includeUsdtInExposure ? '+ USDT Libre (Incluido)' : 'Solo Crypto'}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowTargetEditor((prev) => !prev)}
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-medium border cursor-pointer transition-colors ${
+                  showTargetEditor
+                    ? 'bg-accent-gold/15 border-accent-gold/50 text-accent-gold'
+                    : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                }`}
+              >
+                <Target size={12} />
+                <span>Metas (%)</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Target sum bar when editing */}
+          {showTargetEditor && (
+            <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg bg-bg-input/60 border border-border text-[11px]">
+              <span className="text-text-muted">
+                Suma de metas asignadas:{' '}
+                <strong
+                  className={
+                    Math.abs(targetSumPct - 100) <= 0.5
+                      ? 'text-accent-green'
+                      : 'text-accent-gold'
+                  }
+                >
+                  {targetSumPct}%
+                </strong>
+                {Math.abs(targetSumPct - 100) > 0.5 && (
+                  <span className="ml-1 text-text-muted">(ideal: 100%)</span>
+                )}
+              </span>
+              <button
+                type="button"
+                onClick={resetTargetAllocations}
+                className="px-2 py-1 rounded bg-bg-card border border-border text-text-muted hover:text-text-primary cursor-pointer"
+              >
+                Restaurar metas grupo
+              </button>
+            </div>
+          )}
+
+          {/* Stacked segmented horizontal bar */}
+          <div className="h-3.5 w-full rounded-full overflow-hidden bg-bg-input border border-border flex">
+            {activeExposure.items
+              .filter((item) => item.currentPct > 0)
+              .map((item, idx) => (
+                <div
+                  key={item.id}
+                  style={{ width: `${Math.max(item.currentPct, 0.6)}%` }}
+                  className={`${getExposureSegmentColor(item.id, idx)} h-full border-r border-bg-primary/60 last:border-r-0 transition-all duration-300`}
+                  title={`${item.label}: ${item.currentPct.toFixed(1)}% (${pv(formatUsd(item.valueUsd))})`}
+                />
+              ))}
+          </div>
+
+          {/* Breakdown & Rebalance cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2.5">
+            {activeExposure.items.map((item, idx) => {
+              const colorClass = getExposureSegmentColor(item.id, idx);
+              return (
+                <div
+                  key={item.id}
+                  className="bg-bg-input/50 border border-border rounded-lg p-2.5 space-y-1.5 text-xs"
+                >
+                  <div className="flex items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${colorClass}`} />
+                      <span className="font-semibold text-text-primary truncate">{item.label}</span>
+                    </div>
+                    <strong className="text-text-primary shrink-0">{item.currentPct.toFixed(1)}%</strong>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-1 text-[11px] text-text-muted">
+                    <span>{pv(formatUsd(item.valueUsd))}</span>
+                    {item.targetPct !== null ? (
+                      <span>Meta: {item.targetPct}%</span>
+                    ) : (
+                      <span>Sin meta</span>
+                    )}
+                  </div>
+
+                  {exposureMode === 'group' && item.tickers.length > 0 && !item.isLiquidity && (
+                    <p className="text-[10px] text-text-muted/80 truncate">
+                      {item.tickers.join(' · ')}
+                    </p>
+                  )}
+
+                  {item.targetPct !== null && item.rebalanceDeltaUsd !== null && (
+                    <p
+                      className={`text-[10px] font-medium ${
+                        item.rebalanceStatus === 'UNDERWEIGHT'
+                          ? 'text-accent-green'
+                          : item.rebalanceStatus === 'OVERWEIGHT'
+                            ? 'text-accent-gold'
+                            : 'text-text-muted'
+                      }`}
+                    >
+                      {item.rebalanceStatus === 'UNDERWEIGHT'
+                        ? `Faltan +${pv(formatUsd(Math.max(0, item.rebalanceDeltaUsd)))} (Comprar)`
+                        : item.rebalanceStatus === 'OVERWEIGHT'
+                          ? `Exceso -${pv(formatUsd(Math.max(0, -item.rebalanceDeltaUsd)))} (Reducir)`
+                          : 'Balanceado (±2%)'}
+                    </p>
+                  )}
+
+                  {showTargetEditor && (
+                    <div className="pt-1 flex items-center gap-1.5">
+                      <label className="text-[10px] text-text-muted shrink-0">Meta %:</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={item.targetPct ?? ''}
+                        placeholder="—"
+                        onChange={(e) => {
+                          const raw = e.target.value;
+                          if (raw === '') {
+                            setTargetAllocation(item.id, null);
+                          } else {
+                            setTargetAllocation(item.id, Math.max(0, parseFloat(raw) || 0));
+                          }
+                        }}
+                        className="w-full px-2 py-1 rounded text-[11px] bg-bg-card border border-border text-text-primary focus:outline-none focus:border-accent-blue"
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {/* Sort & Filter Controls + Volatile Crypto Section */}
       <section className="space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -202,6 +533,19 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowAiPanel((prev) => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors cursor-pointer ${
+                showAiPanel
+                  ? 'bg-accent-blue/20 border-accent-blue/50 text-accent-blue'
+                  : 'bg-bg-card border-border text-text-muted hover:text-text-primary hover:border-accent-blue'
+              }`}
+            >
+              <Bot size={13} />
+              <span>🤖 Resumen para IA</span>
+            </button>
+
             <button
               type="button"
               onClick={() => setShowTacticalPanel((prev) => !prev)}
@@ -232,6 +576,54 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
             </div>
           </div>
         </div>
+
+        {showAiPanel && (
+          <div className="bg-bg-card border border-accent-blue/40 rounded-xl p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h4 className="text-xs font-bold uppercase tracking-wider text-text-primary flex items-center gap-1.5">
+                  <Bot size={14} className="text-accent-blue" /> Resumen Estructurado para IA
+                </h4>
+                <p className="text-[11px] text-text-muted mt-0.5">
+                  Incluye exposición actual vs. metas, posiciones, señales/Cooldown y liquidez USDT disponible para pedir recomendaciones.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleCopyAiReport()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-blue/20 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/30 cursor-pointer"
+                >
+                  {aiCopied ? <Check size={13} /> : <Copy size={13} />}
+                  <span>{aiCopied ? '¡Copiado!' : 'Copiar Prompt para IA'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDownloadAiReport}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-bg-input border border-border text-text-primary hover:border-accent-blue cursor-pointer"
+                >
+                  <Download size={13} />
+                  <span>Descargar .md</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAiPanel(false)}
+                  aria-label="Cerrar panel de resumen IA"
+                  className="p-1.5 rounded-lg bg-bg-input border border-border text-text-muted hover:text-text-primary cursor-pointer"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            </div>
+
+            <textarea
+              readOnly
+              value={aiReportMarkdown}
+              rows={11}
+              className="w-full p-3 rounded-lg text-[11px] font-mono bg-bg-input border border-border text-text-primary focus:outline-none resize-y"
+            />
+          </div>
+        )}
 
         {showTacticalPanel && (
           <div className="bg-bg-card border border-border rounded-xl p-4 space-y-4">

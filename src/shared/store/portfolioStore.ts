@@ -1,7 +1,8 @@
 import { create } from 'zustand';
-import type { Transaction, CoinMappings, TacticalDipConfig } from '../types';
+import type { Transaction, CoinMappings, TacticalDipConfig, TargetAllocations } from '../types';
 import {
   DEFAULT_TRANSACTIONS,
+  DEFAULT_TARGET_ALLOCATIONS,
   getCoinMappings,
   saveCoinMappings,
   getPersistedTransactions,
@@ -17,6 +18,8 @@ import {
   getTacticalDipConfig,
   saveTacticalDipConfig,
   sanitizeTacticalDipConfig,
+  getTargetAllocations,
+  saveTargetAllocations,
 } from '../lib/storage';
 
 interface PortfolioState {
@@ -30,6 +33,7 @@ interface PortfolioState {
   customCoinOrder: string[];
   archivedCoins: string[];
   tacticalDipConfig: TacticalDipConfig;
+  targetAllocations: TargetAllocations;
   undoTransactions: Transaction[] | null;
   undoLabel: string | null;
 
@@ -44,6 +48,8 @@ interface PortfolioState {
   archiveCoin: (ticker: string) => void;
   unarchiveCoin: (ticker: string) => void;
   setTacticalDipConfig: (patch: Partial<TacticalDipConfig>) => void;
+  setTargetAllocation: (id: string, pct: number | null) => void;
+  resetTargetAllocations: () => void;
   undoLastPortfolioAction: () => void;
   dismissPortfolioUndo: () => void;
   togglePrivacy: () => void;
@@ -66,6 +72,7 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
   customCoinOrder: getCustomCoinOrder(),
   archivedCoins: getArchivedCoins(),
   tacticalDipConfig: getTacticalDipConfig(),
+  targetAllocations: getTargetAllocations(),
   undoTransactions: null,
   undoLabel: null,
 
@@ -171,6 +178,25 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
     const merged = sanitizeTacticalDipConfig({ ...get().tacticalDipConfig, ...patch });
     saveTacticalDipConfig(merged);
     set({ tacticalDipConfig: merged });
+  },
+
+  setTargetAllocation: (id, pct) => {
+    const cleanKey = id.trim().toUpperCase();
+    if (!cleanKey) return;
+    const next = { ...get().targetAllocations };
+    if (pct === null || !Number.isFinite(pct) || pct < 0) {
+      delete next[cleanKey];
+    } else {
+      next[cleanKey] = Number(Math.min(100, pct).toFixed(2));
+    }
+    saveTargetAllocations(next);
+    set({ targetAllocations: next });
+  },
+
+  resetTargetAllocations: () => {
+    const fresh = { ...DEFAULT_TARGET_ALLOCATIONS };
+    saveTargetAllocations(fresh);
+    set({ targetAllocations: fresh });
   },
 
   undoLastPortfolioAction: () => {

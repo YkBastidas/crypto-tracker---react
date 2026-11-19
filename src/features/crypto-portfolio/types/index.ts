@@ -7,10 +7,13 @@ export {
 } from '../../../shared/types';
 export type {
   CoinHolding,
+  CryptoGroupKey,
   DipTier,
+  PortfolioExposureItem,
   PortfolioSummary,
   LivePrices,
   CoinTargets,
   SmartTradeRecommendation,
   TacticalDipConfig,
+  TargetAllocations,
 } from '../../../shared/types';

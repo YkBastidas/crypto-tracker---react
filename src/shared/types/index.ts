@@ -141,3 +141,29 @@ export interface SmartTradeRecommendation {
   suggestedSellTokens: number;
   suggestedSellUsd: number;
 }
+
+export type CryptoGroupKey =
+  | 'GROUP:BTC'
+  | 'GROUP:ETH'
+  | 'GROUP:SOL'
+  | 'GROUP:GOLD'
+  | 'GROUP:ALTS';
+
+/** Maps group ID ('GROUP:BTC') or ticker ('BTC') to target portfolio percentage (0-100) */
+export type TargetAllocations = Record<string, number>;
+
+export interface PortfolioExposureItem {
+  id: string;
+  label: string;
+  tickers: string[];
+  valueUsd: number;
+  investedUsd: number;
+  pnlUsd: number;
+  currentPct: number;
+  targetPct: number | null;
+  deltaPct: number | null;
+  /** Positive = USD to buy to reach target; Negative = USD overweight to trim */
+  rebalanceDeltaUsd: number | null;
+  rebalanceStatus: 'UNDERWEIGHT' | 'OVERWEIGHT' | 'BALANCED' | 'NO_TARGET';
+  isLiquidity?: boolean;
+}

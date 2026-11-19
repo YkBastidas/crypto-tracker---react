@@ -1,12 +1,15 @@
 import type {
   Transaction,
   CoinHolding,
+  CryptoGroupKey,
   DipTier,
+  PortfolioExposureItem,
   PortfolioSummary,
   LivePrices,
   CoinTargets,
   SmartTradeRecommendation,
   TacticalDipConfig,
+  TargetAllocations,
 } from '../types';
 import type { CoinMappings } from '../../../shared/types';
 import { DEFAULT_TACTICAL_DIP_CONFIG, sanitizeTacticalDipConfig } from '../../../shared/lib/storage';
@@ -644,4 +647,298 @@ export function computeSmartTradeRecommendation(params: {
     suggestedSellTokens,
     suggestedSellUsd,
   };
+}
+
+const CRYPTO_GROUP_META: Record<CryptoGroupKey, string> = {
+  'GROUP:BTC': 'BTC Core',
+  'GROUP:ETH': 'ETH & Staking',
+  'GROUP:SOL': 'SOL & Staking',
+  'GROUP:GOLD': 'Oro (PAXG)',
+  'GROUP:ALTS': 'Altcoins & Otros',
+};
+
+export function classifyCryptoGroup(ticker: string): { id: CryptoGroupKey; label: string } {
+  const upper = ticker.toUpperCase().trim();
+  if (upper === 'BTC' || upper === 'WBTC') {
+    return { id: 'GROUP:BTC', label: CRYPTO_GROUP_META['GROUP:BTC'] };
+  }
+  if (upper === 'ETH' || upper === 'WBETH' || upper === 'STETH') {
+    return { id: 'GROUP:ETH', label: CRYPTO_GROUP_META['GROUP:ETH'] };
+  }
+  if (upper === 'SOL' || upper === 'BNSOL' || upper === 'MSOL' || upper === 'JITOSOL') {
+    return { id: 'GROUP:SOL', label: CRYPTO_GROUP_META['GROUP:SOL'] };
+  }
+  if (upper === 'PAXG' || upper === 'XAUT') {
+    return { id: 'GROUP:GOLD', label: CRYPTO_GROUP_META['GROUP:GOLD'] };
+  }
+  return { id: 'GROUP:ALTS', label: CRYPTO_GROUP_META['GROUP:ALTS'] };
+}
+
+/**
+ * Computes portfolio exposure breakdown (by strategic group or individual coin),
+ * optionally including free digital USDT liquidity, alongside target drift and dollar rebalance deltas.
+ */
+export function computePortfolioExposure(params: {
+  holdings: CoinHolding[];
+  mode: 'group' | 'coin';
+  includeDigitalUsdt?: boolean;
+  digitalUsdtUsd?: number;
+  targetAllocations?: TargetAllocations;
+}): { items: PortfolioExposureItem[]; totalBaseUsd: number } {
+  const {
+    holdings,
+    mode,
+    includeDigitalUsdt = false,
+    digitalUsdtUsd = 0,
+    targetAllocations,
+  } = params;
+
+  const volatileHoldings = holdings.filter(
+    (h) => !h.isStablecoin && (h.currentValue > 0.01 || h.currentTokens > 0),
+  );
+
+  interface Bucket {
+    id: string;
+    label: string;
+    tickers: string[];
+    valueUsd: number;
+    investedUsd: number;
+    pnlUsd: number;
+    isLiquidity?: boolean;
+  }
+
+  const bucketMap = new Map<string, Bucket>();
+
+  for (const h of volatileHoldings) {
+    const tickerUpper = h.ticker.toUpperCase();
+    const { id, label } =
+      mode === 'group' ? classifyCryptoGroup(tickerUpper) : { id: tickerUpper, label: tickerUpper };
+
+    const existing = bucketMap.get(id);
+    if (existing) {
+      if (!existing.tickers.includes(tickerUpper)) existing.tickers.push(tickerUpper);
+      existing.valueUsd += h.currentValue;
+      existing.investedUsd += h.investedUsd;
+      existing.pnlUsd += h.pnl;
+    } else {
+      bucketMap.set(id, {
+        id,
+        label,
+        tickers: [tickerUpper],
+        valueUsd: h.currentValue,
+        investedUsd: h.investedUsd,
+        pnlUsd: h.pnl,
+      });
+    }
+  }
+
+  // Ensure configured group targets with > 0% appear even if current balance is $0
+  if (mode === 'group' && targetAllocations) {
+    for (const [key, pct] of Object.entries(targetAllocations)) {
+      const upperKey = key.toUpperCase() as CryptoGroupKey;
+      if (upperKey in CRYPTO_GROUP_META && pct > 0 && !bucketMap.has(upperKey)) {
+        bucketMap.set(upperKey, {
+          id: upperKey,
+          label: CRYPTO_GROUP_META[upperKey],
+          tickers: [],
+          valueUsd: 0,
+          investedUsd: 0,
+          pnlUsd: 0,
+        });
+      }
+    }
+  }
+
+  const cleanUsdt = includeDigitalUsdt ? Math.max(0, Number(digitalUsdtUsd.toFixed(2))) : 0;
+  const volatileBuckets = [...bucketMap.values()].sort(
+    (a, b) => b.valueUsd - a.valueUsd || a.label.localeCompare(b.label),
+  );
+
+  if (cleanUsdt > 0) {
+    volatileBuckets.push({
+      id: 'USDT_LIQUID',
+      label: 'Liquidez USDT',
+      tickers: ['USDT'],
+      valueUsd: cleanUsdt,
+      investedUsd: cleanUsdt,
+      pnlUsd: 0,
+      isLiquidity: true,
+    });
+  }
+
+  const totalBaseUsd = Number(
+    volatileBuckets.reduce((acc, b) => acc + b.valueUsd, 0).toFixed(2),
+  );
+
+  const items: PortfolioExposureItem[] = volatileBuckets.map((b) => {
+    const cleanValue = Number(b.valueUsd.toFixed(2));
+    const currentPct =
+      totalBaseUsd > 0 ? Number(((cleanValue / totalBaseUsd) * 100).toFixed(2)) : 0;
+    const rawTarget =
+      targetAllocations?.[b.id] ?? targetAllocations?.[b.id.toUpperCase()];
+    const hasTarget = typeof rawTarget === 'number' && Number.isFinite(rawTarget);
+
+    if (!hasTarget) {
+      return {
+        id: b.id,
+        label: b.label,
+        tickers: b.tickers,
+        valueUsd: cleanValue,
+        investedUsd: Number(b.investedUsd.toFixed(2)),
+        pnlUsd: Number(b.pnlUsd.toFixed(2)),
+        currentPct,
+        targetPct: null,
+        deltaPct: null,
+        rebalanceDeltaUsd: null,
+        rebalanceStatus: 'NO_TARGET',
+        isLiquidity: b.isLiquidity,
+      };
+    }
+
+    const targetPct = Number(rawTarget.toFixed(2));
+    const deltaPct = Number((currentPct - targetPct).toFixed(2));
+    const targetValueUsd = (targetPct / 100) * totalBaseUsd;
+    const rebalanceDeltaUsd = Number((targetValueUsd - cleanValue).toFixed(2));
+    const rebalanceStatus: PortfolioExposureItem['rebalanceStatus'] =
+      deltaPct < -2 ? 'UNDERWEIGHT' : deltaPct > 2 ? 'OVERWEIGHT' : 'BALANCED';
+
+    return {
+      id: b.id,
+      label: b.label,
+      tickers: b.tickers,
+      valueUsd: cleanValue,
+      investedUsd: Number(b.investedUsd.toFixed(2)),
+      pnlUsd: Number(b.pnlUsd.toFixed(2)),
+      currentPct,
+      targetPct,
+      deltaPct,
+      rebalanceDeltaUsd,
+      rebalanceStatus,
+      isLiquidity: b.isLiquidity,
+    };
+  });
+
+  return { items, totalBaseUsd };
+}
+
+function formatExposureStatusLabel(item: PortfolioExposureItem): string {
+  if (item.targetPct === null || item.rebalanceDeltaUsd === null) return 'Sin meta';
+  if (item.rebalanceStatus === 'UNDERWEIGHT') {
+    return `Subponderado (Faltan +${formatUsd(Math.max(0, item.rebalanceDeltaUsd))})`;
+  }
+  if (item.rebalanceStatus === 'OVERWEIGHT') {
+    return `Sobreponderado (Exceso -${formatUsd(Math.max(0, -item.rebalanceDeltaUsd))})`;
+  }
+  return 'Balanceado (±2%)';
+}
+
+export function buildAiPortfolioReportMarkdown(params: {
+  generatedAt?: string;
+  holdings: CoinHolding[];
+  archivedHoldings?: CoinHolding[];
+  eligibleCapital: {
+    ahorroEnvelopeUsd: number;
+    unassignedUsdtUsd: number;
+    totalEligibleUsd: number;
+    excludedPhysicalCashUsd: number;
+  };
+  tacticalConfig: TacticalDipConfig;
+  recommendations: Record<string, SmartTradeRecommendation>;
+  groupExposure: { items: PortfolioExposureItem[]; totalBaseUsd: number };
+  coinExposure: { items: PortfolioExposureItem[]; totalBaseUsd: number };
+}): string {
+  const {
+    generatedAt = new Date().toISOString().slice(0, 10),
+    holdings,
+    archivedHoldings = [],
+    eligibleCapital,
+    tacticalConfig,
+    recommendations,
+    groupExposure,
+    coinExposure,
+  } = params;
+
+  const totalCryptoUsd = holdings.reduce((acc, h) => acc + h.currentValue, 0);
+  const freeTacticalUsdt = Math.max(
+    0,
+    Number((eligibleCapital.totalEligibleUsd - tacticalConfig.biweeklyDcaReserveUsd).toFixed(2)),
+  );
+
+  const lines: string[] = [
+    `# Resumen de Portafolio Crypto y Liquidez para Análisis (${generatedAt})`,
+    '',
+    '## 1. Liquidez Disponible y Parámetros del Motor Táctico',
+    `- **Valor total en activos crypto volátiles:** ${formatUsd(totalCryptoUsd)}`,
+    `- **USDT digital libre en Binance:** ${formatUsd(eligibleCapital.totalEligibleUsd)} (${formatUsd(eligibleCapital.ahorroEnvelopeUsd)} en Ahorro e Inversión Binance + ${formatUsd(eligibleCapital.unassignedUsdtUsd)} USDT sin sobre)`,
+    `- **Reserva protegida para próximo DCA quincenal:** -${formatUsd(tacticalConfig.biweeklyDcaReserveUsd)}`,
+    `- **Liquidez táctica neta disponible hoy:** ${formatUsd(freeTacticalUsdt)} (Efectivo físico excluido: ${formatUsd(eligibleCapital.excludedPhysicalCashUsd)})`,
+    `- **Parámetros tácticos (Ingreso base ${formatUsd(tacticalConfig.monthlyIncomeUsd)}/mes):** Nivel 1 (10–14.9%): ${formatUsd(tacticalConfig.tier1Usd)} | Nivel 2 (15–21.9%): ${formatUsd(tacticalConfig.tier2Usd)} | Nivel 3 (≥22%): ${formatUsd(tacticalConfig.tier3Usd)} (tope ${tacticalConfig.tier3MaxFreeUsdtPct}% USDT libre) | Cooldown: +${tacticalConfig.cooldownAdditionalDropPct}% caída adicional`,
+    '',
+    `## 2. Exposición y Balanceo por Grupo (Base: ${formatUsd(groupExposure.totalBaseUsd)})`,
+    '| Grupo | Monedas | Valor USD | % Actual | % Objetivo | Ajuste / Estado |',
+    '| :--- | :--- | ---: | ---: | ---: | :--- |',
+  ];
+
+  for (const item of groupExposure.items) {
+    lines.push(
+      `| ${item.label} | ${item.tickers.join(', ') || '—'} | ${formatUsd(item.valueUsd)} | ${item.currentPct.toFixed(1)}% | ${item.targetPct !== null ? `${item.targetPct.toFixed(1)}%` : '—'} | ${formatExposureStatusLabel(item)} |`,
+    );
+  }
+
+  lines.push(
+    '',
+    `## 3. Exposición por Moneda Individual (Base: ${formatUsd(coinExposure.totalBaseUsd)})`,
+    '| Activo | Valor USD | % Actual | % Objetivo | P&L | Ajuste / Estado |',
+    '| :--- | ---: | ---: | ---: | ---: | :--- |',
+  );
+
+  for (const item of coinExposure.items) {
+    lines.push(
+      `| ${item.label} | ${formatUsd(item.valueUsd)} | ${item.currentPct.toFixed(1)}% | ${item.targetPct !== null ? `${item.targetPct.toFixed(1)}%` : '—'} | ${item.pnlUsd >= 0 ? '+' : ''}${formatUsd(item.pnlUsd)} | ${formatExposureStatusLabel(item)} |`,
+    );
+  }
+
+  lines.push(
+    '',
+    '## 4. Detalle de Posiciones Activas y Señales Hoy',
+    '| Activo | Tokens | DCA | Precio Actual | Valor | P&L (%) | Target Buy / Sell | Señal | Acción / Cooldown Hoy |',
+    '| :--- | ---: | ---: | ---: | ---: | ---: | :--- | :--- | :--- |',
+  );
+
+  for (const h of holdings) {
+    const rec = recommendations[h.ticker.toUpperCase()];
+    let actionNote = 'Mantener (fuera de rango)';
+    if (h.tradeSignal === 'BUY' && rec) {
+      actionNote =
+        rec.tacticalBuyUsd > 0
+          ? `COMPRAR ${formatUsd(rec.tacticalBuyUsd)} (${rec.dipTierLabel.split(' · ')[0]}${rec.priorityRank ? ` #${rec.priorityRank}` : ''})`
+          : rec.blockedReason ?? 'En espera';
+    } else if (h.tradeSignal === 'SELL' && rec) {
+      actionNote = `VENDER 25% (${formatTokens(rec.suggestedSellTokens, h.ticker)} ≈ ${formatUsd(rec.suggestedSellUsd)})`;
+    }
+
+    lines.push(
+      `| ${h.ticker} | ${formatTokens(h.currentTokens, h.ticker)} | ${formatUsd(h.dca)} | ${formatUsd(h.livePrice)} | ${formatUsd(h.currentValue)} | ${h.pnl >= 0 ? '+' : ''}${formatUsd(h.pnl)} (${(h.pnlPercent * 100).toFixed(1)}%) | ${formatUsd(h.targetBuyPrice)} (-${h.targetBuyPct}%) / ${formatUsd(h.targetSellPrice)} (+${h.targetSellPct}%) | ${h.tradeSignal} | ${actionNote} |`,
+    );
+  }
+
+  if (archivedHoldings.length > 0) {
+    const closedTotal = archivedHoldings.reduce((acc, h) => acc + h.pnl, 0);
+    lines.push(
+      '',
+      `## 5. Posiciones Cerradas (Balance realizado: ${closedTotal >= 0 ? '+' : ''}${formatUsd(closedTotal)})`,
+      ...archivedHoldings.map(
+        (h) =>
+          `- **${h.ticker}:** Invertido ${formatUsd(h.totalSpent)} · Vendido ${formatUsd(h.soldUsd)} · P&L ${h.pnl >= 0 ? '+' : ''}${formatUsd(h.pnl)}`,
+      ),
+    );
+  }
+
+  lines.push(
+    '',
+    '## Prompt para la IA',
+    '> Analiza este portafolio crypto y mi liquidez disponible hoy. Considerando mis pesos objetivo por grupo/moneda, mis precios DCA vs. mercado, el estado de Cooldown y la reserva protegida para DCA quincenal: (1) ¿Ves riesgo de concentración o sobreexposición en algún activo?, (2) ¿Qué ajustes recomiendas priorizar con el USDT táctico disponible sin descapitalizarme?, y (3) ¿Ajustarías alguno de los % Target Buy/Sell o metas de distribución?',
+  );
+
+  return lines.join('\n');
 }
