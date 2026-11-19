@@ -61,9 +61,21 @@
 
 ---
 
-## 🔜 Fase 6 — Evolución a SuperApp (Life OS): Rutinas, Hábitos y Biblioteca
 
-- [ ] **Rutinas Interactivas y Bloques de Tiempo (_Estilo Routinery_)**: Temporizador secuencial paso a paso (rutina de mañana, bloques de enfoque, cierre del día) con registro de tiempo real vs. planeado y estadísticas de adherencia.
+## 🔜 Fase 6 — Evolución a SuperApp (Life OS): Rutinas Sociales, Hábitos y Biblioteca
+
+- [ ] **Rutinas Sociales y Gamificación (_Estilo Routinery + Strava_)**: Motor de ejecución de hábitos paso a paso integrado con mecánicas competitivas y validación social entre amigos:
+  - **Temporizador secuencial + bloques financieros**: Ejecución cronometrada (mañana, entrenamiento, estudio, cierre) con bloques conectables directamente al módulo de finanzas (ej. _"Registrar gastos del día - 5 min"_, _"Revisar presupuesto semanal - 15 min"_), además de registro de tiempo real vs. planeado y estadísticas de adherencia.
+  - **Micro-grupos competitivos, Ligas Semanales y Rachas**: Salas cerradas de amigos con _feed_ minimalista en vivo (ej. _"Juan inició su Rutina de Mañana - 40 min"_), puntaje con reinicio cada lunes (ligas justas entre nuevos y veteranos) y multiplicadores por rachas individuales o grupales.
+  - **Sistema de puntos justo y flexible**: Puntaje basado en tiempo real cumplido (no por marcar checkboxes de golpe), verificación opcional con foto rápida (_estilo BeReal_) para puntos extra y modo flexible de ajuste/confirmación retroactiva para evitar penalizaciones cuando el temporizador queda corriendo y se cierran bloques al final.
+  - **Privacidad con "Puntos Fantasma"**: Rutinas o tareas marcadas como privadas ocultan su contenido ante el grupo, sumando puntos al ranking bajo una etiqueta genérica (_"Actividad privada completada"_).
+
+  | Subfase                              | Alcance                                                                                                           | Objetivo                                                                   |
+  | :----------------------------------- | :---------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------- |
+  | **6.1 MVP**                          | Temporizador de rutinas, grupos cerrados, privacidad básica ("Puntos Fantasma") y ranking semanal.                | Validar retención diaria y fricción de uso con un grupo pequeño de prueba. |
+  | **6.2 Social y Retención**           | Fotos de verificación opcionales (_BeReal_), ajuste flexible de cierre, rachas grupales y notificaciones en vivo. | Aumentar la presión social positiva y el compromiso semanal.               |
+  | **6.3 Sinergia Finanzas & AI Coach** | Bloques financieros nativos, rutinas generadas por IA y alertas cruzadas con presupuesto.                         | Consolidar la transición de app de finanzas a SuperApp de vida.            |
+
 - [ ] **Habit Tracker & Consistencia (_Estilo Streaks / Loop_)**: Seguimiento de hábitos diarios y semanales con rachas (_streaks_), mapa de calor (_heatmap_) y conexión opcional con metas de ahorro/sobres.
 - [ ] **Biblioteca y Seguimiento de Lectura (_Estilo Readwise_)**: Gestión de libros (_Por leer_, _Leyendo_, _Terminado_), progreso en páginas/tiempo conectado al bloque de lectura de la rutina y al sobre `Crecimiento Personal`.
 
@@ -72,7 +84,7 @@
 ## 🔜 Fase 7 — Smart Command Bar & AI Life/Wealth Coach
 
 - [ ] **Smart Command Bar Unificada (Lenguaje Natural)**: Parser local determinístico (offline) + integración opcional con LLM (_Structured Outputs_) y vista previa editable antes de confirmar para registrar tanto operaciones financieras encadenadas como avances de rutinas, hábitos o lectura.
-- [ ] **Optimizador de Rutinas y Hábitos por IA**: Análisis de fricción real (pasos omitidos, horarios de mayor cumplimiento, exceso de duración) para proponer ajustes concretos a las rutinas diarias.
+- [ ] **Optimizador de Rutinas y Hábitos por IA (Cruce Finanzas ↔ Adherencia)**: Análisis de fricción real (pasos omitidos, horarios de mayor cumplimiento, exceso de duración), generación de rutinas según metas del usuario y correlación cruzada con datos financieros (ej. detectar si abandonar la rutina de mañana correlaciona con más gastos impulsivos o entregas de comida) para proponer ajustes realistas.
 - [ ] **Asesor de Portafolio e Inversión por IA**: Recomendaciones de asignación cruzando excedentes de sobres, progreso del `Fondo de Emergencia`, reglas de distribución objetivo del portafolio y precios `Target Buy` / `DCA`.
 - [ ] **Recomendador de Libros y Crecimiento Personal**: Sugerencias de lectura y micro-hábitos basadas en objetivos activos, notas de libros leídos y presupuesto disponible en `Crecimiento Personal`.
 
