@@ -437,6 +437,51 @@ const MIN_COIN_ORDER_USD = 20;
 
 const GROUP_OVERWEIGHT_THRESHOLD_PCT = 5;
 
+const GROUP_UNDERWEIGHT_THRESHOLD_PCT = -2;
+
+const TEMPORAL_COOLDOWN_HOURS = 48;
+
+const MULTI_ASSET_MIN_DAILY_CAP_USD = 40;
+
+const MULTI_ASSET_FIRST_PASS_MAX_SHARE = 0.6;
+
+const FLASH_CRASH_ELIGIBLE_GROUPS = new Set<CryptoGroupKey>([
+  'GROUP:BTC',
+  'GROUP:ETH',
+  'GROUP:SOL',
+  'GROUP:GOLD',
+]);
+
+function parseTransactionTimestampMs(dateStr?: string): number | null {
+  if (!dateStr) return null;
+  const trimmed = dateStr.trim();
+  if (!trimmed) return null;
+
+  const match = trimmed.match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}):(\d{2})(?::(\d{2}))?)?$/,
+  );
+  if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    const hour = Number(match[4] ?? 0);
+    const minute = Number(match[5] ?? 0);
+    const second = Number(match[6] ?? 0);
+    const ms = new Date(year, month, day, hour, minute, second).getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+
+  const fallback = Date.parse(trimmed);
+  return Number.isFinite(fallback) ? fallback : null;
+}
+
+function getDriftPriorityBucket(groupDriftPct: number | undefined): number {
+  if (groupDriftPct === undefined) return 1;
+  if (groupDriftPct < GROUP_UNDERWEIGHT_THRESHOLD_PCT) return 0;
+  if (groupDriftPct <= GROUP_OVERWEIGHT_THRESHOLD_PCT) return 1;
+  return 2;
+}
+
 function computeGroupDriftForHolding(
   holding: CoinHolding,
   allVolatileHoldings: CoinHolding[] | undefined,
@@ -491,8 +536,13 @@ function evaluateCooldown(
   holding: CoinHolding,
   dipTier: DipTier,
   config: TacticalDipConfig,
+  nowMs: number,
 ): {
   isCooldownLocked: boolean;
+  isTimeCooldownLocked?: boolean;
+  timeCooldownRemainingHours?: number;
+  flashCrashUnlockPrice?: number;
+  isFlashCrashOverrideUnlocked?: boolean;
   isTier3EscapeUnlocked?: boolean;
   nextUnlockPrice?: number;
   cooldownReason?: string;
@@ -506,6 +556,7 @@ function evaluateCooldown(
   }
 
   const profile = getVolatilityProfile(holding.ticker, config);
+  const groupId = classifyCryptoGroup(holding.ticker).id;
   const additionalDropReq = profile.cooldownAdditionalDropPct;
   const decimals = lastBuyPrice < 1 ? 4 : 2;
   const nextUnlockPrice = Number(
@@ -513,11 +564,55 @@ function evaluateCooldown(
   );
   const dropSinceLastBuyPct = ((lastBuyPrice - price) / lastBuyPrice) * 100;
 
+  const flashCrashEligible = FLASH_CRASH_ELIGIBLE_GROUPS.has(groupId);
+  const flashCrashDropReq = profile.tier3EscapeDropPct;
+  const flashCrashUnlockPrice = flashCrashEligible
+    ? Number((lastBuyPrice * (1 - flashCrashDropReq / 100)).toFixed(decimals))
+    : undefined;
+
+  // Rule 2: 48h temporal lock after any executed dip buy with asset-class Flash Crash Override
+  const buyTs = parseTransactionTimestampMs(holding.lastDipBuyDate);
+  if (buyTs !== null) {
+    const cooldownMs = TEMPORAL_COOLDOWN_HOURS * 60 * 60 * 1000;
+    const elapsedMs = Math.max(0, nowMs - buyTs);
+    if (elapsedMs < cooldownMs) {
+      const remainingHours = Math.max(
+        1,
+        Math.min(TEMPORAL_COOLDOWN_HOURS, Math.ceil((cooldownMs - elapsedMs) / (60 * 60 * 1000))),
+      );
+      if (flashCrashEligible && dropSinceLastBuyPct >= flashCrashDropReq) {
+        return {
+          isCooldownLocked: false,
+          isFlashCrashOverrideUnlocked: true,
+          isTier3EscapeUnlocked: consumedTier >= 3 ? true : undefined,
+          flashCrashUnlockPrice,
+          nextUnlockPrice: flashCrashUnlockPrice,
+        };
+      }
+      if (flashCrashEligible) {
+        return {
+          isCooldownLocked: true,
+          isTimeCooldownLocked: true,
+          timeCooldownRemainingHours: remainingHours,
+          flashCrashUnlockPrice,
+          nextUnlockPrice: flashCrashUnlockPrice,
+          cooldownReason: `Cooldown 48h (faltan ${remainingHours}h) · Escape flash crash ≤ ${formatUsd(flashCrashUnlockPrice!)} (-${flashCrashDropReq}%).`,
+        };
+      }
+      return {
+        isCooldownLocked: true,
+        isTimeCooldownLocked: true,
+        timeCooldownRemainingHours: remainingHours,
+        cooldownReason: `Cooldown 48h estricto (faltan ${remainingHours}h · sin escape flash crash en Altcoins).`,
+      };
+    }
+  }
+
   const deeperTierOk = dipTier > consumedTier;
   const additionalDropOk = dropSinceLastBuyPct >= additionalDropReq;
 
   if (deeperTierOk && additionalDropOk) {
-    return { isCooldownLocked: false, nextUnlockPrice };
+    return { isCooldownLocked: false, nextUnlockPrice, flashCrashUnlockPrice };
   }
 
   if (consumedTier >= 3) {
@@ -530,11 +625,13 @@ function evaluateCooldown(
         isCooldownLocked: false,
         isTier3EscapeUnlocked: true,
         nextUnlockPrice: escapeUnlockPrice,
+        flashCrashUnlockPrice,
       };
     }
     return {
       isCooldownLocked: true,
       nextUnlockPrice: escapeUnlockPrice,
+      flashCrashUnlockPrice,
       cooldownReason: `Cooldown Nivel 3 cumplido (${formatUsd(lastBuyPrice)}). Desbloquea al rebotar sobre Target Buy o por capitulación (-${escapeDropReq}% extra ≤ ${formatUsd(escapeUnlockPrice)}).`,
     };
   }
@@ -552,6 +649,7 @@ function evaluateCooldown(
   return {
     isCooldownLocked: true,
     nextUnlockPrice,
+    flashCrashUnlockPrice,
     cooldownReason,
   };
 }
@@ -560,7 +658,7 @@ function allocatePriorityDipBudget(
   activeBuyHoldings: CoinHolding[],
   allVolatileHoldings: CoinHolding[] | undefined,
   totalVolatileCryptoUsd: number,
-  maxSpendable: number,
+  dailyCapUsd: number,
   config: TacticalDipConfig,
   explicitTargets?: TargetAllocations,
 ): {
@@ -580,6 +678,7 @@ function allocatePriorityDipBudget(
       totalVolatileCryptoUsd,
       explicitTargets,
     );
+    const driftBucket = getDriftPriorityBucket(groupDriftPct);
     const effectiveTacticalUsd = isGroupOverweight
       ? Number((Math.max(0, rawTacticalUsd) * 0.5).toFixed(2))
       : Number(Math.max(0, rawTacticalUsd).toFixed(2));
@@ -590,15 +689,17 @@ function allocatePriorityDipBudget(
       drop,
       investedUsd: h.investedUsd,
       groupDriftPct,
+      driftBucket,
       isGroupOverweight,
       effectiveTacticalUsd,
     };
   });
 
-  // Priority queue: underweight/balanced groups before overweight (>+5%), then deeper severity dipTier across asset classes -> deepest drop -> lowest drift -> investedUsd desc
+  // Rule 4 + Priority queue: underweight (<-2%) -> balanced/mild overweight (<=+5%) -> heavy overweight (>+5%),
+  // then deepest severity dipTier across asset classes -> deepest drop -> lowest drift -> investedUsd desc
   const prioritized = [...candidates].sort(
     (a, b) =>
-      Number(a.isGroupOverweight) - Number(b.isGroupOverweight) ||
+      a.driftBucket - b.driftBucket ||
       b.dipTier - a.dipTier ||
       b.drop - a.drop ||
       (a.groupDriftPct ?? 0) - (b.groupDriftPct ?? 0) ||
@@ -606,48 +707,101 @@ function allocatePriorityDipBudget(
       a.ticker.localeCompare(b.ticker),
   );
 
-  const globalTierBudgetUsd = Number(
-    Math.min(maxSpendable, Math.max(...prioritized.map((c) => c.effectiveTacticalUsd), 0)).toFixed(
-      2,
-    ),
-  );
-
   const allocations: Record<string, number> = {};
   const ranks: Record<string, number> = {};
   const blockedReasons: Record<string, string> = {};
   const overweightFlags: Record<string, boolean> = {};
-  let remainingBudget = globalTierBudgetUsd;
-  let leaderTicker: string | null = null;
-  let fundedCount = 0;
 
   prioritized.forEach((item, index) => {
     ranks[item.ticker] = index + 1;
     overweightFlags[item.ticker] = item.isGroupOverweight;
-    const desired = Number(Math.min(item.effectiveTacticalUsd, remainingBudget).toFixed(2));
+    allocations[item.ticker] = 0;
+  });
 
-    if (desired < MIN_COIN_ORDER_USD) {
+  const fundable = prioritized.filter((c) => c.effectiveTacticalUsd >= MIN_COIN_ORDER_USD);
+
+  if (fundable.length >= 2 && dailyCapUsd >= MULTI_ASSET_MIN_DAILY_CAP_USD) {
+    // Rule 3 (Two-Pass Allocation): cap first asset at 60% in Pass 1 (while keeping >= $20 for #2),
+    // then redistribute any unused remainder in Pass 2 up to each asset's tier block cap
+    let remaining = dailyCapUsd;
+    const perAssetPass1Cap = Number((dailyCapUsd * MULTI_ASSET_FIRST_PASS_MAX_SHARE).toFixed(2));
+    const leaderPass1Cap = Number(
+      Math.min(perAssetPass1Cap, dailyCapUsd - MIN_COIN_ORDER_USD).toFixed(2),
+    );
+
+    fundable.forEach((item, idx) => {
+      const cap = idx === 0 ? leaderPass1Cap : perAssetPass1Cap;
+      const grant = Number(Math.min(item.effectiveTacticalUsd, cap, remaining).toFixed(2));
+      if (grant >= MIN_COIN_ORDER_USD) {
+        allocations[item.ticker] = grant;
+        remaining = Number(Math.max(0, remaining - grant).toFixed(2));
+      }
+    });
+
+    if (remaining > 0.009) {
+      for (const item of fundable) {
+        if (remaining <= 0.009) break;
+        const current = allocations[item.ticker] ?? 0;
+        if (current > 0) {
+          const headroom = Number(Math.max(0, item.effectiveTacticalUsd - current).toFixed(2));
+          if (headroom > 0) {
+            const extra = Number(Math.min(headroom, remaining).toFixed(2));
+            allocations[item.ticker] = Number((current + extra).toFixed(2));
+            remaining = Number(Math.max(0, remaining - extra).toFixed(2));
+          }
+        } else if (remaining >= MIN_COIN_ORDER_USD) {
+          const grant = Number(Math.min(item.effectiveTacticalUsd, remaining).toFixed(2));
+          if (grant >= MIN_COIN_ORDER_USD) {
+            allocations[item.ticker] = grant;
+            remaining = Number(Math.max(0, remaining - grant).toFixed(2));
+          }
+        }
+      }
+    }
+  } else if (fundable.length >= 1) {
+    // Cupo diario entre $20-$39.99 o solo 1 activo elegible: 100% al activo #1 en prioridad
+    const leader = fundable[0];
+    const grant = Number(Math.min(leader.effectiveTacticalUsd, dailyCapUsd).toFixed(2));
+    if (grant >= MIN_COIN_ORDER_USD) {
+      allocations[leader.ticker] = grant;
+    }
+  }
+
+  let leaderTicker: string | null = null;
+  let activeCoinCount = 0;
+  let totalAllocatedUsd = 0;
+
+  for (const item of prioritized) {
+    const granted = allocations[item.ticker] ?? 0;
+    if (granted >= MIN_COIN_ORDER_USD) {
+      if (!leaderTicker) leaderTicker = item.displayTicker;
+      activeCoinCount += 1;
+      totalAllocatedUsd = Number((totalAllocatedUsd + granted).toFixed(2));
+    } else {
       allocations[item.ticker] = 0;
-      blockedReasons[item.ticker] = leaderTicker
-        ? `Prioridad asignada a ${leaderTicker} · Remanente < $${MIN_COIN_ORDER_USD}`
-        : item.isGroupOverweight
+      if (item.effectiveTacticalUsd < MIN_COIN_ORDER_USD) {
+        blockedReasons[item.ticker] = item.isGroupOverweight
           ? `Sobreponderado (+${(item.groupDriftPct ?? 0).toFixed(1)}%) · Monto reducido < $${MIN_COIN_ORDER_USD}`
           : `Esperar mayor caída / Monto < $${MIN_COIN_ORDER_USD}`;
-      return;
+      } else if (leaderTicker && dailyCapUsd < MULTI_ASSET_MIN_DAILY_CAP_USD) {
+        blockedReasons[item.ticker] =
+          `Prioridad asignada a ${leaderTicker} · Cupo diario < $${MULTI_ASSET_MIN_DAILY_CAP_USD} para dividir`;
+      } else if (leaderTicker) {
+        blockedReasons[item.ticker] =
+          `Prioridad asignada a ${leaderTicker} · Remanente < $${MIN_COIN_ORDER_USD}`;
+      } else {
+        blockedReasons[item.ticker] = `Esperar mayor caída / Monto < $${MIN_COIN_ORDER_USD}`;
+      }
     }
-
-    allocations[item.ticker] = desired;
-    remainingBudget = Number(Math.max(0, remainingBudget - desired).toFixed(2));
-    if (!leaderTicker) leaderTicker = item.displayTicker;
-    fundedCount += 1;
-  });
+  }
 
   return {
     allocations,
     ranks,
     blockedReasons,
     overweightFlags,
-    globalTierBudgetUsd,
-    activeCoinCount: fundedCount,
+    globalTierBudgetUsd: totalAllocatedUsd > 0 ? totalAllocatedUsd : dailyCapUsd,
+    activeCoinCount,
   };
 }
 
@@ -665,6 +819,7 @@ export function computeSmartTradeRecommendation(params: {
   allVolatileHoldings?: CoinHolding[];
   tacticalConfig?: Partial<TacticalDipConfig>;
   targetAllocations?: TargetAllocations;
+  nowMs?: number;
 }): SmartTradeRecommendation {
   const {
     holding,
@@ -673,6 +828,7 @@ export function computeSmartTradeRecommendation(params: {
     allVolatileHoldings,
     tacticalConfig,
     targetAllocations,
+    nowMs = Date.now(),
   } = params;
   const config = sanitizeTacticalDipConfig({
     ...DEFAULT_TACTICAL_DIP_CONFIG,
@@ -681,6 +837,10 @@ export function computeSmartTradeRecommendation(params: {
   const cleanEligible = Math.max(0, Number(eligibleCapitalUsd.toFixed(2)));
   const freeTacticalUsdtUsd = Number(
     Math.max(0, cleanEligible - config.biweeklyDcaReserveUsd).toFixed(2),
+  );
+  // Rule 1: daily cap applies strictly to Net Tactical Liquidity (after deducting biweekly DCA reserve)
+  const dailyCapUsd = Number(
+    (freeTacticalUsdtUsd * (config.tier3MaxFreeUsdtPct / 100)).toFixed(2),
   );
   const price = holding.livePrice;
   const dca = holding.dca;
@@ -708,19 +868,12 @@ export function computeSmartTradeRecommendation(params: {
     config,
     holding.ticker,
   );
-  const cooldown = evaluateCooldown(holding, dipTier, config);
+  const cooldown = evaluateCooldown(holding, dipTier, config, nowMs);
   const { groupDriftPct, isGroupOverweight } = computeGroupDriftForHolding(
     holding,
     allVolatileHoldings,
     totalVolatileCryptoUsd,
     targetAllocations,
-  );
-
-  const maxSpendable = Number(
-    Math.min(
-      freeTacticalUsdtUsd,
-      cleanEligible * (config.tier3MaxFreeUsdtPct / 100),
-    ).toFixed(2),
   );
 
   let tacticalBuyUsd = 0;
@@ -742,14 +895,14 @@ export function computeSmartTradeRecommendation(params: {
         cleanEligible < MIN_COIN_ORDER_USD
           ? 'USDT digital libre < $20 (esperar próxima quincena)'
           : `Se reservan $${config.biweeklyDcaReserveUsd} para tu DCA quincenal (esperar liquidez)`;
-    } else if (maxSpendable < MIN_COIN_ORDER_USD) {
-      blockedReason = `Tope del ${config.tier3MaxFreeUsdtPct}% sobre USDT libre es < $${MIN_COIN_ORDER_USD}`;
+    } else if (dailyCapUsd < MIN_COIN_ORDER_USD) {
+      blockedReason = `Cupo diario (${config.tier3MaxFreeUsdtPct}% de ${formatUsd(freeTacticalUsdtUsd)} neto = ${formatUsd(dailyCapUsd)}) es < $${MIN_COIN_ORDER_USD}`;
     } else {
       const activeBuyPeers = (allVolatileHoldings ?? []).filter((h) => {
         if (h.isStablecoin || h.tradeSignal !== 'BUY' || h.livePrice <= 0) return false;
         const peerDrop = h.dca > 0 ? ((h.dca - h.livePrice) / h.dca) * 100 : 0;
         const peerTier = computeTierInfo(peerDrop, true, config, h.ticker).dipTier;
-        return !evaluateCooldown(h, peerTier, config).isCooldownLocked;
+        return !evaluateCooldown(h, peerTier, config, nowMs).isCooldownLocked;
       });
 
       if (activeBuyPeers.length > 1) {
@@ -757,7 +910,7 @@ export function computeSmartTradeRecommendation(params: {
           activeBuyPeers,
           allVolatileHoldings,
           totalVolatileCryptoUsd,
-          maxSpendable,
+          dailyCapUsd,
           config,
           targetAllocations,
         );
@@ -774,7 +927,7 @@ export function computeSmartTradeRecommendation(params: {
         const effectiveRaw = isGroupOverweight
           ? Number((rawTacticalUsd * 0.5).toFixed(2))
           : rawTacticalUsd;
-        const candidateUsd = Number(Math.min(effectiveRaw, maxSpendable).toFixed(2));
+        const candidateUsd = Number(Math.min(effectiveRaw, dailyCapUsd).toFixed(2));
         globalTierBudgetUsd = candidateUsd;
         if (candidateUsd < MIN_COIN_ORDER_USD) {
           tacticalBuyUsd = 0;
@@ -827,6 +980,10 @@ export function computeSmartTradeRecommendation(params: {
     residualAfterBuyUsd,
     isCappedByBreakEven: false,
     isCooldownLocked,
+    isTimeCooldownLocked: cooldown.isTimeCooldownLocked,
+    timeCooldownRemainingHours: cooldown.timeCooldownRemainingHours,
+    flashCrashUnlockPrice: cooldown.flashCrashUnlockPrice,
+    isFlashCrashOverrideUnlocked: cooldown.isFlashCrashOverrideUnlocked,
     isTier3EscapeUnlocked: cooldown.isTier3EscapeUnlocked,
     isGroupOverweightTrimmed,
     groupDriftPct,
@@ -837,6 +994,7 @@ export function computeSmartTradeRecommendation(params: {
     priorityRank,
     sharedAmongBuyCount,
     globalTierBudgetUsd,
+    dailyCapUsd,
     blockedReason,
     concentrationWarning,
     suggestedSellTokens,
@@ -1058,6 +1216,9 @@ export function buildAiPortfolioReportMarkdown(params: {
     0,
     Number((eligibleCapital.totalEligibleUsd - tacticalConfig.biweeklyDcaReserveUsd).toFixed(2)),
   );
+  const dailyCapUsd = Number(
+    (freeTacticalUsdt * (tacticalConfig.tier3MaxFreeUsdtPct / 100)).toFixed(2),
+  );
 
   const lines: string[] = [
     `# Resumen de Portafolio Crypto y Liquidez para Análisis (${generatedAt})`,
@@ -1067,7 +1228,8 @@ export function buildAiPortfolioReportMarkdown(params: {
     `- **USDT digital libre en Binance:** ${formatUsd(eligibleCapital.totalEligibleUsd)} (${formatUsd(eligibleCapital.ahorroEnvelopeUsd)} en Ahorro e Inversión Binance + ${formatUsd(eligibleCapital.unassignedUsdtUsd)} USDT sin sobre)`,
     `- **Reserva protegida para próximo DCA quincenal:** -${formatUsd(tacticalConfig.biweeklyDcaReserveUsd)}`,
     `- **Liquidez táctica neta disponible hoy:** ${formatUsd(freeTacticalUsdt)} (Efectivo físico excluido: ${formatUsd(eligibleCapital.excludedPhysicalCashUsd)})`,
-    `- **Parámetros tácticos (Ingreso base ${formatUsd(tacticalConfig.monthlyIncomeUsd)}/mes):** Bloques N1: ${formatUsd(tacticalConfig.tier1Usd)} | N2: ${formatUsd(tacticalConfig.tier2Usd)} | N3: ${formatUsd(tacticalConfig.tier3Usd)} (tope ${tacticalConfig.tier3MaxFreeUsdtPct}% USDT libre)`,
+    `- **Cupo máximo diario (${tacticalConfig.tier3MaxFreeUsdtPct}% sobre liquidez táctica neta):** ${formatUsd(dailyCapUsd)} (tope concentración 60% por activo si cupo ≥ $40 y ≥2 elegibles)`,
+    `- **Parámetros tácticos (Ingreso base ${formatUsd(tacticalConfig.monthlyIncomeUsd)}/mes):** Bloques N1: ${formatUsd(tacticalConfig.tier1Usd)} | N2: ${formatUsd(tacticalConfig.tier2Usd)} | N3: ${formatUsd(tacticalConfig.tier3Usd)} · Cooldown 48h (escape flash crash: -${tacticalConfig.tier3EscapeDropPct ?? 15}% Core / -${tacticalConfig.goldTier3EscapeDropPct ?? 8}% Oro · estricto Altcoins)`,
     `- **Perfil Crypto (BTC, ETH, SOL, Alts):** Escalones 10–14.9% / 15–21.9% / ≥22% | Cooldown: +${tacticalConfig.cooldownAdditionalDropPct}% caída extra | Escape N3: -${tacticalConfig.tier3EscapeDropPct ?? 15}%`,
     `- **Perfil Defensivo Oro (PAXG, XAUT):** Escalones 5–7.9% / 8–11.9% / ≥12% | Cooldown: +${tacticalConfig.goldCooldownAdditionalDropPct ?? 3.5}% caída extra | Escape N3: -${tacticalConfig.goldTier3EscapeDropPct ?? 8}%`,
     '',

@@ -139,6 +139,10 @@ export interface SmartTradeRecommendation {
   residualAfterBuyUsd: number;
   isCappedByBreakEven?: boolean;
   isCooldownLocked?: boolean;
+  isTimeCooldownLocked?: boolean;
+  timeCooldownRemainingHours?: number;
+  flashCrashUnlockPrice?: number;
+  isFlashCrashOverrideUnlocked?: boolean;
   isTier3EscapeUnlocked?: boolean;
   isGroupOverweightTrimmed?: boolean;
   groupDriftPct?: number;
@@ -149,6 +153,7 @@ export interface SmartTradeRecommendation {
   priorityRank?: number;
   sharedAmongBuyCount?: number;
   globalTierBudgetUsd?: number;
+  dailyCapUsd?: number;
   blockedReason?: string;
   concentrationWarning?: string;
   /** Suggested 25% staged profit trim when signal === 'SELL' */

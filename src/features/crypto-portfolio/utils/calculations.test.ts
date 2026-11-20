@@ -200,10 +200,21 @@ describe('crypto-portfolio/utils/calculations', () => {
 
     const recTier3Capped = computeSmartTradeRecommendation({
       holding: holdingTier3,
-      eligibleCapitalUsd: 120, // free after $50 DCA = $70, 40% of $120 = $48
+      eligibleCapitalUsd: 120, // net after $50 DCA = $70 -> daily cap 40% of $70 = $28
       totalVolatileCryptoUsd: 750,
     });
-    expect(recTier3Capped.tacticalBuyUsd).toBe(48);
+    expect(recTier3Capped.dailyCapUsd).toBe(28);
+    expect(recTier3Capped.tacticalBuyUsd).toBe(28);
+
+    // Blocked when daily cap (40% of net) falls below $20 (never inflated)
+    const recDailyCapTooSmall = computeSmartTradeRecommendation({
+      holding: holdingTier3,
+      eligibleCapitalUsd: 95, // net = $45 -> 40% = $18 < $20
+      totalVolatileCryptoUsd: 750,
+    });
+    expect(recDailyCapTooSmall.dailyCapUsd).toBe(18);
+    expect(recDailyCapTooSmall.tacticalBuyUsd).toBe(0);
+    expect(recDailyCapTooSmall.blockedReason).toContain('Cupo diario');
 
     // Blocked when remaining USDT after $50 biweekly DCA reserve is < $20
     const recDcaProtected = computeSmartTradeRecommendation({
@@ -225,7 +236,7 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(recDiscarded.blockedReason).toContain('< $20');
   });
 
-  it('prioritizes deeper drop on simultaneous BUY alerts when groups are within +5% target and discards sub-$20 remainder', () => {
+  it('splits multi-asset daily cap >= $40 across peers and concentrates 100% on #1 when daily cap is $20-$39.99', () => {
     const txs: Transaction[] = [
       { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '20', usdValue: 2000 }, // DCA = $100
       { date: '2026-04-01', type: 'Buy', asset: 'ETH', tokens: '2', usdValue: 200 },   // DCA = $100
@@ -245,6 +256,7 @@ describe('crypto-portfolio/utils/calculations', () => {
     const eth = holdings.find((h) => h.ticker === 'ETH')!;
     const matchedTargets = { 'GROUP:BTC': 90, 'GROUP:ETH': 10 }; // ~90.9% BTC (drift +0.9% <= +5%)
 
+    // With $401.88 eligible ($140.75 daily cap >= $40), both BTC (#1) and ETH (#2) receive full Tier 1 blocks ($45 each)
     const recBtc = computeSmartTradeRecommendation({
       holding: btc,
       eligibleCapitalUsd: 401.88,
@@ -260,12 +272,32 @@ describe('crypto-portfolio/utils/calculations', () => {
       targetAllocations: matchedTargets,
     });
 
-    // BTC takes full Tier 1 block ($45); ETH is discarded ($0) with priority message, never cut or inflated
     expect(recBtc.tacticalBuyUsd).toBe(45);
     expect(recBtc.priorityRank).toBe(1);
-    expect(recEth.tacticalBuyUsd).toBe(0);
+    expect(recBtc.sharedAmongBuyCount).toBe(2);
+    expect(recEth.tacticalBuyUsd).toBe(45);
     expect(recEth.priorityRank).toBe(2);
-    expect(recEth.blockedReason).toContain('Prioridad asignada a BTC');
+
+    // With $137.50 eligible ($87.50 net -> $35 daily cap < $40), 100% goes to #1 (BTC) and $0 to #2 (ETH)
+    const recBtcLowCap = computeSmartTradeRecommendation({
+      holding: btc,
+      eligibleCapitalUsd: 137.5,
+      totalVolatileCryptoUsd: btc.currentValue + eth.currentValue,
+      allVolatileHoldings: holdings,
+      targetAllocations: matchedTargets,
+    });
+    const recEthLowCap = computeSmartTradeRecommendation({
+      holding: eth,
+      eligibleCapitalUsd: 137.5,
+      totalVolatileCryptoUsd: btc.currentValue + eth.currentValue,
+      allVolatileHoldings: holdings,
+      targetAllocations: matchedTargets,
+    });
+    expect(recBtcLowCap.dailyCapUsd).toBe(35);
+    expect(recBtcLowCap.tacticalBuyUsd).toBe(35);
+    expect(recEthLowCap.tacticalBuyUsd).toBe(0);
+    expect(recEthLowCap.blockedReason).toContain('Prioridad asignada a BTC');
+    expect(recEthLowCap.blockedReason).toContain('< $40');
   });
 
   it('halves tactical block and deprioritizes groups overweight by >+5%, favoring underweight groups', () => {
@@ -302,7 +334,7 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(soloOverweightBtc.isGroupOverweightTrimmed).toBe(true);
     expect(soloOverweightBtc.tacticalBuyUsd).toBe(22.5);
 
-    // When both overweight BTC (-10.75%, Tier 1) and underweight PAXG (-10.28%, Gold Tier 2) trigger BUY, PAXG takes Priority #1 ($70)
+    // With $400 eligible ($140 daily cap >= $40): PAXG (#1, $70) + halved BTC (#2, $22.50)
     const recPaxg = computeSmartTradeRecommendation({
       holding: paxg,
       eligibleCapitalUsd: 400,
@@ -321,8 +353,27 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(recPaxg.dipTier).toBe(2);
     expect(recPaxg.tacticalBuyUsd).toBe(70);
     expect(recBtc.priorityRank).toBe(2);
-    expect(recBtc.tacticalBuyUsd).toBe(0);
-    expect(recBtc.blockedReason).toContain('Prioridad asignada a PAXG');
+    expect(recBtc.isGroupOverweightTrimmed).toBe(true);
+    expect(recBtc.tacticalBuyUsd).toBe(22.5);
+
+    // With $137.50 eligible ($35 daily cap < $40): PAXG takes all $35, overweight BTC gets $0
+    const recPaxgSmall = computeSmartTradeRecommendation({
+      holding: paxg,
+      eligibleCapitalUsd: 137.5,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: groupTargets,
+    });
+    const recBtcSmall = computeSmartTradeRecommendation({
+      holding: btc,
+      eligibleCapitalUsd: 137.5,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: groupTargets,
+    });
+    expect(recPaxgSmall.tacticalBuyUsd).toBe(35);
+    expect(recBtcSmall.tacticalBuyUsd).toBe(0);
+    expect(recBtcSmall.blockedReason).toContain('Prioridad asignada a PAXG');
   });
 
   it('enforces dual-filter cooldown after a dip buy, prevents phantom Tier 2 trigger, unlocks on >=7.5% extra drop, and resets on rebound', () => {
@@ -741,8 +792,25 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(recPaxg.priorityRank).toBe(1);
     expect(recPaxg.tacticalBuyUsd).toBe(70);
     expect(recBtc.priorityRank).toBe(2);
-    expect(recBtc.tacticalBuyUsd).toBe(0);
-    expect(recBtc.blockedReason).toContain('Prioridad asignada a PAXG');
+    expect(recBtc.tacticalBuyUsd).toBe(45);
+
+    // With $300 eligible ($250 net -> $100 daily cap): 60% ($60) to PAXG (#1), 40% ($40) to BTC (#2)
+    const recPaxgSplit = computeSmartTradeRecommendation({
+      holding: paxg,
+      eligibleCapitalUsd: 300,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: balancedTargets,
+    });
+    const recBtcSplit = computeSmartTradeRecommendation({
+      holding: btc,
+      eligibleCapitalUsd: 300,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: balancedTargets,
+    });
+    expect(recPaxgSplit.tacticalBuyUsd).toBe(60);
+    expect(recBtcSplit.tacticalBuyUsd).toBe(40);
   });
 
   it('tracks BNB Gas (Fee) drag explaining -13.3% price variation vs -14.1% net P&L and discloses both in AI report', () => {
@@ -821,5 +889,314 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(markdown).toContain('-13.3%');
     expect(markdown).toContain('-14.1%');
     expect(markdown).toContain('0.0026 BNB');
+  });
+
+  it('enforces 48h temporal cooldown with Core (-15%) / Gold (-8%) Flash Crash Override and strict lock on Altcoins', () => {
+    const buyTime = '2026-11-20 00:00:00';
+    const plus17HoursMs = new Date(2026, 10, 20, 17, 0, 0).getTime(); // faltan 31h
+    const plus20HoursMs = new Date(2026, 10, 20, 20, 0, 0).getTime(); // faltan 28h
+    const plus10HoursMs = new Date(2026, 10, 20, 10, 0, 0).getTime(); // faltan 38h
+    const plus49HoursMs = new Date(2026, 10, 22, 1, 0, 0).getTime();  // > 48h
+
+    // 1. BTC (Crypto Core): -9% extra below $90 ($81.90) meets +7.5% price spacing, but stays locked during 48h (< -15% flash crash)
+    const btcTxs: Transaction[] = [
+      { date: '2026-10-01 10:00:00', type: 'Buy', asset: 'BTC', tokens: '10', usdValue: 1000 },
+      { date: buyTime, type: 'Buy', asset: 'BTC', tokens: '1', usdValue: 90 }, // Tier 1 (-10%) at $90
+    ];
+    const [btcRoutineDrop] = computeHoldings(
+      btcTxs,
+      { BTC: 'bitcoin' },
+      { bitcoin: { usd: 81.9 } },
+      { BTC: { buy: 10, sell: 30 } },
+      stablecoins,
+    );
+    const recBtcLocked48h = computeSmartTradeRecommendation({
+      holding: btcRoutineDrop,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: btcRoutineDrop.currentValue,
+      nowMs: plus17HoursMs,
+    });
+    expect(recBtcLocked48h.isCooldownLocked).toBe(true);
+    expect(recBtcLocked48h.isTimeCooldownLocked).toBe(true);
+    expect(recBtcLocked48h.timeCooldownRemainingHours).toBe(31);
+    expect(recBtcLocked48h.flashCrashUnlockPrice).toBeCloseTo(76.5, 2);
+    expect(recBtcLocked48h.blockedReason).toContain('Cooldown 48h (faltan 31h)');
+    expect(recBtcLocked48h.tacticalBuyUsd).toBe(0);
+
+    // BTC breaks 48h lock via Flash Crash Override when dropping -15.5% below $90 ($76.05 <= $76.50)
+    const [btcFlashCrash] = computeHoldings(
+      btcTxs,
+      { BTC: 'bitcoin' },
+      { bitcoin: { usd: 76.05 } },
+      { BTC: { buy: 10, sell: 30 } },
+      stablecoins,
+    );
+    const recBtcFlashUnlock = computeSmartTradeRecommendation({
+      holding: btcFlashCrash,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: btcFlashCrash.currentValue,
+      nowMs: plus17HoursMs,
+    });
+    expect(recBtcFlashUnlock.isCooldownLocked).toBe(false);
+    expect(recBtcFlashUnlock.isFlashCrashOverrideUnlocked).toBe(true);
+    expect(recBtcFlashUnlock.tacticalBuyUsd).toBe(100);
+
+    // 2. PAXG (Defensive Gold): -5% extra below $94.50 ($89.78) meets +3.5% gold spacing, stays locked at 20h (< -8%); unlocks at -8.5% ($86.47)
+    const paxgTxs: Transaction[] = [
+      { date: '2026-10-01 10:00:00', type: 'Buy', asset: 'PAXG', tokens: '10', usdValue: 1000 },
+      { date: buyTime, type: 'Buy', asset: 'PAXG', tokens: '1', usdValue: 94.5 }, // Tier 1 (-5.5%) at $94.50
+    ];
+    const [paxgRoutineDrop] = computeHoldings(
+      paxgTxs,
+      { PAXG: 'pax-gold' },
+      { 'pax-gold': { usd: 89.78 } },
+      { PAXG: { buy: 5, sell: 15 } },
+      stablecoins,
+    );
+    const recPaxgLocked = computeSmartTradeRecommendation({
+      holding: paxgRoutineDrop,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: paxgRoutineDrop.currentValue,
+      nowMs: plus20HoursMs,
+    });
+    expect(recPaxgLocked.isTimeCooldownLocked).toBe(true);
+    expect(recPaxgLocked.timeCooldownRemainingHours).toBe(28);
+    expect(recPaxgLocked.flashCrashUnlockPrice).toBeCloseTo(86.94, 2);
+    expect(recPaxgLocked.tacticalBuyUsd).toBe(0);
+
+    const [paxgFlashCrash] = computeHoldings(
+      paxgTxs,
+      { PAXG: 'pax-gold' },
+      { 'pax-gold': { usd: 86.47 } },
+      { PAXG: { buy: 5, sell: 15 } },
+      stablecoins,
+    );
+    const recPaxgFlashUnlock = computeSmartTradeRecommendation({
+      holding: paxgFlashCrash,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: paxgFlashCrash.currentValue,
+      nowMs: plus20HoursMs,
+    });
+    expect(recPaxgFlashUnlock.isCooldownLocked).toBe(false);
+    expect(recPaxgFlashUnlock.isFlashCrashOverrideUnlocked).toBe(true);
+    expect(recPaxgFlashUnlock.tacticalBuyUsd).toBe(100);
+
+    // 3. BNB (Altcoins & Otros): strict 48h lock with NO flash crash override even at -25% crash inside 10h; unlocks after >= 48h
+    const bnbTxs: Transaction[] = [
+      { date: '2026-10-01 10:00:00', type: 'Buy', asset: 'BNB', tokens: '10', usdValue: 1000 },
+      { date: buyTime, type: 'Buy', asset: 'BNB', tokens: '1', usdValue: 88 }, // Tier 1 (-12%)
+    ];
+    const [bnbCrash] = computeHoldings(
+      bnbTxs,
+      { BNB: 'binancecoin' },
+      { binancecoin: { usd: 66 } }, // -25% below $88
+      { BNB: { buy: 10, sell: 30 } },
+      stablecoins,
+    );
+    const recBnbStrictLock = computeSmartTradeRecommendation({
+      holding: bnbCrash,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: bnbCrash.currentValue,
+      nowMs: plus10HoursMs,
+    });
+    expect(recBnbStrictLock.isCooldownLocked).toBe(true);
+    expect(recBnbStrictLock.isTimeCooldownLocked).toBe(true);
+    expect(recBnbStrictLock.timeCooldownRemainingHours).toBe(38);
+    expect(recBnbStrictLock.flashCrashUnlockPrice).toBeUndefined();
+    expect(recBnbStrictLock.blockedReason).toContain('Cooldown 48h estricto');
+    expect(recBnbStrictLock.tacticalBuyUsd).toBe(0);
+
+    const recBnbAfter48h = computeSmartTradeRecommendation({
+      holding: bnbCrash,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: bnbCrash.currentValue,
+      nowMs: plus49HoursMs,
+    });
+    expect(recBnbAfter48h.isCooldownLocked).toBe(false);
+    expect(recBnbAfter48h.tacticalBuyUsd).toBe(100);
+  });
+
+  it('caps first asset at 60% across multi-asset daily budgets >= $40 and reallocates unused remainder', () => {
+    const txs: Transaction[] = [
+      { date: '2026-04-01', type: 'Buy', asset: 'ETH', tokens: '10', usdValue: 1000 },
+      { date: '2026-04-01', type: 'Buy', asset: 'SOL', tokens: '10', usdValue: 1000 },
+    ];
+    const mappings: CoinMappings = { ETH: 'ethereum', SOL: 'solana' };
+    const coinTargets: CoinTargets = { ETH: { buy: 10, sell: 30 }, SOL: { buy: 10, sell: 30 } };
+    const equalTargets = { 'GROUP:ETH': 50, 'GROUP:SOL': 50 };
+
+    // Scenario A: Daily cap = $100 ($300 eligible, $250 net -> $100), both Tier 2 ($70 block each) -> 60% / 40% = $60 / $40
+    const tier2Holdings = computeHoldings(
+      txs,
+      mappings,
+      { ethereum: { usd: 82 }, solana: { usd: 84 } }, // ETH -18% (#1), SOL -16% (#2)
+      coinTargets,
+      stablecoins,
+    );
+    const totalT2 = tier2Holdings.reduce((acc, h) => acc + h.currentValue, 0);
+    const ethA = computeSmartTradeRecommendation({
+      holding: tier2Holdings[0],
+      eligibleCapitalUsd: 300,
+      totalVolatileCryptoUsd: totalT2,
+      allVolatileHoldings: tier2Holdings,
+      targetAllocations: equalTargets,
+    });
+    const solA = computeSmartTradeRecommendation({
+      holding: tier2Holdings[1],
+      eligibleCapitalUsd: 300,
+      totalVolatileCryptoUsd: totalT2,
+      allVolatileHoldings: tier2Holdings,
+      targetAllocations: equalTargets,
+    });
+    expect(ethA.dailyCapUsd).toBe(100);
+    expect(ethA.tacticalBuyUsd).toBe(60);
+    expect(solA.tacticalBuyUsd).toBe(40);
+
+    // Scenario B: Daily cap = $45 ($162.50 eligible -> $112.50 net * 40% = $45), both Tier 1 ($45) -> $25 / $20 (leader <= 60%, #2 >= $20)
+    const tier1Holdings = computeHoldings(
+      txs,
+      mappings,
+      { ethereum: { usd: 88 }, solana: { usd: 89 } }, // ETH -12% (#1), SOL -11% (#2)
+      coinTargets,
+      stablecoins,
+    );
+    const totalT1 = tier1Holdings.reduce((acc, h) => acc + h.currentValue, 0);
+    const ethB = computeSmartTradeRecommendation({
+      holding: tier1Holdings[0],
+      eligibleCapitalUsd: 162.5,
+      totalVolatileCryptoUsd: totalT1,
+      allVolatileHoldings: tier1Holdings,
+      targetAllocations: equalTargets,
+    });
+    const solB = computeSmartTradeRecommendation({
+      holding: tier1Holdings[1],
+      eligibleCapitalUsd: 162.5,
+      totalVolatileCryptoUsd: totalT1,
+      allVolatileHoldings: tier1Holdings,
+      targetAllocations: equalTargets,
+    });
+    expect(ethB.dailyCapUsd).toBe(45);
+    expect(ethB.tacticalBuyUsd).toBe(25);
+    expect(solB.tacticalBuyUsd).toBe(20);
+
+    // Scenario C: Daily cap = $120 ($350 eligible -> $300 net * 40% = $120), #1 ETH Tier 3 ($100) + #2 SOL Tier 1 ($45) -> Pass 1 $72/$45, Pass 2 gives $3 back -> $75/$45
+    const mixedHoldings = computeHoldings(
+      txs,
+      mappings,
+      { ethereum: { usd: 76 }, solana: { usd: 89 } }, // ETH -24% (Tier 3 $100), SOL -11% (Tier 1 $45)
+      coinTargets,
+      stablecoins,
+    );
+    const totalMixed = mixedHoldings.reduce((acc, h) => acc + h.currentValue, 0);
+    const ethC = computeSmartTradeRecommendation({
+      holding: mixedHoldings[0],
+      eligibleCapitalUsd: 350,
+      totalVolatileCryptoUsd: totalMixed,
+      allVolatileHoldings: mixedHoldings,
+      targetAllocations: equalTargets,
+    });
+    const solC = computeSmartTradeRecommendation({
+      holding: mixedHoldings[1],
+      eligibleCapitalUsd: 350,
+      totalVolatileCryptoUsd: totalMixed,
+      allVolatileHoldings: mixedHoldings,
+      targetAllocations: equalTargets,
+    });
+    expect(ethC.dailyCapUsd).toBe(120);
+    expect(ethC.tacticalBuyUsd).toBe(75);
+    expect(solC.tacticalBuyUsd).toBe(45);
+  });
+
+  it('tolerates mild overweight (<= +5%, e.g. BTC 58.7% vs 55%) in Tier 2/3 while keeping underweight priority', () => {
+    const recentBuyDate = '2026-11-20 06:00:00';
+    const checkNowMs = new Date(2026, 10, 20, 14, 0, 0).getTime(); // 8h later -> recent PAXG buy is in 48h cooldown
+    const groupTargets = {
+      'GROUP:BTC': 55,
+      'GROUP:ETH': 25.3,
+      'GROUP:SOL': 10,
+      'GROUP:GOLD': 9.7,
+    };
+
+    const holdings = computeHoldings(
+      [
+        { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'BTC', tokens: '10', usdValue: 698.81 },   // @ 58.70 = $587.00 (58.7% -> +3.7% drift)
+        { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'ETH', tokens: '5', usdValue: 253 },       // @ 50.60 = $253.00 (25.3% WATCH)
+        { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'SOL', tokens: '2', usdValue: 100 },       // @ 50.00 = $100.00 (10.0% WATCH)
+        { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'PAXG', tokens: '0.6', usdValue: 64.96 },  // DCA before = 108.27
+        { date: recentBuyDate, type: 'Buy', asset: 'PAXG', tokens: '0.1', usdValue: 7.04 },           // bought at $70.40 -> recent 48h cooldown
+      ],
+      { BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', PAXG: 'pax-gold' },
+      { bitcoin: { usd: 58.7 }, ethereum: { usd: 50.6 }, solana: { usd: 50 }, 'pax-gold': { usd: 85.714 } }, // PAXG = $60.00 (6.0% -> -3.7% underweight), BTC -16% Tier 2
+      { BTC: { buy: 10, sell: 30 }, ETH: { buy: 20, sell: 40 }, SOL: { buy: 20, sell: 40 }, PAXG: { buy: 5, sell: 15 } },
+      stablecoins,
+    );
+
+    const btc = holdings.find((h) => h.ticker === 'BTC')!;
+    const paxg = holdings.find((h) => h.ticker === 'PAXG')!;
+    const totalUsd = holdings.reduce((acc, h) => acc + h.currentValue, 0);
+
+    // Case 1: Underweight PAXG is blocked by 48h cooldown -> mildly overweight BTC (+3.7%) is unpenalized and gets full Tier 2 ($70)
+    const recPaxgLocked = computeSmartTradeRecommendation({
+      holding: paxg,
+      eligibleCapitalUsd: 300,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: groupTargets,
+      nowMs: checkNowMs,
+    });
+    expect(recPaxgLocked.isTimeCooldownLocked).toBe(true);
+    expect(recPaxgLocked.tacticalBuyUsd).toBe(0);
+
+    const recBtcAlone = computeSmartTradeRecommendation({
+      holding: btc,
+      eligibleCapitalUsd: 300, // net = 250, dailyCap = 100
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: groupTargets,
+      nowMs: checkNowMs,
+    });
+    expect(recBtcAlone.groupDriftPct).toBeCloseTo(3.7, 1);
+    expect(recBtcAlone.isGroupOverweightTrimmed).toBe(false);
+    expect(recBtcAlone.tacticalBuyUsd).toBe(70);
+
+    // Case 2: When underweight PAXG IS unlocked (after 48h) and daily cap = $100, PAXG takes #1 ($60) and BTC gets #2 ($40, not $0)
+    const afterCooldownMs = new Date(2026, 10, 23, 0, 0, 0).getTime();
+    const holdingsNoCooldown = computeHoldings(
+      [
+        { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'BTC', tokens: '10', usdValue: 698.81 },
+        { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'ETH', tokens: '5', usdValue: 253 },
+        { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'SOL', tokens: '2', usdValue: 100 },
+        { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'PAXG', tokens: '0.7', usdValue: 69.37 }, // DCA = $99.10 -> @ $85.714 is -13.5% (Gold Tier 3, $100)
+      ],
+      { BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', PAXG: 'pax-gold' },
+      { bitcoin: { usd: 58.7 }, ethereum: { usd: 50.6 }, solana: { usd: 50 }, 'pax-gold': { usd: 85.714 } },
+      { BTC: { buy: 10, sell: 30 }, ETH: { buy: 20, sell: 40 }, SOL: { buy: 20, sell: 40 }, PAXG: { buy: 5, sell: 15 } },
+      stablecoins,
+    );
+    const btcOpen = holdingsNoCooldown.find((h) => h.ticker === 'BTC')!;
+    const paxgOpen = holdingsNoCooldown.find((h) => h.ticker === 'PAXG')!;
+    const totalOpenUsd = holdingsNoCooldown.reduce((acc, h) => acc + h.currentValue, 0);
+
+    const recPaxgOpen = computeSmartTradeRecommendation({
+      holding: paxgOpen,
+      eligibleCapitalUsd: 300, // net = 250, dailyCap = 100
+      totalVolatileCryptoUsd: totalOpenUsd,
+      allVolatileHoldings: holdingsNoCooldown,
+      targetAllocations: groupTargets,
+      nowMs: afterCooldownMs,
+    });
+    const recBtcOpen = computeSmartTradeRecommendation({
+      holding: btcOpen,
+      eligibleCapitalUsd: 300,
+      totalVolatileCryptoUsd: totalOpenUsd,
+      allVolatileHoldings: holdingsNoCooldown,
+      targetAllocations: groupTargets,
+      nowMs: afterCooldownMs,
+    });
+    expect(recPaxgOpen.priorityRank).toBe(1);
+    expect(recPaxgOpen.tacticalBuyUsd).toBe(60);
+    expect(recBtcOpen.priorityRank).toBe(2);
+    expect(recBtcOpen.isGroupOverweightTrimmed).toBe(false);
+    expect(recBtcOpen.tacticalBuyUsd).toBe(40);
   });
 });

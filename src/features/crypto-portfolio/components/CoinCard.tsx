@@ -292,11 +292,18 @@ export function CoinCard({
                   </strong>{' '}
                   <span className="text-[10px]">
                     ({pv(formatTokens(recommendation.tacticalBuyTokens, holding.ticker))} · bloque fijo
+                    {recommendation.sharedAmongBuyCount && recommendation.sharedAmongBuyCount > 1
+                      ? ` · Reparto diario`
+                      : ''}
                     {recommendation.isGroupOverweightTrimmed &&
                     recommendation.groupDriftPct !== undefined
                       ? ` · 50% por sobrepeso (+${recommendation.groupDriftPct.toFixed(1)}%)`
                       : ''}
-                    {recommendation.isTier3EscapeUnlocked ? ' · Capitulación Nivel 3' : ''})
+                    {recommendation.isFlashCrashOverrideUnlocked
+                      ? ' · Escape Flash Crash'
+                      : recommendation.isTier3EscapeUnlocked
+                        ? ' · Capitulación Nivel 3'
+                        : ''})
                   </span>
                 </p>
               ) : (
@@ -310,8 +317,12 @@ export function CoinCard({
                 <p className="text-[10px] text-text-muted/85 leading-snug">
                   Última compra en caída: {pv(formatUsd(recommendation.lastDipBuyPrice))}
                   {recommendation.lastDipBuyDate ? ` (${recommendation.lastDipBuyDate.slice(0, 10)})` : ''}
-                  {recommendation.nextUnlockPrice && (
-                    <> · Desbloqueo ≤ {pv(formatUsd(recommendation.nextUnlockPrice))}</>
+                  {recommendation.isTimeCooldownLocked && recommendation.flashCrashUnlockPrice ? (
+                    <> · Escape flash crash ≤ {pv(formatUsd(recommendation.flashCrashUnlockPrice))}</>
+                  ) : (
+                    recommendation.nextUnlockPrice && (
+                      <> · Desbloqueo ≤ {pv(formatUsd(recommendation.nextUnlockPrice))}</>
+                    )
                   )}
                 </p>
               )}

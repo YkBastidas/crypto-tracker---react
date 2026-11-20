@@ -651,7 +651,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
               </button>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
               <div className="bg-bg-input/60 border border-border rounded-lg p-2.5">
                 <span className="text-[10px] text-text-muted block">USDT Digital Libre</span>
                 <strong className="text-accent-blue text-sm">{pv(formatUsd(totalEligibleUsd))}</strong>
@@ -663,8 +663,25 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
                 </strong>
               </div>
               <div className="bg-bg-input/60 border border-border rounded-lg p-2.5">
-                <span className="text-[10px] text-text-muted block">Disponible Táctico Hoy</span>
-                <strong className="text-accent-gold text-sm">{pv(formatUsd(freeTacticalUsdtUsd))}</strong>
+                <span className="text-[10px] text-text-muted block">Liquidez Táctica Neta</span>
+                <strong className="text-text-primary text-sm">{pv(formatUsd(freeTacticalUsdtUsd))}</strong>
+              </div>
+              <div className="bg-bg-input/60 border border-border rounded-lg p-2.5">
+                <span className="text-[10px] text-text-muted block">
+                  Cupo Máximo Diario ({tacticalDipConfig.tier3MaxFreeUsdtPct}%)
+                </span>
+                <strong className="text-accent-gold text-sm">
+                  {pv(
+                    formatUsd(
+                      Number(
+                        (
+                          freeTacticalUsdtUsd *
+                          (tacticalDipConfig.tier3MaxFreeUsdtPct / 100)
+                        ).toFixed(2),
+                      ),
+                    ),
+                  )}
+                </strong>
               </div>
             </div>
 
@@ -672,6 +689,8 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
               <strong className="text-text-primary">Crypto:</strong> N1 10–14.9% · N2 15–21.9% · N3 ≥22%
               <span className="mx-1.5 opacity-40">|</span>
               <strong className="text-accent-gold">Oro (PAXG/XAUT):</strong> N1 5–7.9% · N2 8–11.9% · N3 ≥12%
+              <span className="mx-1.5 opacity-40">|</span>
+              Cooldown 48h · Máx. 60%/activo si cupo ≥ $40
             </p>
 
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs">
@@ -754,7 +773,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
               </label>
 
               <label className="block">
-                <span className="text-[10px] text-text-muted block mb-1">Tope USDT Libre %</span>
+                <span className="text-[10px] text-text-muted block mb-1">Cupo Diario (% Neto)</span>
                 <input
                   type="number"
                   min={1}
