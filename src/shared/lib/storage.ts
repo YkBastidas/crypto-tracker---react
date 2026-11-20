@@ -50,6 +50,7 @@ export const DEFAULT_TACTICAL_DIP_CONFIG: TacticalDipConfig = {
   goldTier1MinDropPct: 5,
   goldTier2MinDropPct: 8,
   goldTier3MinDropPct: 12,
+  limitOrderProximityPct: 3,
 };
 
 const DEFAULT_GOAL_TARGET = 20_000;
@@ -325,6 +326,12 @@ export function sanitizeTacticalDipConfig(
       DEFAULT_TACTICAL_DIP_CONFIG.goldTier3MinDropPct ?? 12,
       1,
       95,
+    ),
+    limitOrderProximityPct: sanitizeNumber(
+      src.limitOrderProximityPct,
+      DEFAULT_TACTICAL_DIP_CONFIG.limitOrderProximityPct ?? 3,
+      0,
+      25,
     ),
   };
 }

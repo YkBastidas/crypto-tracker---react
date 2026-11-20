@@ -3,6 +3,7 @@ import type {
   CoinHolding,
   CryptoGroupKey,
   DipTier,
+  LimitOrderRecommendation,
   PortfolioExposureItem,
   PortfolioSummary,
   LivePrices,
@@ -45,6 +46,7 @@ const PRESET_DEFINITIONS: Record<
     goldTier1MinDropPct: number;
     goldTier2MinDropPct: number;
     goldTier3MinDropPct: number;
+    limitOrderProximityPct: number;
   }
 > = {
   conservador: {
@@ -66,6 +68,7 @@ const PRESET_DEFINITIONS: Record<
     goldTier1MinDropPct: 6,
     goldTier2MinDropPct: 10,
     goldTier3MinDropPct: 15,
+    limitOrderProximityPct: 2,
   },
   equilibrado: {
     tier1BaseUsd: 45,
@@ -86,6 +89,7 @@ const PRESET_DEFINITIONS: Record<
     goldTier1MinDropPct: 5,
     goldTier2MinDropPct: 8,
     goldTier3MinDropPct: 12,
+    limitOrderProximityPct: 3,
   },
   agresivo: {
     tier1BaseUsd: 60,
@@ -106,6 +110,7 @@ const PRESET_DEFINITIONS: Record<
     goldTier1MinDropPct: 4,
     goldTier2MinDropPct: 7,
     goldTier3MinDropPct: 10,
+    limitOrderProximityPct: 5,
   },
 };
 
@@ -151,6 +156,7 @@ export function buildPresetTacticalConfig(
     goldTier1MinDropPct: def.goldTier1MinDropPct,
     goldTier2MinDropPct: def.goldTier2MinDropPct,
     goldTier3MinDropPct: def.goldTier3MinDropPct,
+    limitOrderProximityPct: def.limitOrderProximityPct,
   });
 }
 
@@ -607,6 +613,9 @@ const DEFAULT_GROUP_OVERWEIGHT_THRESHOLD_PCT = 5;
 const DEFAULT_GROUP_UNDERWEIGHT_THRESHOLD_PCT = -2;
 const DEFAULT_TEMPORAL_COOLDOWN_HOURS = 48;
 const DEFAULT_MULTI_ASSET_FIRST_PASS_MAX_SHARE_PCT = 60;
+const DEFAULT_LIMIT_ORDER_PROXIMITY_PCT = 3;
+const LIMIT_ORDER_EXPIRY_RULE =
+  'Mantener abierta máx. 48h–72h (o cancelar si rebota sobre Target Buy para liberar USDT)';
 
 const FLASH_CRASH_ELIGIBLE_GROUPS = new Set<CryptoGroupKey>([
   'GROUP:BTC',
@@ -782,8 +791,20 @@ function evaluateCooldown(
   const deeperTierOk = dipTier > consumedTier;
   const additionalDropOk = dropSinceLastBuyPct >= additionalDropReq;
 
+  const nextTierMinDrop =
+    consumedTier === 1 ? profile.tier2MinDropPct : profile.tier3MinDropPct;
+  const tierUnlockPrice =
+    holding.dca > 0 ? holding.dca * (1 - nextTierMinDrop / 100) : nextUnlockPrice;
+  const effectiveNextUnlockPrice = Number(
+    Math.min(nextUnlockPrice, tierUnlockPrice).toFixed(decimals),
+  );
+
   if (deeperTierOk && additionalDropOk) {
-    return { isCooldownLocked: false, nextUnlockPrice, flashCrashUnlockPrice };
+    return {
+      isCooldownLocked: false,
+      nextUnlockPrice: effectiveNextUnlockPrice,
+      flashCrashUnlockPrice,
+    };
   }
 
   if (consumedTier >= 3) {
@@ -810,28 +831,37 @@ function evaluateCooldown(
   const nextTier = consumedTier + 1;
   let cooldownReason: string;
   if (!deeperTierOk && !additionalDropOk) {
-    cooldownReason = `Cooldown Nivel ${consumedTier} cumplido (${formatUsd(lastBuyPrice)}). Desbloquea en Nivel ${nextTier} y ≤ ${formatUsd(nextUnlockPrice)} (-${additionalDropReq}% extra).`;
+    cooldownReason = `Cooldown Nivel ${consumedTier} cumplido (${formatUsd(lastBuyPrice)}). Desbloquea en Nivel ${nextTier} y ≤ ${formatUsd(effectiveNextUnlockPrice)} (-${additionalDropReq}% extra).`;
   } else if (!deeperTierOk) {
-    cooldownReason = `Cooldown Nivel ${consumedTier} cumplido (${formatUsd(lastBuyPrice)}). Requiere entrar en Nivel ${nextTier} para nuevo disparo.`;
+    cooldownReason = `Cooldown Nivel ${consumedTier} cumplido (${formatUsd(lastBuyPrice)}). Requiere entrar en Nivel ${nextTier} (≤ ${formatUsd(effectiveNextUnlockPrice)}) para nuevo disparo.`;
   } else {
-    cooldownReason = `Cooldown Nivel ${nextTier}: falta caída adicional (-${Math.max(0, dropSinceLastBuyPct).toFixed(1)}% vs -${additionalDropReq}% desde ${formatUsd(lastBuyPrice)}, ≤ ${formatUsd(nextUnlockPrice)}).`;
+    cooldownReason = `Cooldown Nivel ${nextTier}: falta caída adicional (-${Math.max(0, dropSinceLastBuyPct).toFixed(1)}% vs -${additionalDropReq}% desde ${formatUsd(lastBuyPrice)}, ≤ ${formatUsd(effectiveNextUnlockPrice)}).`;
   }
 
   return {
     isCooldownLocked: true,
-    nextUnlockPrice,
+    nextUnlockPrice: effectiveNextUnlockPrice,
     flashCrashUnlockPrice,
     cooldownReason,
   };
 }
 
-function allocatePriorityDipBudget(
-  activeBuyHoldings: CoinHolding[],
-  allVolatileHoldings: CoinHolding[] | undefined,
-  totalVolatileCryptoUsd: number,
-  dailyCapUsd: number,
+interface BudgetAllocationCandidate {
+  ticker: string;
+  displayTicker: string;
+  dipTier: DipTier;
+  drop: number;
+  investedUsd: number;
+  groupDriftPct?: number;
+  driftBucket: number;
+  isGroupOverweight: boolean;
+  effectiveTacticalUsd: number;
+}
+
+function allocateTacticalBudgetEntries(
+  candidates: BudgetAllocationCandidate[],
+  availableCapUsd: number,
   config: TacticalDipConfig,
-  explicitTargets?: TargetAllocations,
 ): {
   allocations: Record<string, number>;
   ranks: Record<string, number>;
@@ -839,6 +869,7 @@ function allocatePriorityDipBudget(
   overweightFlags: Record<string, boolean>;
   globalTierBudgetUsd: number;
   activeCoinCount: number;
+  totalAllocatedUsd: number;
 } {
   const minOrderUsd = config.minOrderUsd ?? DEFAULT_MIN_ORDER_USD;
   const multiAssetMinDailyCapUsd = Number((minOrderUsd * 2).toFixed(2));
@@ -850,35 +881,6 @@ function allocatePriorityDipBudget(
         DEFAULT_MULTI_ASSET_FIRST_PASS_MAX_SHARE_PCT) / 100,
     ),
   );
-  const overweightThresholdPct =
-    config.groupOverweightThresholdPct ?? DEFAULT_GROUP_OVERWEIGHT_THRESHOLD_PCT;
-
-  const candidates = activeBuyHoldings.map((h) => {
-    const drop = h.dca > 0 && h.livePrice > 0 ? ((h.dca - h.livePrice) / h.dca) * 100 : 0;
-    const { dipTier, rawTacticalUsd } = computeTierInfo(drop, true, config, h.ticker);
-    const { groupDriftPct, isGroupOverweight } = computeGroupDriftForHolding(
-      h,
-      allVolatileHoldings ?? activeBuyHoldings,
-      totalVolatileCryptoUsd,
-      explicitTargets,
-      overweightThresholdPct,
-    );
-    const driftBucket = getDriftPriorityBucket(groupDriftPct, overweightThresholdPct);
-    const effectiveTacticalUsd = isGroupOverweight
-      ? Number((Math.max(0, rawTacticalUsd) * 0.5).toFixed(2))
-      : Number(Math.max(0, rawTacticalUsd).toFixed(2));
-    return {
-      ticker: h.ticker.toUpperCase(),
-      displayTicker: h.ticker,
-      dipTier,
-      drop,
-      investedUsd: h.investedUsd,
-      groupDriftPct,
-      driftBucket,
-      isGroupOverweight,
-      effectiveTacticalUsd,
-    };
-  });
 
   const prioritized = [...candidates].sort(
     (a, b) =>
@@ -905,11 +907,11 @@ function allocatePriorityDipBudget(
     (c) => c.effectiveTacticalUsd > 0 && c.effectiveTacticalUsd >= minOrderUsd,
   );
 
-  if (fundable.length >= 2 && dailyCapUsd >= multiAssetMinDailyCapUsd) {
-    let remaining = dailyCapUsd;
-    const perAssetPass1Cap = Number((dailyCapUsd * firstPassMaxShare).toFixed(2));
+  if (fundable.length >= 2 && availableCapUsd >= multiAssetMinDailyCapUsd) {
+    let remaining = availableCapUsd;
+    const perAssetPass1Cap = Number((availableCapUsd * firstPassMaxShare).toFixed(2));
     const leaderPass1Cap = Number(
-      Math.min(perAssetPass1Cap, Math.max(minOrderUsd, dailyCapUsd - minOrderUsd)).toFixed(2),
+      Math.min(perAssetPass1Cap, Math.max(minOrderUsd, availableCapUsd - minOrderUsd)).toFixed(2),
     );
 
     fundable.forEach((item, idx) => {
@@ -943,7 +945,7 @@ function allocatePriorityDipBudget(
     }
   } else if (fundable.length >= 1) {
     const leader = fundable[0];
-    const grant = Number(Math.min(leader.effectiveTacticalUsd, dailyCapUsd).toFixed(2));
+    const grant = Number(Math.min(leader.effectiveTacticalUsd, availableCapUsd).toFixed(2));
     if (grant > 0 && grant >= minOrderUsd) {
       allocations[leader.ticker] = grant;
     }
@@ -965,7 +967,7 @@ function allocatePriorityDipBudget(
         blockedReasons[item.ticker] = item.isGroupOverweight
           ? `Sobreponderado (+${(item.groupDriftPct ?? 0).toFixed(1)}%) · Monto reducido < $${minOrderUsd}`
           : `Esperar mayor caída / Monto < $${minOrderUsd}`;
-      } else if (leaderTicker && dailyCapUsd < multiAssetMinDailyCapUsd) {
+      } else if (leaderTicker && availableCapUsd < multiAssetMinDailyCapUsd) {
         blockedReasons[item.ticker] =
           `Prioridad asignada a ${leaderTicker} · Cupo diario < $${multiAssetMinDailyCapUsd} para dividir`;
       } else if (leaderTicker) {
@@ -982,8 +984,166 @@ function allocatePriorityDipBudget(
     ranks,
     blockedReasons,
     overweightFlags,
-    globalTierBudgetUsd: totalAllocatedUsd > 0 ? totalAllocatedUsd : dailyCapUsd,
+    globalTierBudgetUsd: totalAllocatedUsd > 0 ? totalAllocatedUsd : availableCapUsd,
     activeCoinCount,
+    totalAllocatedUsd,
+  };
+}
+
+function buildBudgetCandidates(
+  holdingsList: CoinHolding[],
+  allVolatileHoldings: CoinHolding[] | undefined,
+  totalVolatileCryptoUsd: number,
+  config: TacticalDipConfig,
+  explicitTargets?: TargetAllocations,
+  overrideMetrics?: Record<string, { dipTier: DipTier; drop: number; rawTacticalUsd: number }>,
+): BudgetAllocationCandidate[] {
+  const overweightThresholdPct =
+    config.groupOverweightThresholdPct ?? DEFAULT_GROUP_OVERWEIGHT_THRESHOLD_PCT;
+
+  return holdingsList.map((h) => {
+    const key = h.ticker.toUpperCase();
+    const override = overrideMetrics?.[key];
+    const drop =
+      override?.drop ??
+      (h.dca > 0 && h.livePrice > 0 ? ((h.dca - h.livePrice) / h.dca) * 100 : 0);
+    const tierInfo = override
+      ? { dipTier: override.dipTier, rawTacticalUsd: override.rawTacticalUsd }
+      : computeTierInfo(drop, true, config, h.ticker);
+
+    const { groupDriftPct, isGroupOverweight } = computeGroupDriftForHolding(
+      h,
+      allVolatileHoldings ?? holdingsList,
+      totalVolatileCryptoUsd,
+      explicitTargets,
+      overweightThresholdPct,
+    );
+    const driftBucket = getDriftPriorityBucket(groupDriftPct, overweightThresholdPct);
+    const effectiveTacticalUsd = isGroupOverweight
+      ? Number((Math.max(0, tierInfo.rawTacticalUsd) * 0.5).toFixed(2))
+      : Number(Math.max(0, tierInfo.rawTacticalUsd).toFixed(2));
+
+    return {
+      ticker: key,
+      displayTicker: h.ticker,
+      dipTier: tierInfo.dipTier,
+      drop,
+      investedUsd: h.investedUsd,
+      groupDriftPct,
+      driftBucket,
+      isGroupOverweight,
+      effectiveTacticalUsd,
+    };
+  });
+}
+
+function allocatePriorityDipBudget(
+  activeBuyHoldings: CoinHolding[],
+  allVolatileHoldings: CoinHolding[] | undefined,
+  totalVolatileCryptoUsd: number,
+  dailyCapUsd: number,
+  config: TacticalDipConfig,
+  explicitTargets?: TargetAllocations,
+) {
+  const candidates = buildBudgetCandidates(
+    activeBuyHoldings,
+    allVolatileHoldings,
+    totalVolatileCryptoUsd,
+    config,
+    explicitTargets,
+  );
+  return allocateTacticalBudgetEntries(candidates, dailyCapUsd, config);
+}
+
+interface LimitCandidateMeta {
+  holding: CoinHolding;
+  limitPrice: number;
+  distancePct: number;
+  dropAtLimitPct: number;
+  dipTier: DipTier;
+  dipTierLabel: string;
+  rawTacticalUsd: number;
+  unlockTriggerLabel: string;
+}
+
+function evaluateLimitOrderCandidate(
+  holding: CoinHolding,
+  config: TacticalDipConfig,
+  nowMs: number,
+): LimitCandidateMeta | null {
+  if (
+    holding.isStablecoin ||
+    holding.livePrice <= 0 ||
+    holding.dca <= 0 ||
+    holding.tradeSignal === 'SELL'
+  ) {
+    return null;
+  }
+
+  const maxProximityPct =
+    config.limitOrderProximityPct ?? DEFAULT_LIMIT_ORDER_PROXIMITY_PCT;
+  if (maxProximityPct <= 0) return null;
+
+  const dropFromDcaPct = ((holding.dca - holding.livePrice) / holding.dca) * 100;
+  const { dipTier } = computeTierInfo(
+    dropFromDcaPct,
+    holding.tradeSignal === 'BUY',
+    config,
+    holding.ticker,
+  );
+  const cooldown = evaluateCooldown(holding, dipTier, config, nowMs);
+
+  // Rule 1.1: Assets already generating an immediate BUY receive an immediate BUY order, not LIMIT
+  if (holding.tradeSignal === 'BUY' && !cooldown.isCooldownLocked) {
+    return null;
+  }
+
+  // Rule 1.2: Never suggest LIMIT on flash-crash escape while 48h temporal cooldown is active
+  if (cooldown.isTimeCooldownLocked) {
+    return null;
+  }
+
+  let rawUnlockPrice = 0;
+  let unlockTriggerLabel = 'Target Buy';
+  if (holding.tradeSignal === 'WATCH') {
+    rawUnlockPrice = holding.targetBuyPrice;
+    unlockTriggerLabel = 'Target Buy';
+  } else if (holding.tradeSignal === 'BUY' && cooldown.isCooldownLocked) {
+    const consumedTier = holding.highestConsumedDipTier ?? 0;
+    rawUnlockPrice = cooldown.nextUnlockPrice ?? 0;
+    unlockTriggerLabel =
+      consumedTier >= 3 ? 'Capitulación Nivel 3' : `Desbloqueo Nivel ${consumedTier + 1}`;
+  }
+
+  if (!Number.isFinite(rawUnlockPrice) || rawUnlockPrice <= 0) return null;
+
+  const decimals = rawUnlockPrice < 1 ? 4 : 2;
+  const limitPrice = Number(rawUnlockPrice.toFixed(decimals));
+  if (limitPrice <= 0 || holding.livePrice <= limitPrice) return null;
+
+  // Rule 1.3: Stalking Zone proximity filter ((livePrice - unlockPrice) / livePrice * 100 <= maxProximityPct)
+  const rawDistancePct = ((holding.livePrice - limitPrice) / holding.livePrice) * 100;
+  if (rawDistancePct <= 0 || rawDistancePct > maxProximityPct + 1e-6) {
+    return null;
+  }
+
+  const dropAtLimitPct = ((holding.dca - limitPrice) / holding.dca) * 100;
+  const { dipTier: limitDipTier, dipTierLabel, rawTacticalUsd } = computeTierInfo(
+    dropAtLimitPct,
+    true,
+    config,
+    holding.ticker,
+  );
+
+  return {
+    holding,
+    limitPrice,
+    distancePct: Number(rawDistancePct.toFixed(2)),
+    dropAtLimitPct,
+    dipTier: limitDipTier,
+    dipTierLabel,
+    rawTacticalUsd,
+    unlockTriggerLabel,
   };
 }
 
@@ -1072,6 +1232,52 @@ export function computeSmartTradeRecommendation(params: {
   let sharedAmongBuyCount: number | undefined;
   let globalTierBudgetUsd: number | undefined;
 
+  const pool = (
+    allVolatileHoldings && allVolatileHoldings.length > 0 ? allVolatileHoldings : [holding]
+  ).filter((h) => !h.isStablecoin && h.livePrice > 0);
+  const canOperateToday =
+    freeTacticalUsdtUsd >= minOrderUsd && dailyCapUsd >= minOrderUsd;
+  const activeBuyPeers = canOperateToday
+    ? pool.filter((h) => {
+        if (h.tradeSignal !== 'BUY') return false;
+        const peerDrop = h.dca > 0 ? ((h.dca - h.livePrice) / h.dca) * 100 : 0;
+        const peerTier = computeTierInfo(peerDrop, true, config, h.ticker).dipTier;
+        return !evaluateCooldown(h, peerTier, config, nowMs).isCooldownLocked;
+      })
+    : [];
+
+  let totalImmediateBuyAllocatedUsd = 0;
+  let sharedBuyAllocation: ReturnType<typeof allocatePriorityDipBudget> | null = null;
+  if (activeBuyPeers.length > 1) {
+    sharedBuyAllocation = allocatePriorityDipBudget(
+      activeBuyPeers,
+      allVolatileHoldings ?? pool,
+      totalVolatileCryptoUsd,
+      dailyCapUsd,
+      config,
+      targetAllocations,
+    );
+    totalImmediateBuyAllocatedUsd = sharedBuyAllocation.totalAllocatedUsd;
+  } else if (activeBuyPeers.length === 1) {
+    const solo = activeBuyPeers[0];
+    const soloDrop = solo.dca > 0 ? ((solo.dca - solo.livePrice) / solo.dca) * 100 : 0;
+    const soloRaw = computeTierInfo(soloDrop, true, config, solo.ticker).rawTacticalUsd;
+    const soloOverweight = computeGroupDriftForHolding(
+      solo,
+      allVolatileHoldings ?? pool,
+      totalVolatileCryptoUsd,
+      targetAllocations,
+      overweightThresholdPct,
+    ).isGroupOverweight;
+    const soloEffective = soloOverweight ? Number((soloRaw * 0.5).toFixed(2)) : soloRaw;
+    const candidateSolo = Number(Math.min(soloEffective, dailyCapUsd).toFixed(2));
+    totalImmediateBuyAllocatedUsd = candidateSolo >= minOrderUsd ? candidateSolo : 0;
+  }
+
+  const remainingDailyCapAfterBuyUsd = canOperateToday
+    ? Number(Math.max(0, dailyCapUsd - totalImmediateBuyAllocatedUsd).toFixed(2))
+    : 0;
+
   if (holding.tradeSignal === 'BUY' && price > 0) {
     if (cooldown.isCooldownLocked) {
       isCooldownLocked = true;
@@ -1084,30 +1290,20 @@ export function computeSmartTradeRecommendation(params: {
     } else if (dailyCapUsd <= 0 || dailyCapUsd < minOrderUsd) {
       blockedReason = `Cupo diario (${config.tier3MaxFreeUsdtPct}% de ${formatUsd(freeTacticalUsdtUsd)} neto = ${formatUsd(dailyCapUsd)}) es < $${minOrderUsd}`;
     } else {
-      const activeBuyPeers = (allVolatileHoldings ?? []).filter((h) => {
-        if (h.isStablecoin || h.tradeSignal !== 'BUY' || h.livePrice <= 0) return false;
-        const peerDrop = h.dca > 0 ? ((h.dca - h.livePrice) / h.dca) * 100 : 0;
-        const peerTier = computeTierInfo(peerDrop, true, config, h.ticker).dipTier;
-        return !evaluateCooldown(h, peerTier, config, nowMs).isCooldownLocked;
-      });
-
-      if (activeBuyPeers.length > 1) {
-        const shared = allocatePriorityDipBudget(
-          activeBuyPeers,
-          allVolatileHoldings,
-          totalVolatileCryptoUsd,
-          dailyCapUsd,
-          config,
-          targetAllocations,
-        );
+      if (sharedBuyAllocation) {
         const key = holding.ticker.toUpperCase();
-        tacticalBuyUsd = shared.allocations[key] ?? 0;
-        priorityRank = shared.ranks[key];
-        isGroupOverweightTrimmed = Boolean(shared.overweightFlags[key] && tacticalBuyUsd > 0);
-        sharedAmongBuyCount = shared.activeCoinCount > 1 ? shared.activeCoinCount : undefined;
-        globalTierBudgetUsd = shared.globalTierBudgetUsd;
+        tacticalBuyUsd = sharedBuyAllocation.allocations[key] ?? 0;
+        priorityRank = sharedBuyAllocation.ranks[key];
+        isGroupOverweightTrimmed = Boolean(
+          sharedBuyAllocation.overweightFlags[key] && tacticalBuyUsd > 0,
+        );
+        sharedAmongBuyCount =
+          sharedBuyAllocation.activeCoinCount > 1
+            ? sharedBuyAllocation.activeCoinCount
+            : undefined;
+        globalTierBudgetUsd = sharedBuyAllocation.globalTierBudgetUsd;
         if (tacticalBuyUsd === 0) {
-          blockedReason = shared.blockedReasons[key];
+          blockedReason = sharedBuyAllocation.blockedReasons[key];
         }
       } else {
         const effectiveRaw = isGroupOverweight
@@ -1132,6 +1328,60 @@ export function computeSmartTradeRecommendation(params: {
         q + tacticalBuyTokens > 0
           ? (holding.totalSpent + tacticalBuyUsd) / (q + tacticalBuyTokens)
           : price;
+    }
+  }
+
+  // Priority 2: LIMIT orders in "Zona de Acecho" funded only by remaining free Daily Cap (>= minOrderUsd)
+  let limitOrder: LimitOrderRecommendation | undefined;
+  if (canOperateToday && remainingDailyCapAfterBuyUsd >= minOrderUsd) {
+    const limitMetas = pool
+      .map((h) => evaluateLimitOrderCandidate(h, config, nowMs))
+      .filter((m): m is LimitCandidateMeta => m !== null);
+    const holdingKey = holding.ticker.toUpperCase();
+    const selfMeta = limitMetas.find((m) => m.holding.ticker.toUpperCase() === holdingKey);
+
+    if (selfMeta) {
+      const overrideMetrics: Record<
+        string,
+        { dipTier: DipTier; drop: number; rawTacticalUsd: number }
+      > = {};
+      for (const m of limitMetas) {
+        overrideMetrics[m.holding.ticker.toUpperCase()] = {
+          dipTier: m.dipTier,
+          drop: m.dropAtLimitPct,
+          rawTacticalUsd: m.rawTacticalUsd,
+        };
+      }
+      const limitCandidates = buildBudgetCandidates(
+        limitMetas.map((m) => m.holding),
+        allVolatileHoldings ?? pool,
+        totalVolatileCryptoUsd,
+        config,
+        targetAllocations,
+        overrideMetrics,
+      );
+      const limitAlloc = allocateTacticalBudgetEntries(
+        limitCandidates,
+        remainingDailyCapAfterBuyUsd,
+        config,
+      );
+      const grantedLimitUsd = limitAlloc.allocations[holdingKey] ?? 0;
+      if (grantedLimitUsd >= minOrderUsd) {
+        limitOrder = {
+          limitPrice: selfMeta.limitPrice,
+          suggestedUsd: grantedLimitUsd,
+          suggestedTokens: grantedLimitUsd / selfMeta.limitPrice,
+          distancePct: selfMeta.distancePct,
+          dipTier: selfMeta.dipTier,
+          dipTierLabel: selfMeta.dipTierLabel,
+          unlockTriggerLabel: selfMeta.unlockTriggerLabel,
+          priorityRank: limitAlloc.ranks[holdingKey],
+          sharedAmongLimitCount:
+            limitAlloc.activeCoinCount > 1 ? limitAlloc.activeCoinCount : undefined,
+          isGroupOverweightTrimmed: Boolean(limitAlloc.overweightFlags[holdingKey]),
+          expiryRuleLabel: LIMIT_ORDER_EXPIRY_RULE,
+        };
+      }
     }
   }
 
@@ -1181,6 +1431,8 @@ export function computeSmartTradeRecommendation(params: {
     sharedAmongBuyCount,
     globalTierBudgetUsd,
     dailyCapUsd,
+    remainingDailyCapAfterBuyUsd,
+    limitOrder,
     blockedReason,
     concentrationWarning,
     suggestedSellTokens,
@@ -1424,6 +1676,7 @@ export function buildAiPortfolioReportMarkdown(params: {
   const g2 = formatDropPctLabel(cleanCfg.goldTier2MinDropPct ?? 8);
   const g2Up = formatUpperBandLabel(cleanCfg.goldTier3MinDropPct ?? 12, cleanCfg.goldTier2MinDropPct ?? 8);
   const g3 = formatDropPctLabel(cleanCfg.goldTier3MinDropPct ?? 12);
+  const limitProxPct = cleanCfg.limitOrderProximityPct ?? DEFAULT_LIMIT_ORDER_PROXIMITY_PCT;
 
   const lines: string[] = [
     `# Resumen de Portafolio Crypto y Liquidez para Análisis (${generatedAt})`,
@@ -1435,6 +1688,7 @@ export function buildAiPortfolioReportMarkdown(params: {
     `- **Liquidez táctica neta disponible hoy:** ${formatUsd(freeTacticalUsdt)} (Efectivo físico excluido: ${formatUsd(eligibleCapital.excludedPhysicalCashUsd)})`,
     `- **Cupo máximo diario (${cleanCfg.tier3MaxFreeUsdtPct}% sobre liquidez táctica neta):** ${formatUsd(dailyCapUsd)} (tope concentración ${firstPassShare}% por activo si cupo ≥ ${formatUsd(multiAssetMinDaily)} y ≥2 elegibles · piso ${formatUsd(minOrderUsd)})`,
     `- **Parámetros tácticos (Ingreso base ${formatUsd(cleanCfg.monthlyIncomeUsd)}/mes):** Bloques N1: ${formatUsd(cleanCfg.tier1Usd)} | N2: ${formatUsd(cleanCfg.tier2Usd)} | N3: ${formatUsd(cleanCfg.tier3Usd)} · Cooldown ${temporalHours}h (escape flash crash: -${cleanCfg.tier3EscapeDropPct ?? 15}% Core / -${cleanCfg.goldTier3EscapeDropPct ?? 8}% Oro · estricto Altcoins)`,
+    `- **Zona de Acecho (Órdenes LIMIT):** ${limitProxPct > 0 ? `Activada a ≤ ${limitProxPct}% sobre el desbloqueo (solo tras fin del cooldown ${temporalHours}h, usando únicamente el remanente libre del cupo diario · caducidad 48h–72h)` : 'Desactivada (0%)'}`,
     `- **Perfil Crypto (BTC, ETH, SOL, Alts):** Escalones ${c1}–${c1Up}% / ${c2}–${c2Up}% / ≥${c3}% | Cooldown: +${cleanCfg.cooldownAdditionalDropPct}% caída extra | Escape N3: -${cleanCfg.tier3EscapeDropPct ?? 15}%`,
     `- **Perfil Defensivo Oro (PAXG, XAUT):** Escalones ${g1}–${g1Up}% / ${g2}–${g2Up}% / ≥${g3}% | Cooldown: +${cleanCfg.goldCooldownAdditionalDropPct ?? 3.5}% caída extra | Escape N3: -${cleanCfg.goldTier3EscapeDropPct ?? 8}%`,
     '',
@@ -1469,20 +1723,49 @@ export function buildAiPortfolioReportMarkdown(params: {
     '| :--- | ---: | ---: | ---: | ---: | ---: | :--- | :--- | :--- |',
   );
 
+  const limitHighlights: Array<{ ticker: string; limitOrder: LimitOrderRecommendation }> = [];
+  let totalBuyUsedUsd = 0;
+  let totalLimitUsedUsd = 0;
+
   for (const h of holdings) {
     const rec = recommendations[h.ticker.toUpperCase()];
+    if (rec?.tacticalBuyUsd) {
+      totalBuyUsedUsd = Number((totalBuyUsedUsd + rec.tacticalBuyUsd).toFixed(2));
+    }
+    if (rec?.limitOrder) {
+      totalLimitUsedUsd = Number((totalLimitUsedUsd + rec.limitOrder.suggestedUsd).toFixed(2));
+      limitHighlights.push({ ticker: h.ticker, limitOrder: rec.limitOrder });
+    }
+
     let actionNote = 'Mantener (fuera de rango)';
     if (h.tradeSignal === 'BUY' && rec) {
-      actionNote =
-        rec.tacticalBuyUsd > 0
-          ? `COMPRAR ${formatUsd(rec.tacticalBuyUsd)} (${rec.dipTierLabel.split(' · ')[0]}${rec.priorityRank ? ` #${rec.priorityRank}` : ''})`
-          : rec.blockedReason ?? 'En espera';
+      if (rec.tacticalBuyUsd > 0) {
+        actionNote = `COMPRAR ${formatUsd(rec.tacticalBuyUsd)} (${rec.dipTierLabel.split(' · ')[0]}${rec.priorityRank ? ` #${rec.priorityRank}` : ''})`;
+      } else if (rec.limitOrder) {
+        actionNote = `${rec.blockedReason ?? 'En cooldown'} · ORDEN LIMIT ${formatUsd(rec.limitOrder.suggestedUsd)} @ ${formatUsd(rec.limitOrder.limitPrice)} (a -${rec.limitOrder.distancePct.toFixed(1)}% · máx. 48h–72h)`;
+      } else {
+        actionNote = rec.blockedReason ?? 'En espera';
+      }
     } else if (h.tradeSignal === 'SELL' && rec) {
       actionNote = `VENDER 25% (${formatTokens(rec.suggestedSellTokens, h.ticker)} ≈ ${formatUsd(rec.suggestedSellUsd)})`;
+    } else if (rec?.limitOrder) {
+      actionNote = `ORDEN LIMIT ${formatUsd(rec.limitOrder.suggestedUsd)} @ ${formatUsd(rec.limitOrder.limitPrice)} (a -${rec.limitOrder.distancePct.toFixed(1)}% · ${rec.limitOrder.unlockTriggerLabel} · máx. 48h–72h)`;
     }
 
     lines.push(
       `| ${h.ticker} | ${formatTokens(h.currentTokens, h.ticker)} | ${formatUsd(h.dca)} | ${formatUsd(h.livePrice)} | ${formatUsd(h.currentValue)} | ${h.pnl >= 0 ? '+' : ''}${formatUsd(h.pnl)} (${(h.pnlPercent * 100).toFixed(1)}%) | ${formatUsd(h.targetBuyPrice)} (-${h.targetBuyPct}%) / ${formatUsd(h.targetSellPrice)} (+${h.targetSellPct}%) | ${h.tradeSignal} | ${actionNote} |`,
+    );
+  }
+
+  if (limitHighlights.length > 0) {
+    lines.push(
+      '',
+      '### Órdenes LIMIT Sugeridas (Zona de Acecho · Remanente del Cupo Diario)',
+      `- **Uso combinado del cupo diario:** BUY inmediato ${formatUsd(totalBuyUsedUsd)} + LIMIT sugerido ${formatUsd(totalLimitUsedUsd)} = **${formatUsd(Number((totalBuyUsedUsd + totalLimitUsedUsd).toFixed(2)))}** / ${formatUsd(dailyCapUsd)} máx.`,
+      ...limitHighlights.map(
+        ({ ticker, limitOrder }) =>
+          `- **${ticker} (${limitOrder.unlockTriggerLabel}):** Colocar LIMIT por **${formatUsd(limitOrder.suggestedUsd)}** (${formatTokens(limitOrder.suggestedTokens, ticker)}) a **${formatUsd(limitOrder.limitPrice)}** (a **-${limitOrder.distancePct.toFixed(2)}%** de su desbloqueo · ${limitOrder.dipTierLabel.split(' · ')[0]}). *${limitOrder.expiryRuleLabel}.*`,
+      ),
     );
   }
 
@@ -1549,6 +1832,8 @@ export function evaluateTacticalConfigRisk(
     clean.groupOverweightThresholdPct ?? DEFAULT_GROUP_OVERWEIGHT_THRESHOLD_PCT;
   const cryptoT1 = clean.cryptoTier1MinDropPct ?? 10;
   const goldT1 = clean.goldTier1MinDropPct ?? 5;
+  const limitProximity =
+    clean.limitOrderProximityPct ?? DEFAULT_LIMIT_ORDER_PROXIMITY_PCT;
 
   const estimatedDaysToExhaustNetLiquidity =
     clean.tier3MaxFreeUsdtPct > 0
@@ -1594,6 +1879,11 @@ export function evaluateTacticalConfigRisk(
   if (clean.monthlyIncomeUsd > 0 && clean.tier3Usd > clean.monthlyIncomeUsd * 0.25) {
     redWarnings.push(
       `Bloque Nivel 3 (${formatUsd(clean.tier3Usd)}) supera el 25% de tu ingreso mensual base (${formatUsd(clean.monthlyIncomeUsd)}).`,
+    );
+  }
+  if (limitProximity > 12) {
+    redWarnings.push(
+      `Zona de Acecho LIMIT muy amplia (≤ ${limitProximity}%): inmoviliza USDT en órdenes lejanas durante semanas.`,
     );
   }
 
@@ -1649,6 +1939,11 @@ export function evaluateTacticalConfigRisk(
       `Bloque Nivel 3 (${formatUsd(clean.tier3Usd)}) exige más del 16% del ingreso mensual en un solo disparo.`,
     );
   }
+  if (limitProximity > 8) {
+    yellowWarnings.push(
+      `Zona de Acecho LIMIT ampliada a ${limitProximity}% (estándar: 3%): aumenta el tiempo que las órdenes quedan en espera.`,
+    );
+  }
 
   if (yellowWarnings.length > 0) {
     return {
@@ -1675,6 +1970,7 @@ export interface TacticalImpactSnapshot {
   freeTacticalUsdtUsd: number;
   dailyCapUsd: number;
   totalSuggestedBuyTodayUsd: number;
+  totalSuggestedLimitTodayUsd: number;
   remainingLiquidityAfterOpsUsd: number;
   remainingNetTacticalAfterOpsUsd: number;
   assetSuggestions: Record<string, SmartTradeRecommendation>;
@@ -1685,6 +1981,8 @@ export interface TacticalAssetImpactChange {
   signal: CoinHolding['tradeSignal'];
   beforeUsd: number;
   afterUsd: number;
+  beforeLimitUsd?: number;
+  afterLimitUsd?: number;
   beforeStatus: string;
   afterStatus: string;
 }
@@ -1717,6 +2015,7 @@ function summarizeConfigImpactSnapshot(
 
   const assetSuggestions: Record<string, SmartTradeRecommendation> = {};
   let totalSuggestedBuyTodayUsd = 0;
+  let totalSuggestedLimitTodayUsd = 0;
 
   for (const h of activeHoldings) {
     const rec = computeSmartTradeRecommendation({
@@ -1732,12 +2031,16 @@ function summarizeConfigImpactSnapshot(
     totalSuggestedBuyTodayUsd = Number(
       (totalSuggestedBuyTodayUsd + rec.tacticalBuyUsd).toFixed(2),
     );
+    totalSuggestedLimitTodayUsd = Number(
+      (totalSuggestedLimitTodayUsd + (rec.limitOrder?.suggestedUsd ?? 0)).toFixed(2),
+    );
   }
 
   return {
     freeTacticalUsdtUsd,
     dailyCapUsd,
     totalSuggestedBuyTodayUsd,
+    totalSuggestedLimitTodayUsd,
     remainingLiquidityAfterOpsUsd: Number(
       Math.max(0, cleanEligible - totalSuggestedBuyTodayUsd).toFixed(2),
     ),
@@ -1752,6 +2055,9 @@ function formatRecommendationStatus(rec: SmartTradeRecommendation | undefined): 
   if (!rec) return 'Sin datos';
   if (rec.tacticalBuyUsd > 0) {
     return `${formatUsd(rec.tacticalBuyUsd)} (${rec.dipTierLabel.split(' · ')[0]})`;
+  }
+  if (rec.limitOrder) {
+    return `LIMIT ${formatUsd(rec.limitOrder.suggestedUsd)} @ ${formatUsd(rec.limitOrder.limitPrice)} (-${rec.limitOrder.distancePct.toFixed(1)}%)`;
   }
   if (rec.signal === 'BUY' && rec.blockedReason) return rec.blockedReason;
   if (rec.signal === 'SELL') return `SELL (+${rec.pumpFromDcaPct.toFixed(1)}%)`;
@@ -1811,12 +2117,17 @@ export function simulateTacticalConfigImpact(params: {
     const nextRec = after.assetSuggestions[key];
     const beforeUsd = prevRec?.tacticalBuyUsd ?? 0;
     const afterUsd = nextRec?.tacticalBuyUsd ?? 0;
+    const beforeLimitUsd = prevRec?.limitOrder?.suggestedUsd ?? 0;
+    const afterLimitUsd = nextRec?.limitOrder?.suggestedUsd ?? 0;
     const beforeStatus = formatRecommendationStatus(prevRec);
     const afterStatus = formatRecommendationStatus(nextRec);
 
     if (
       h.tradeSignal === 'BUY' ||
       Math.abs(afterUsd - beforeUsd) >= 0.01 ||
+      Math.abs(afterLimitUsd - beforeLimitUsd) >= 0.01 ||
+      Boolean(prevRec?.limitOrder) ||
+      Boolean(nextRec?.limitOrder) ||
       beforeStatus !== afterStatus
     ) {
       changedAssets.push({
@@ -1824,6 +2135,8 @@ export function simulateTacticalConfigImpact(params: {
         signal: h.tradeSignal,
         beforeUsd,
         afterUsd,
+        beforeLimitUsd,
+        afterLimitUsd,
         beforeStatus,
         afterStatus,
       });

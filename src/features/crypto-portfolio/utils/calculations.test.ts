@@ -1215,6 +1215,8 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(cons.tier3MaxFreeUsdtPct).toBe(25);
     expect(cons.temporalCooldownHours).toBe(72);
     expect(cons.minOrderUsd).toBe(25);
+    expect(cons.limitOrderProximityPct).toBe(2);
+    expect(eq.limitOrderProximityPct).toBe(3);
 
     const aggr = buildPresetTacticalConfig('agresivo', 1800);
     expect(aggr.tier1Usd).toBe(120);
@@ -1223,6 +1225,7 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(aggr.tier3MaxFreeUsdtPct).toBe(65);
     expect(aggr.temporalCooldownHours).toBe(24);
     expect(aggr.biweeklyDcaReserveUsd).toBe(100);
+    expect(aggr.limitOrderProximityPct).toBe(5);
 
     expect(evaluateTacticalConfigRisk(cons).level).toBe('green');
     expect(evaluateTacticalConfigRisk(eq).level).toBe('green');
@@ -1366,5 +1369,236 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(paxgChange.afterUsd).toBe(32.5);
     expect(btcChange.beforeUsd).toBe(40);
     expect(btcChange.afterUsd).toBe(30);
+  });
+
+  it('suggests LIMIT orders in Zona de Acecho respecting cooldown gates, shared BUY->LIMIT daily cap priority, 60/40 split, config 0% disable, and AI report export', () => {
+    // Rule 1: Eligibility ("Zona de Acecho")
+    const baseBtcTxs: Transaction[] = [
+      { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'BTC', tokens: '10', usdValue: 1000 }, // DCA = $100, Target Buy (-15%) = $85
+    ];
+
+    // 1A: WATCH within <= 3% of Target Buy ($86 -> distance = (86 - 85) / 86 = 1.16%) gets exact LIMIT @ $85
+    const [btcNear] = computeHoldings(
+      baseBtcTxs,
+      { BTC: 'bitcoin' },
+      { bitcoin: { usd: 86 } },
+      { BTC: { buy: 15, sell: 30 } },
+      stablecoins,
+    );
+    expect(btcNear.tradeSignal).toBe('WATCH');
+    const recNear = computeSmartTradeRecommendation({
+      holding: btcNear,
+      eligibleCapitalUsd: 400, // net = $350, dailyCap = $140
+      totalVolatileCryptoUsd: btcNear.currentValue,
+    });
+    expect(recNear.limitOrder).toBeDefined();
+    expect(recNear.limitOrder!.limitPrice).toBe(85);
+    expect(recNear.limitOrder!.distancePct).toBeCloseTo(1.16, 2);
+    expect(recNear.limitOrder!.suggestedUsd).toBe(70); // Target Buy -15% falls into Crypto Tier 2 ($70)
+    expect(recNear.limitOrder!.expiryRuleLabel).toContain('48h–72h');
+
+    // 1B: WATCH > 3% away ($88 -> 3.41%) gets NO LIMIT order at 3%, but gets LIMIT when using Agresivo (5%)
+    const [btcFar] = computeHoldings(
+      baseBtcTxs,
+      { BTC: 'bitcoin' },
+      { bitcoin: { usd: 88 } },
+      { BTC: { buy: 15, sell: 30 } },
+      stablecoins,
+    );
+    const recFarDefault = computeSmartTradeRecommendation({
+      holding: btcFar,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: btcFar.currentValue,
+    });
+    expect(recFarDefault.limitOrder).toBeUndefined();
+
+    const recFarAggr = computeSmartTradeRecommendation({
+      holding: btcFar,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: btcFar.currentValue,
+      tacticalConfig: buildPresetTacticalConfig('agresivo', 900),
+    });
+    expect(recFarAggr.limitOrder).toBeDefined();
+    expect(recFarAggr.limitOrder!.limitPrice).toBe(85);
+
+    // Setting limitOrderProximityPct = 0 disables LIMIT suggestions cleanly
+    const recDisabled = computeSmartTradeRecommendation({
+      holding: btcNear,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: btcNear.currentValue,
+      tacticalConfig: { limitOrderProximityPct: 0 },
+    });
+    expect(recDisabled.limitOrder).toBeUndefined();
+
+    // 1C: Cooldown-locked asset WITHIN 48h temporal cooldown (only 17h elapsed, <= 3% from flash crash price $76.50 -> @ $78 = 1.92% away) must NOT suggest LIMIT
+    const recentTxs: Transaction[] = [
+      { date: '2026-10-01 10:00:00', type: 'Buy', asset: 'BTC', tokens: '10', usdValue: 1000 },
+      { date: '2026-11-20 00:00:00', type: 'Buy', asset: 'BTC', tokens: '1', usdValue: 90 }, // Tier 1 @ $90
+    ];
+    const [btcRecentCrashNear] = computeHoldings(
+      recentTxs,
+      { BTC: 'bitcoin' },
+      { bitcoin: { usd: 78 } },
+      { BTC: { buy: 10, sell: 30 } },
+      stablecoins,
+    );
+    const plus17HoursMs = new Date(2026, 10, 20, 17, 0, 0).getTime();
+    const recBlocked48hLimit = computeSmartTradeRecommendation({
+      holding: btcRecentCrashNear,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: btcRecentCrashNear.currentValue,
+      nowMs: plus17HoursMs,
+    });
+    expect(recBlocked48hLimit.isTimeCooldownLocked).toBe(true);
+    expect(recBlocked48hLimit.tacticalBuyUsd).toBe(0);
+    expect(recBlocked48hLimit.limitOrder).toBeUndefined();
+
+    // After 48h expires, locked at Tier 1 ($90 -> spacing unlock $83.25 = -7.5%, DCA ~$99.09 -> Tier 2 15% = $84.23 -> min = $83.25), at $84 (distance 0.89%) LIMIT IS suggested at $83.25!
+    const [btcPost48hNear] = computeHoldings(
+      recentTxs,
+      { BTC: 'bitcoin' },
+      { bitcoin: { usd: 84 } },
+      { BTC: { buy: 10, sell: 30 } },
+      stablecoins,
+    );
+    const plus60HoursMs = new Date(2026, 10, 22, 12, 0, 0).getTime();
+    const recUnlockedLimit = computeSmartTradeRecommendation({
+      holding: btcPost48hNear,
+      eligibleCapitalUsd: 400,
+      totalVolatileCryptoUsd: btcPost48hNear.currentValue,
+      nowMs: plus60HoursMs,
+    });
+    expect(recUnlockedLimit.isTimeCooldownLocked).toBeUndefined();
+    expect(recUnlockedLimit.isCooldownLocked).toBe(true);
+    expect(recUnlockedLimit.tacticalBuyUsd).toBe(0);
+    expect(recUnlockedLimit.limitOrder).toBeDefined();
+    expect(recUnlockedLimit.limitOrder!.limitPrice).toBeCloseTo(83.25, 2);
+    expect(recUnlockedLimit.limitOrder!.distancePct).toBeCloseTo(0.89, 2);
+
+    // Rule 2: Shared Daily Cap Priority (BUY consumes first, remainder >= $20 goes to LIMIT, BUY + LIMIT <= dailyCap)
+    const multiHoldings = computeHoldings(
+      [
+        { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'BTC', tokens: '5', usdValue: 500 },  // @ 83 = $415 (33.8% -> -17% BUY Tier 2 = $70)
+        { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'ETH', tokens: '5', usdValue: 500 },  // @ 86 = $430 (35.0% -> -14% WATCH, Target Buy $85, 1.16% away -> Tier 2 $70)
+        { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'PAXG', tokens: '4', usdValue: 400 }, // @ 96 = $384 (31.2% -> -4% WATCH underweight -2.1%, Target Buy $95, 1.04% away -> Gold Tier 1 $45)
+      ],
+      { BTC: 'bitcoin', ETH: 'ethereum', PAXG: 'pax-gold' },
+      { bitcoin: { usd: 83 }, ethereum: { usd: 86 }, 'pax-gold': { usd: 96 } },
+      { BTC: { buy: 15, sell: 30 }, ETH: { buy: 15, sell: 30 }, PAXG: { buy: 5, sell: 15 } },
+      stablecoins,
+    );
+    const totalMultiUsd = multiHoldings.reduce((acc, h) => acc + h.currentValue, 0);
+    const equalGroupTargets = { 'GROUP:BTC': 33.4, 'GROUP:ETH': 33.3, 'GROUP:GOLD': 33.3 };
+
+    // Case 2A: eligible = $275 -> net = $225 -> dailyCap = $90. BTC immediate BUY = $70 -> remainder = $20!
+    // Limit pool [ETH, PAXG] sees remainingCap = $20 (< $40 multi-asset threshold), so only priority #1 underweight LIMIT (PAXG: 11.2% vs 33.3% = -22.1% vs ETH 25.1% vs 33.3% = -8.2%) gets the $20 LIMIT; sum = 70 + 20 = 90!
+    const recBtc2A = computeSmartTradeRecommendation({
+      holding: multiHoldings[0],
+      eligibleCapitalUsd: 275,
+      totalVolatileCryptoUsd: totalMultiUsd,
+      allVolatileHoldings: multiHoldings,
+      targetAllocations: equalGroupTargets,
+    });
+    const recEth2A = computeSmartTradeRecommendation({
+      holding: multiHoldings[1],
+      eligibleCapitalUsd: 275,
+      totalVolatileCryptoUsd: totalMultiUsd,
+      allVolatileHoldings: multiHoldings,
+      targetAllocations: equalGroupTargets,
+    });
+    const recPaxg2A = computeSmartTradeRecommendation({
+      holding: multiHoldings[2],
+      eligibleCapitalUsd: 275,
+      totalVolatileCryptoUsd: totalMultiUsd,
+      allVolatileHoldings: multiHoldings,
+      targetAllocations: equalGroupTargets,
+    });
+    expect(recBtc2A.tacticalBuyUsd).toBe(70);
+    expect(recBtc2A.limitOrder).toBeUndefined();
+    expect(recPaxg2A.limitOrder?.suggestedUsd).toBe(20);
+    expect(recEth2A.limitOrder).toBeUndefined();
+    expect(
+      recBtc2A.tacticalBuyUsd +
+        (recEth2A.limitOrder?.suggestedUsd ?? 0) +
+        (recPaxg2A.limitOrder?.suggestedUsd ?? 0),
+    ).toBeLessThanOrEqual(recBtc2A.dailyCapUsd!);
+
+    // Case 2B: eligible = $262.50 -> net = $212.50 -> dailyCap = $85. BTC BUY = $70 -> remainder = $15 (< $20 floor) -> NO LIMIT suggested!
+    const recPaxgTooSmallRem = computeSmartTradeRecommendation({
+      holding: multiHoldings[2],
+      eligibleCapitalUsd: 262.5,
+      totalVolatileCryptoUsd: totalMultiUsd,
+      allVolatileHoldings: multiHoldings,
+      targetAllocations: equalGroupTargets,
+    });
+    expect(recPaxgTooSmallRem.remainingDailyCapAfterBuyUsd).toBe(15);
+    expect(recPaxgTooSmallRem.limitOrder).toBeUndefined();
+
+    // Case 2C: Two LIMIT orders sharing >= $40 remaining cap (eligible = $425 -> net = $375 -> dailyCap = $150 -> BTC takes $70 -> remainder = $80)
+    // Remainder $80 split among ETH (Tier 2 $70) and PAXG (Tier 1 $45): Pass 1 leader PAXG min(45, 48, 80) = $45, ETH min(70, 48, 35) = $35 -> 45 + 35 = $80! Total BUY + LIMIT = 70 + 80 = $150!
+    const recEth2C = computeSmartTradeRecommendation({
+      holding: multiHoldings[1],
+      eligibleCapitalUsd: 425,
+      totalVolatileCryptoUsd: totalMultiUsd,
+      allVolatileHoldings: multiHoldings,
+      targetAllocations: equalGroupTargets,
+    });
+    const recPaxg2C = computeSmartTradeRecommendation({
+      holding: multiHoldings[2],
+      eligibleCapitalUsd: 425,
+      totalVolatileCryptoUsd: totalMultiUsd,
+      allVolatileHoldings: multiHoldings,
+      targetAllocations: equalGroupTargets,
+    });
+    expect(recPaxg2C.limitOrder?.suggestedUsd).toBe(45);
+    expect(recEth2C.limitOrder?.suggestedUsd).toBe(35);
+
+    // Markdown report includes Zona de Acecho & 48h-72h expiry notice, and impact simulation detects disabling 3% -> 0%
+    const markdown = buildAiPortfolioReportMarkdown({
+      generatedAt: '2026-11-20',
+      holdings: multiHoldings,
+      eligibleCapital: {
+        ahorroEnvelopeUsd: 300,
+        unassignedUsdtUsd: 125,
+        totalEligibleUsd: 425,
+        excludedPhysicalCashUsd: 0,
+      },
+      tacticalConfig: DEFAULT_TACTICAL_DIP_CONFIG,
+      recommendations: {
+        BTC: computeSmartTradeRecommendation({
+          holding: multiHoldings[0],
+          eligibleCapitalUsd: 425,
+          totalVolatileCryptoUsd: totalMultiUsd,
+          allVolatileHoldings: multiHoldings,
+          targetAllocations: equalGroupTargets,
+        }),
+        ETH: recEth2C,
+        PAXG: recPaxg2C,
+      },
+      groupExposure: computePortfolioExposure({
+        holdings: multiHoldings,
+        mode: 'group',
+        targetAllocations: equalGroupTargets,
+      }),
+      coinExposure: computePortfolioExposure({
+        holdings: multiHoldings,
+        mode: 'coin',
+        targetAllocations: { BTC: 33.4, ETH: 33.3, PAXG: 33.3 },
+      }),
+    });
+    expect(markdown).toContain('Órdenes LIMIT Sugeridas (Zona de Acecho');
+    expect(markdown).toContain('$85.00');
+    expect(markdown).toContain('48h–72h');
+
+    const impact = simulateTacticalConfigImpact({
+      holdings: multiHoldings,
+      eligibleCapitalUsd: 425,
+      targetAllocations: equalGroupTargets,
+      currentConfig: DEFAULT_TACTICAL_DIP_CONFIG,
+      candidateConfig: { ...DEFAULT_TACTICAL_DIP_CONFIG, limitOrderProximityPct: 0 },
+    });
+    expect(impact.before.totalSuggestedLimitTodayUsd).toBe(80);
+    expect(impact.after.totalSuggestedLimitTodayUsd).toBe(0);
+    expect(impact.changedAssets.some((a) => a.ticker === 'PAXG')).toBe(true);
   });
 });

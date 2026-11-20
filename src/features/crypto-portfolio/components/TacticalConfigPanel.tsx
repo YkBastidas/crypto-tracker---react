@@ -106,18 +106,18 @@ const PRESET_CARDS: Array<{
   {
     id: 'conservador',
     title: 'Conservador',
-    desc: 'Cupo diario 25%, cooldown 72h y caídas más exigentes para estirar la liquidez.',
+    desc: 'Cupo 25%, cooldown 72h, caídas más exigentes y Zona LIMIT ≤ 2%.',
   },
   {
     id: 'equilibrado',
     title: 'Equilibrado',
     badge: 'Estándar recomendado',
-    desc: 'Cupo 40% neto, cooldown 48h, reparto 60/40 multi-activo y escalones Crypto/Oro.',
+    desc: 'Cupo 40% neto, cooldown 48h, reparto 60/40 y Zona LIMIT ≤ 3%.',
   },
   {
     id: 'agresivo',
     title: 'Agresivo',
-    desc: 'Cupo diario 65%, cooldown 24h y umbrales anticipados para desplegar más rápido.',
+    desc: 'Cupo 65%, cooldown 24h, umbrales anticipados y Zona LIMIT ≤ 5%.',
   },
 ];
 
@@ -540,9 +540,9 @@ export function TacticalConfigPanel({
             {/* Cooldowns & Balance */}
             <div className="space-y-2">
               <h5 className="text-[11px] font-bold uppercase tracking-wider text-text-muted">
-                Frenos Temporales, Multi-Moneda y Sobrepeso
+                Frenos Temporales, Multi-Moneda, Sobrepeso y LIMIT
               </h5>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
                 <ParamField
                   label="Cooldown temporal (horas)"
                   value={sanitizedDraft.temporalCooldownHours ?? 48}
@@ -572,6 +572,16 @@ export function TacticalConfigPanel({
                   tooltip="Desviación sobre la meta del grupo antes de recortar su bloque al 50%."
                   helpText="Exceso permitido sobre el peso objetivo. Subirlo tolera mayor concentración antes de frenar el 50%."
                   onChange={(v) => patchDraft({ groupOverweightThresholdPct: v }, true)}
+                />
+                <ParamField
+                  label="Zona de Acecho LIMIT (%)"
+                  value={sanitizedDraft.limitOrderProximityPct ?? 3}
+                  min={0}
+                  max={25}
+                  step={0.5}
+                  tooltip="Distancia máxima sobre el precio de desbloqueo para sugerir LIMIT con el remanente del cupo diario (0 desactiva)."
+                  helpText="Proximidad al desbloqueo (0 desactiva LIMIT). Solo usa cupo libre tras BUY; caduca en 48h–72h."
+                  onChange={(v) => patchDraft({ limitOrderProximityPct: v }, true)}
                 />
               </div>
             </div>
@@ -744,6 +754,13 @@ export function TacticalConfigPanel({
                 </span>
               )}
             </div>
+            {(impact.before.totalSuggestedLimitTodayUsd > 0 ||
+              impact.after.totalSuggestedLimitTodayUsd > 0) && (
+              <p className="text-[10px] text-cyan-300">
+                LIMIT: {pv(formatUsd(impact.before.totalSuggestedLimitTodayUsd))} →{' '}
+                {pv(formatUsd(impact.after.totalSuggestedLimitTodayUsd))}
+              </p>
+            )}
           </div>
 
           <div className="bg-bg-input/50 border border-border rounded-lg p-2.5 space-y-0.5">
@@ -775,11 +792,20 @@ export function TacticalConfigPanel({
                 >
                   <strong className="text-text-primary shrink-0">{pv(item.ticker)}</strong>
                   <span className="text-text-muted truncate text-right">
-                    {pv(formatUsd(item.beforeUsd))}{' '}
-                    <span className="mx-1 text-text-muted/60">→</span>{' '}
-                    <strong className="text-accent-gold">{pv(formatUsd(item.afterUsd))}</strong>
-                    {item.afterUsd === 0 && item.afterStatus !== 'WATCH' && (
-                      <span className="ml-1 text-[10px] opacity-80">({item.afterStatus})</span>
+                    {item.beforeUsd > 0 || item.afterUsd > 0 ? (
+                      <>
+                        {pv(formatUsd(item.beforeUsd))}{' '}
+                        <span className="mx-1 text-text-muted/60">→</span>{' '}
+                        <strong className="text-accent-gold">{pv(formatUsd(item.afterUsd))}</strong>
+                        {item.afterUsd === 0 && item.afterStatus !== 'WATCH' && (
+                          <span className="ml-1 text-[10px] opacity-80">({item.afterStatus})</span>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        {item.beforeStatus} <span className="mx-1 text-text-muted/60">→</span>{' '}
+                        <strong className="text-cyan-300">{item.afterStatus}</strong>
+                      </>
                     )}
                   </span>
                 </div>

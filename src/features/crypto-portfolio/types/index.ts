@@ -9,6 +9,7 @@ export type {
   CoinHolding,
   CryptoGroupKey,
   DipTier,
+  LimitOrderRecommendation,
   PortfolioExposureItem,
   PortfolioSummary,
   LivePrices,

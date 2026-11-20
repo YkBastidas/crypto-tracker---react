@@ -138,6 +138,22 @@ export interface TacticalDipConfig {
   goldTier1MinDropPct?: number;
   goldTier2MinDropPct?: number;
   goldTier3MinDropPct?: number;
+  /** Max proximity (%) above exact unlock price to suggest a LIMIT order (0 disables, default 3%) */
+  limitOrderProximityPct?: number;
+}
+
+export interface LimitOrderRecommendation {
+  limitPrice: number;
+  suggestedUsd: number;
+  suggestedTokens: number;
+  distancePct: number;
+  dipTier: DipTier;
+  dipTierLabel: string;
+  unlockTriggerLabel: string;
+  priorityRank?: number;
+  sharedAmongLimitCount?: number;
+  isGroupOverweightTrimmed?: boolean;
+  expiryRuleLabel: string;
 }
 
 export interface SmartTradeRecommendation {
@@ -177,6 +193,8 @@ export interface SmartTradeRecommendation {
   sharedAmongBuyCount?: number;
   globalTierBudgetUsd?: number;
   dailyCapUsd?: number;
+  remainingDailyCapAfterBuyUsd?: number;
+  limitOrder?: LimitOrderRecommendation;
   blockedReason?: string;
   concentrationWarning?: string;
   /** Suggested 25% staged profit trim when signal === 'SELL' */

@@ -5,6 +5,8 @@ import {
   ArrowRight,
   ChevronDown,
   ChevronUp,
+  Clock,
+  Crosshair,
   ExternalLink,
   GripVertical,
   Lock,
@@ -343,6 +345,52 @@ export function CoinCard({
                   ⚠️ {recommendation.concentrationWarning}
                 </p>
               )}
+            </div>
+          )}
+
+          {recommendation?.limitOrder && (
+            <div className="mt-3 p-2.5 rounded-lg border bg-cyan-500/10 border-cyan-500/35 text-[11px] space-y-1.5">
+              <div className="flex items-center justify-between gap-1 font-semibold text-cyan-300">
+                <span className="flex items-center gap-1">
+                  <Crosshair size={12} /> Orden LIMIT · {recommendation.limitOrder.unlockTriggerLabel}
+                </span>
+                <span>
+                  A -{recommendation.limitOrder.distancePct.toFixed(1)}%
+                  {recommendation.limitOrder.priorityRank &&
+                  recommendation.limitOrder.sharedAmongLimitCount &&
+                  recommendation.limitOrder.sharedAmongLimitCount > 1
+                    ? ` · #${recommendation.limitOrder.priorityRank}`
+                    : ''}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-text-muted">Precio LIMIT exacto:</span>
+                <strong className="text-cyan-200">
+                  {pv(formatUsd(recommendation.limitOrder.limitPrice))}
+                </strong>
+              </div>
+              <p className="text-text-muted leading-snug">
+                Monto según tus reglas:{' '}
+                <strong className="text-accent-gold">
+                  {pv(formatUsd(recommendation.limitOrder.suggestedUsd))}
+                </strong>{' '}
+                <span className="text-[10px]">
+                  ({pv(formatTokens(recommendation.limitOrder.suggestedTokens, holding.ticker))} ·{' '}
+                  {recommendation.limitOrder.dipTierLabel.split(' · ')[0]}
+                  {recommendation.limitOrder.sharedAmongLimitCount &&
+                  recommendation.limitOrder.sharedAmongLimitCount > 1
+                    ? ' · Reparto remanente'
+                    : ''}
+                  {recommendation.limitOrder.isGroupOverweightTrimmed
+                    ? ' · 50% por sobrepeso'
+                    : ''}
+                  )
+                </span>
+              </p>
+              <p className="text-[10px] text-cyan-200/85 flex items-start gap-1 leading-snug">
+                <Clock size={11} className="shrink-0 mt-0.5" />
+                <span>{recommendation.limitOrder.expiryRuleLabel}.</span>
+              </p>
             </div>
           )}
 
