@@ -869,7 +869,7 @@ export function BudgetDashboard({
                         />
                       </strong>
                     </span>
-                    {env.byMethod.binance !== 0 && (
+                    {Math.abs(env.byMethod.binance) >= 0.01 && (
                       <span className="px-1.5 py-0.5 rounded bg-accent-blue/10 text-accent-blue">
                         USDT:{' '}
                         <strong>
@@ -880,7 +880,7 @@ export function BudgetDashboard({
                         </strong>
                       </span>
                     )}
-                    {env.byMethod.bolivares !== 0 && (
+                    {Math.abs(env.byMethod.bolivares) >= 0.01 && (
                       <span className="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-300">
                         Bs:{' '}
                         <strong>

@@ -43,20 +43,28 @@ export function isNegativeAdjustmentMovement(
   return m.amountUsd < 0 || (typeof m.amountBs === 'number' && m.amountBs < 0);
 }
 
+function roundCurrency(val: number): number {
+  if (!Number.isFinite(val) || Math.abs(val) < 0.005) return 0;
+  const rounded = Number(val.toFixed(2));
+  return Object.is(rounded, -0) || Math.abs(rounded) < 0.005 ? 0 : rounded;
+}
+
 export function formatUsd(amount: number): string {
+  const clean = Math.abs(amount) < 0.005 ? 0 : amount;
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  }).format(amount);
+  }).format(clean);
 }
 
 export function formatBs(amount: number): string {
+  const clean = Math.abs(amount) < 0.005 ? 0 : amount;
   return `Bs. ${new Intl.NumberFormat('es-VE', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  }).format(amount)}`;
+  }).format(clean)}`;
 }
 
 export function calculateDaysLeft(nextDueDate: string): number {
@@ -256,16 +264,23 @@ function computeEnvelopeSummariesWithBsPool(
   const totalAssigned = ENVELOPE_IDS.reduce((acc, id) => acc + totals[id].assigned, 0);
 
   const envelopes = ENVELOPE_IDS.map((id) => {
-    const { assigned, spent, byMethod } = totals[id];
-    const available = assigned - spent;
+    const rawAssigned = totals[id].assigned;
+    const rawSpent = totals[id].spent;
+    const rawAvailable = rawAssigned - rawSpent;
+    const { efectivo, binance, bolivares } = totals[id].byMethod;
+
     return {
       id,
       name: ENVELOPE_META[id].name,
-      assigned,
-      spent,
-      available,
-      percentage: totalAssigned > 0 ? (assigned / totalAssigned) * 100 : 0,
-      byMethod,
+      assigned: roundCurrency(rawAssigned),
+      spent: roundCurrency(rawSpent),
+      available: roundCurrency(rawAvailable),
+      percentage: totalAssigned > 0 ? (rawAssigned / totalAssigned) * 100 : 0,
+      byMethod: {
+        efectivo: roundCurrency(efectivo),
+        binance: roundCurrency(binance),
+        bolivares: roundCurrency(bolivares),
+      },
     };
   });
 
@@ -295,7 +310,7 @@ function sumBucketBalance(movements: LedgerMovement[], buckets: AssetBucketId[])
       total += m.amountUsd;
     }
   }
-  return total;
+  return roundCurrency(total);
 }
 
 function sumBolivaresBalance(movements: LedgerMovement[], bcvRate: number | null): {

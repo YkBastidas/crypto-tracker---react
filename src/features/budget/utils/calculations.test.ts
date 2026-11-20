@@ -15,6 +15,8 @@ import {
   calculateReadyToAssignAndRunway,
   computeQuincenaPreview,
   extractLiveCryptoBalances,
+  formatBs,
+  formatUsd,
   getInstallmentArrears,
   isNegativeAdjustmentMovement,
 } from './calculations';
@@ -800,5 +802,78 @@ describe('budget/utils/calculations', () => {
       customAccounts,
     );
     expect(afterPos.funds.find((f) => f.id === 'acct_ves_1')!.balanceBs).toBeCloseTo(9483.51, 2);
+  });
+
+  it('snaps IEEE 754 / sub-cent residuals to exact +0 so emptying USDT custody never renders -$0.00', () => {
+    expect(formatUsd(-0.004)).toBe('$0.00');
+    expect(formatUsd(-3.55e-15)).toBe('$0.00');
+    expect(formatUsd(-0)).toBe('$0.00');
+    expect(formatBs(-0.004)).toBe('Bs. 0,00');
+
+    // Simulate floating-point subtraction residual (35.42 - 12.14 - 23.28 = -3.5527136788e-15 in IEEE 754)
+    const movements: LedgerMovement[] = [
+      {
+        id: 'm1',
+        date: '2026-11-18',
+        bucket: 'disfrute',
+        type: 'Ingreso a Sobre',
+        amountUsd: 35.42,
+        paymentMethod: 'binance_usdt',
+      },
+      {
+        id: 'm2',
+        date: '2026-11-19',
+        bucket: 'disfrute',
+        type: 'Gasto en Efectivo',
+        amountUsd: 12.14,
+        paymentMethod: 'binance_usdt',
+      },
+      {
+        id: 'm3',
+        date: '2026-11-20',
+        bucket: 'disfrute',
+        type: 'Transferencia (Salida)',
+        amountUsd: 23.28,
+        paymentMethod: 'binance_usdt',
+      },
+      {
+        id: 'm4',
+        date: '2026-11-20',
+        bucket: 'ahorro_inversion',
+        type: 'Transferencia (Entrada)',
+        amountUsd: 23.28,
+        paymentMethod: 'binance_usdt',
+      },
+    ];
+
+    const envs = calculateEnvelopeSummaries(movements);
+    const disfrute = envs.find((e) => e.id === 'disfrute')!;
+    expect(Object.is(disfrute.byMethod.binance, 0)).toBe(true);
+    expect(Object.is(disfrute.available, 0)).toBe(true);
+    expect(formatUsd(disfrute.byMethod.binance)).toBe('$0.00');
+
+    // Also test sub-half-cent rounding residual (14.336 - 14.34 = -0.004)
+    const subCentMovements: LedgerMovement[] = [
+      {
+        id: 's1',
+        date: '2026-11-18',
+        bucket: 'disfrute',
+        type: 'Ingreso a Sobre',
+        amountUsd: 14.336,
+        paymentMethod: 'binance_usdt',
+      },
+      {
+        id: 's2',
+        date: '2026-11-20',
+        bucket: 'disfrute',
+        type: 'Transferencia (Salida)',
+        amountUsd: 14.34,
+        paymentMethod: 'binance_usdt',
+      },
+    ];
+    const [subDisfrute] = calculateEnvelopeSummaries(subCentMovements).filter(
+      (e) => e.id === 'disfrute',
+    );
+    expect(Object.is(subDisfrute.byMethod.binance, 0)).toBe(true);
   });
 });

@@ -255,6 +255,29 @@ export function QuickMovementModal({
     [movements, freeBsPoolMode],
   );
 
+  const transferOriginBalance = useMemo((): { usd: number; bs: number } => {
+    if (ENVELOPE_SET.has(fromBucket)) {
+      const summary = envelopeSummaries.find((e) => e.id === fromBucket);
+      const byMethod = summary?.byMethod ?? { efectivo: 0, binance: 0, bolivares: 0 };
+      const totalBal = summary?.available ?? 0;
+      const rawUsd = getEnvelopeMethodBalance(byMethod, totalBal, fromMethod);
+      const cleanUsd = Math.abs(rawUsd) < 0.005 ? 0 : Number(rawUsd.toFixed(2));
+      return {
+        usd: cleanUsd,
+        bs: bcvRate && bcvRate > 0 ? Number((cleanUsd * bcvRate).toFixed(2)) : 0,
+      };
+    }
+    return getBucketBalance(fromBucket, movements, bcvRate, customAccounts, freeBsPoolMode);
+  }, [
+    fromBucket,
+    fromMethod,
+    envelopeSummaries,
+    movements,
+    bcvRate,
+    customAccounts,
+    freeBsPoolMode,
+  ]);
+
   const multiEnvelopeMeta = useMemo(() => {
     return ENVELOPE_IDS.map((envId) => {
       const summary = envelopeSummaries.find((e) => e.id === envId);
@@ -451,8 +474,11 @@ export function QuickMovementModal({
       }
     }
 
-    const finalBsFrom =
-      isOriginBs && hasValidRate ? Number((numFrom * effectiveRate).toFixed(2)) : undefined;
+    const finalBsFrom = isOriginBs && hasValidRate
+      ? Math.abs(numFrom - transferOriginBalance.usd) < 0.005 && transferOriginBalance.bs > 0
+        ? transferOriginBalance.bs
+        : Number((numFrom * effectiveRate).toFixed(2))
+      : undefined;
 
     const actualFromMethod = ENVELOPE_SET.has(fromBucket)
       ? fromMethod
@@ -1160,7 +1186,38 @@ export function QuickMovementModal({
                 {/* Total target & received */}
                 <div className="grid grid-cols-2 gap-2.5">
                   <div>
-                    <label className="text-[11px] text-text-muted block mb-1">Monto total ($)</label>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <label className="text-[11px] text-text-muted">Monto total ($)</label>
+                      {(() => {
+                        const totalMultiAvail = Number(
+                          multiEnvelopeMeta.reduce((acc, m) => acc + m.originAvail, 0).toFixed(2),
+                        );
+                        return (
+                          <button
+                            type="button"
+                            disabled={totalMultiAvail <= 0}
+                            onClick={() => {
+                              if (totalMultiAvail <= 0) return;
+                              const availStr = (id: EnvelopeId) => {
+                                const val = multiEnvelopeMeta.find((m) => m.id === id)?.originAvail ?? 0;
+                                return val > 0 ? val.toFixed(2) : '';
+                              };
+                              setMultiTotalUsd(totalMultiAvail.toFixed(2));
+                              setMultiSplits({
+                                imprescindibles: availStr('imprescindibles'),
+                                disfrute: availStr('disfrute'),
+                                crecimiento_personal: availStr('crecimiento_personal'),
+                                provisiones_anuales: availStr('provisiones_anuales'),
+                                ahorro_inversion: availStr('ahorro_inversion'),
+                              });
+                            }}
+                            className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-accent-blue/15 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/25 disabled:opacity-40 cursor-pointer"
+                          >
+                            TODO
+                          </button>
+                        );
+                      })()}
+                    </div>
                     <input
                       type="number"
                       step="0.01"
@@ -1399,6 +1456,40 @@ export function QuickMovementModal({
                   <option value="bolivares_pago_movil">Custodia: Bolívares</option>
                 </select>
               )}
+              <div className="flex items-center justify-between gap-2 pt-0.5 text-[11px]">
+                <span className="text-text-muted">
+                  Disponible en origen:{' '}
+                  <strong
+                    className={
+                      transferOriginBalance.usd < 0
+                        ? 'text-accent-red'
+                        : transferOriginBalance.usd > 0
+                          ? 'text-accent-green'
+                          : 'text-text-muted'
+                    }
+                  >
+                    {formatUsd(transferOriginBalance.usd)}
+                  </strong>
+                  {isOriginBs && hasValidRate && (
+                    <span className="text-cyan-300 ml-1">
+                      ({formatBs(transferOriginBalance.bs)})
+                    </span>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  disabled={transferOriginBalance.usd <= 0}
+                  onClick={() => {
+                    if (transferOriginBalance.usd <= 0) return;
+                    setAmountFrom(transferOriginBalance.usd.toFixed(2));
+                    setAmountTo('');
+                  }}
+                  title="Mover todo el saldo disponible de este origen"
+                  className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-accent-blue/15 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/25 disabled:opacity-40 cursor-pointer shrink-0"
+                >
+                  TODO
+                </button>
+              </div>
             </div>
 
             {/* Destination */}
@@ -1440,7 +1531,21 @@ export function QuickMovementModal({
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-xs text-text-muted block mb-1.5">Monto que sale ($)</label>
+                <div className="flex items-center justify-between gap-1.5 mb-1.5">
+                  <label className="text-xs text-text-muted">Monto que sale ($)</label>
+                  <button
+                    type="button"
+                    disabled={transferOriginBalance.usd <= 0}
+                    onClick={() => {
+                      if (transferOriginBalance.usd <= 0) return;
+                      setAmountFrom(transferOriginBalance.usd.toFixed(2));
+                      setAmountTo('');
+                    }}
+                    className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-accent-blue/15 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/25 disabled:opacity-40 cursor-pointer"
+                  >
+                    TODO
+                  </button>
+                </div>
                 <input
                   type="number"
                   step="0.01"
@@ -1452,6 +1557,12 @@ export function QuickMovementModal({
                   placeholder="100.00"
                   className="w-full px-3 py-2.5 rounded-xl text-base font-bold bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
                 />
+                {Number.isFinite(parseFloat(amountFrom)) &&
+                  parseFloat(amountFrom) > transferOriginBalance.usd + 0.009 && (
+                    <p className="text-[10px] text-accent-gold mt-1">
+                      Supera el disponible en origen ({formatUsd(Math.max(0, transferOriginBalance.usd))})
+                    </p>
+                  )}
               </div>
               <div>
                 <div className="flex items-center justify-between mb-1.5">
