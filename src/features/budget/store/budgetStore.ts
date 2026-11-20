@@ -5,6 +5,7 @@ import type {
   AccountCurrency,
   AssetBucketId,
   BudgetSnapshot,
+  BuiltinFundId,
   CustomAccount,
   CustomAccountId,
   EmergencyGoalConfig,
@@ -13,6 +14,8 @@ import type {
   InstallmentPlan,
   LedgerMovement,
   MonthEndSimulationResult,
+  NativeAccountOverride,
+  NativeAccountOverrides,
   PaymentMethod,
   QuincenaConfig,
   RecurringExpense,
@@ -21,6 +24,7 @@ import {
   advanceDueDate,
   calculateEligibleInvestmentCapital,
   calculateEnvelopeSummaries,
+  isBsPaymentMethod,
   isNegativeAdjustmentMovement,
   type QuincenaPreview,
 } from '../utils/calculations';
@@ -34,6 +38,7 @@ export interface UndoEntry {
   expenses: RecurringExpense[];
   installments: InstallmentPlan[];
   customAccounts: CustomAccount[];
+  nativeAccountOverrides: NativeAccountOverrides;
 }
 
 export interface PayExpenseOptions {
@@ -60,6 +65,7 @@ interface BudgetState {
   expenses: RecurringExpense[];
   installments: InstallmentPlan[];
   customAccounts: CustomAccount[];
+  nativeAccountOverrides: NativeAccountOverrides;
   quincenaConfig: QuincenaConfig;
   emergencyGoal: EmergencyGoalConfig;
   syncCryptoDca: boolean;
@@ -75,7 +81,9 @@ interface BudgetState {
   // Emergency goal
   updateEmergencyGoal: (patch: Partial<EmergencyGoalConfig>) => void;
 
-  // Custom accounts
+  // Native & custom accounts
+  updateNativeAccount: (id: BuiltinFundId, patch: NativeAccountOverride) => void;
+  resetNativeAccount: (id: BuiltinFundId) => void;
   addCustomAccount: (params: {
     name: string;
     currency: AccountCurrency;
@@ -333,7 +341,10 @@ function routeBsOutflowMovements(
 
 function createUndoSnapshot(
   label: string,
-  state: Pick<BudgetState, 'movements' | 'expenses' | 'installments' | 'customAccounts'>,
+  state: Pick<
+    BudgetState,
+    'movements' | 'expenses' | 'installments' | 'customAccounts' | 'nativeAccountOverrides'
+  >,
 ): UndoEntry {
   return {
     id: makeId('undo'),
@@ -342,6 +353,7 @@ function createUndoSnapshot(
     expenses: state.expenses,
     installments: state.installments,
     customAccounts: state.customAccounts,
+    nativeAccountOverrides: state.nativeAccountOverrides,
   };
 }
 
@@ -352,6 +364,7 @@ export const useBudgetStore = create<BudgetState>()(
       expenses: initialSeed.expenses,
       installments: initialSeed.installments,
       customAccounts: [],
+      nativeAccountOverrides: {},
       quincenaConfig: initialSeed.quincenaConfig,
       emergencyGoal: DEFAULT_EMERGENCY_GOAL,
       syncCryptoDca: true,
@@ -370,6 +383,41 @@ export const useBudgetStore = create<BudgetState>()(
         set((state) => ({
           emergencyGoal: { ...state.emergencyGoal, ...patch },
         })),
+
+      updateNativeAccount: (id, patch) =>
+        set((state) => {
+          const prev = state.nativeAccountOverrides[id] ?? {};
+          const nextEntry: NativeAccountOverride = {
+            ...prev,
+            ...patch,
+          };
+          if (patch.name !== undefined) {
+            nextEntry.name = patch.name.trim() || undefined;
+          }
+          if (patch.assetType !== undefined) {
+            nextEntry.assetType = patch.assetType.trim() || undefined;
+          }
+          if (patch.notes !== undefined) {
+            nextEntry.notes = patch.notes.trim() || undefined;
+          }
+          return {
+            undoEntry: createUndoSnapshot('Cuenta base actualizada', state),
+            nativeAccountOverrides: {
+              ...state.nativeAccountOverrides,
+              [id]: nextEntry,
+            },
+          };
+        }),
+
+      resetNativeAccount: (id) =>
+        set((state) => {
+          const next = { ...state.nativeAccountOverrides };
+          delete next[id];
+          return {
+            undoEntry: createUndoSnapshot('Cuenta base restaurada', state),
+            nativeAccountOverrides: next,
+          };
+        }),
 
       addCustomAccount: ({ name, currency, subtitle, initialBalance }) => {
         const state = get();
@@ -400,7 +448,7 @@ export const useBudgetStore = create<BudgetState>()(
               amountUsd,
               amountBs: currency === 'VES' ? initAmt : undefined,
               bcvRateUsed: currency === 'VES' ? rate : undefined,
-              paymentMethod: currency === 'VES' ? 'bolivares_pago_movil' : 'otro',
+              paymentMethod: id,
               notes: `Saldo inicial: ${cleanName}`,
             },
             ...state.movements,
@@ -441,12 +489,31 @@ export const useBudgetStore = create<BudgetState>()(
       removeCustomAccount: (id) =>
         set((state) => {
           const target = state.customAccounts.find((a) => a.id === id);
+          const nextMovements = state.movements
+            .filter((m) => m.bucket !== id)
+            .map((m) =>
+              m.paymentMethod === id
+                ? {
+                    ...m,
+                    paymentMethod: 'otro' as PaymentMethod,
+                  }
+                : m,
+            );
+          const nextExpenses = state.expenses.map((e) =>
+            e.preferredPaymentMethod === id
+              ? {
+                  ...e,
+                  preferredPaymentMethod: 'otro' as PaymentMethod,
+                }
+              : e,
+          );
           return {
             undoEntry: target
               ? createUndoSnapshot(`Cuenta eliminada: ${target.name}`, state)
               : state.undoEntry,
             customAccounts: state.customAccounts.filter((a) => a.id !== id),
-            movements: state.movements.filter((m) => m.bucket !== id),
+            movements: nextMovements,
+            expenses: nextExpenses,
           };
         }),
 
@@ -788,6 +855,7 @@ export const useBudgetStore = create<BudgetState>()(
           expenses: entry.expenses,
           installments: entry.installments,
           customAccounts: entry.customAccounts,
+          nativeAccountOverrides: entry.nativeAccountOverrides,
           undoEntry: null,
         });
       },
@@ -800,6 +868,7 @@ export const useBudgetStore = create<BudgetState>()(
           simulation,
           envelopes,
           state.bcvRate,
+          state.customAccounts,
         );
         if (generated.length === 0) return;
 
@@ -827,7 +896,9 @@ export const useBudgetStore = create<BudgetState>()(
         const quincenaId = makeId('qna');
         const newMovements: LedgerMovement[] = [];
         const noteSuffix = notes?.trim() ? ` (${notes.trim()})` : '';
-        const isBs = paymentMethod === 'bolivares_pago_movil' && Boolean(state.bcvRate && state.bcvRate > 0);
+        const isBs =
+          isBsPaymentMethod(paymentMethod, state.customAccounts) &&
+          Boolean(state.bcvRate && state.bcvRate > 0);
         const rate = state.bcvRate ?? undefined;
 
         const toBsFields = (usd: number) =>
@@ -933,20 +1004,16 @@ export const useBudgetStore = create<BudgetState>()(
         const envelopeId = options?.envelopeId ?? target.envelopeId;
         const targetBucket: AssetBucketId = options?.bucketOverride ?? envelopeId;
         const rate = options?.bcvRateUsed ?? state.bcvRate ?? undefined;
+        const isBs = isBsPaymentMethod(paymentMethod, state.customAccounts);
         const amountBs =
           options?.amountBs ??
-          (paymentMethod === 'bolivares_pago_movil' && rate
-            ? Number((amountUsd * rate).toFixed(2))
-            : undefined);
+          (isBs && rate ? Number((amountUsd * rate).toFixed(2)) : undefined);
 
         const todayIso = new Date().toISOString().slice(0, 10);
         const previousDueDate = target.nextDueDate;
         const nextDue = advanceDueDate(previousDueDate, target.frequency);
 
-        const movementType =
-          paymentMethod === 'bolivares_pago_movil'
-            ? 'Cambio a Bolívares'
-            : 'Gasto en Efectivo';
+        const movementType = isBs ? 'Cambio a Bolívares' : 'Gasto en Efectivo';
 
         const routedMovs = logToLedger
           ? routeBsOutflowMovements(state, {
@@ -1020,11 +1087,10 @@ export const useBudgetStore = create<BudgetState>()(
           : 'Pago de Cuota';
 
         const rate = options?.bcvRateUsed ?? state.bcvRate ?? undefined;
+        const isBs = isBsPaymentMethod(paymentMethod, state.customAccounts);
         const amountBs =
           options?.amountBs ??
-          (paymentMethod === 'bolivares_pago_movil' && rate
-            ? Number((cleanAmount * rate).toFixed(2))
-            : undefined);
+          (isBs && rate ? Number((cleanAmount * rate).toFixed(2)) : undefined);
 
         const previousDueDate = plan.nextDueDate;
         const nextDueDate = previousDueDate
@@ -1077,6 +1143,7 @@ export const useBudgetStore = create<BudgetState>()(
           expenses,
           installments,
           customAccounts,
+          nativeAccountOverrides,
           quincenaConfig,
           emergencyGoal,
           freeBsPoolMode,
@@ -1088,6 +1155,7 @@ export const useBudgetStore = create<BudgetState>()(
           expenses,
           installments,
           customAccounts,
+          nativeAccountOverrides,
           quincenaConfig,
           emergencyGoal,
           freeBsPoolMode,
@@ -1109,6 +1177,7 @@ export const useBudgetStore = create<BudgetState>()(
           expenses: snapshot.expenses,
           installments: snapshot.installments,
           customAccounts: Array.isArray(snapshot.customAccounts) ? snapshot.customAccounts : [],
+          nativeAccountOverrides: snapshot.nativeAccountOverrides ?? {},
           quincenaConfig: snapshot.quincenaConfig,
           emergencyGoal: snapshot.emergencyGoal ?? DEFAULT_EMERGENCY_GOAL,
           freeBsPoolMode: snapshot.freeBsPoolMode ?? true,
@@ -1122,6 +1191,7 @@ export const useBudgetStore = create<BudgetState>()(
         set({
           ...seed,
           customAccounts: [],
+          nativeAccountOverrides: {},
           emergencyGoal: DEFAULT_EMERGENCY_GOAL,
           freeBsPoolMode: true,
           undoEntry: null,
@@ -1134,6 +1204,7 @@ export const useBudgetStore = create<BudgetState>()(
           expenses: [],
           installments: [],
           customAccounts: [],
+          nativeAccountOverrides: {},
           quincenaConfig: initialSeed.quincenaConfig,
           emergencyGoal: DEFAULT_EMERGENCY_GOAL,
           undoEntry: null,
@@ -1147,6 +1218,7 @@ export const useBudgetStore = create<BudgetState>()(
         expenses: state.expenses,
         installments: state.installments,
         customAccounts: state.customAccounts,
+        nativeAccountOverrides: state.nativeAccountOverrides,
         quincenaConfig: state.quincenaConfig,
         emergencyGoal: state.emergencyGoal,
         syncCryptoDca: state.syncCryptoDca,

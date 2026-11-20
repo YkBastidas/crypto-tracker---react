@@ -2,7 +2,7 @@ import type {
   EnvelopeId,
   InstallmentPlan,
   LedgerMovement,
-  PaymentMethod,
+  NativePaymentMethod,
   QuincenaConfig,
   RecurringExpense,
 } from '../types';
@@ -48,7 +48,7 @@ export const ENVELOPE_META: Record<
   },
 };
 
-export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+export const PAYMENT_METHOD_LABELS: Record<NativePaymentMethod, string> = {
   efectivo_usd: 'Efectivo USD',
   binance_usdt: 'Binance USDT / USDC',
   bolivares_pago_movil: 'Bolívares / Pago Móvil',

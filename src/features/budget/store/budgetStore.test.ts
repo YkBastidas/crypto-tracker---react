@@ -4,7 +4,11 @@ import {
   simulateMonthEndRollover,
 } from '../services/monthEndEngine';
 import type { EnvelopeSummary, RecurringExpense } from '../types';
-import { calculateEnvelopeSummaries, calculateFundSummaries } from '../utils/calculations';
+import {
+  calculateEnvelopeSummaries,
+  calculateFundSummaries,
+  calculateReadyToAssignAndRunway,
+} from '../utils/calculations';
 import { useBudgetStore } from './budgetStore';
 
 describe('budget/store & monthEndEngine invariants', () => {
@@ -42,7 +46,7 @@ describe('budget/store & monthEndEngine invariants', () => {
         spent: 0,
         available: 300,
         percentage: 50,
-        byMethod: { efectivo: 200, binance: 100, bolivares: 0 },
+        byMethod: { efectivo: 200, binance: 100, bolivares: 0, custom: {} },
       },
       {
         id: 'disfrute',
@@ -51,7 +55,7 @@ describe('budget/store & monthEndEngine invariants', () => {
         spent: 0,
         available: 150,
         percentage: 25,
-        byMethod: { efectivo: 150, binance: 0, bolivares: 0 },
+        byMethod: { efectivo: 150, binance: 0, bolivares: 0, custom: {} },
       },
       {
         id: 'crecimiento_personal',
@@ -60,7 +64,7 @@ describe('budget/store & monthEndEngine invariants', () => {
         spent: 0,
         available: 60,
         percentage: 10,
-        byMethod: { efectivo: 60, binance: 0, bolivares: 0 },
+        byMethod: { efectivo: 60, binance: 0, bolivares: 0, custom: {} },
       },
       {
         id: 'provisiones_anuales',
@@ -69,7 +73,7 @@ describe('budget/store & monthEndEngine invariants', () => {
         spent: 0,
         available: 100,
         percentage: 15,
-        byMethod: { efectivo: 100, binance: 0, bolivares: 0 },
+        byMethod: { efectivo: 100, binance: 0, bolivares: 0, custom: {} },
       },
       {
         id: 'ahorro_inversion',
@@ -78,7 +82,7 @@ describe('budget/store & monthEndEngine invariants', () => {
         spent: 0,
         available: 0,
         percentage: 0,
-        byMethod: { efectivo: 0, binance: 0, bolivares: 0 },
+        byMethod: { efectivo: 0, binance: 0, bolivares: 0, custom: {} },
       },
     ];
 
@@ -466,5 +470,69 @@ describe('budget/store & monthEndEngine invariants', () => {
     });
     const strictEnvs = calculateEnvelopeSummaries(useBudgetStore.getState().movements);
     expect(strictEnvs.find((e) => e.id === 'disfrute')!.byMethod.bolivares).toBeCloseTo(-15, 2);
+  });
+
+  it('assigns custom account balance to an envelope keeping custody, supports native overrides undo/snapshot, and remaps deleted custom custody safely', () => {
+    const store = useBudgetStore.getState();
+    const bancamigaId = store.addCustomAccount({
+      name: 'Bancamiga Cash',
+      currency: 'USD',
+      initialBalance: 10.2,
+    });
+
+    // Unassigned $10.20 in Bancamiga appears in Ready to Assign
+    let current = useBudgetStore.getState();
+    const rtaBefore = calculateReadyToAssignAndRunway({
+      movements: current.movements,
+      expenses: current.expenses,
+      installments: current.installments,
+      customAccounts: current.customAccounts,
+    });
+    expect(rtaBefore.totalReadyToAssignUsd).toBeCloseTo(10.2, 2);
+
+    // Quick-assign from Bancamiga (unassigned) -> Disfrute preserving Bancamiga custody
+    useBudgetStore.getState().transferBetweenBuckets({
+      date: '2026-11-20',
+      fromBucket: bancamigaId,
+      toBucket: 'disfrute',
+      fromPaymentMethod: bancamigaId,
+      toPaymentMethod: bancamigaId,
+      amountFrom: 10.2,
+      amountTo: 10.2,
+      notes: 'Asignación rápida (Por Asignar)',
+    });
+
+    current = useBudgetStore.getState();
+    const rtaAfter = calculateReadyToAssignAndRunway({
+      movements: current.movements,
+      expenses: current.expenses,
+      installments: current.installments,
+      customAccounts: current.customAccounts,
+    });
+    expect(rtaAfter.totalReadyToAssignUsd).toBeCloseTo(0, 2);
+
+    const { funds, envelopes } = calculateFundSummaries(
+      current.movements,
+      null,
+      current.customAccounts,
+    );
+    expect(envelopes.find((e) => e.id === 'disfrute')!.available).toBeCloseTo(10.2, 2);
+    expect(envelopes.find((e) => e.id === 'disfrute')!.byMethod.custom[bancamigaId]).toBeCloseTo(10.2, 2);
+    expect(funds.find((f) => f.id === bancamigaId)!.balance).toBeCloseTo(10.2, 2);
+
+    // Native account customization + Undo + snapshot roundtrip
+    useBudgetStore.getState().updateNativeAccount('cuenta_bolivares', { hidden: true });
+    expect(useBudgetStore.getState().nativeAccountOverrides.cuenta_bolivares?.hidden).toBe(true);
+    const snap = useBudgetStore.getState().exportSnapshot();
+    expect(snap.nativeAccountOverrides?.cuenta_bolivares?.hidden).toBe(true);
+    useBudgetStore.getState().undoLastAction();
+    expect(useBudgetStore.getState().nativeAccountOverrides.cuenta_bolivares).toBeUndefined();
+    useBudgetStore.getState().importSnapshot(snap);
+    expect(useBudgetStore.getState().nativeAccountOverrides.cuenta_bolivares?.hidden).toBe(true);
+
+    // Deleting custom account remaps envelope movements to 'otro' instead of losing Disfrute balance
+    useBudgetStore.getState().removeCustomAccount(bancamigaId);
+    const afterDeleteEnvs = calculateEnvelopeSummaries(useBudgetStore.getState().movements);
+    expect(afterDeleteEnvs.find((e) => e.id === 'disfrute')!.available).toBeCloseTo(10.2, 2);
   });
 });

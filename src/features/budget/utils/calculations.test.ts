@@ -5,6 +5,7 @@ import type {
   EnvelopeRule,
   InstallmentPlan,
   LedgerMovement,
+  NativeAccountOverrides,
   RecurringExpense,
 } from '../types';
 import {
@@ -17,7 +18,9 @@ import {
   extractLiveCryptoBalances,
   formatBs,
   formatUsd,
+  getActiveCustodyOptions,
   getInstallmentArrears,
+  getPaymentMethodLabel,
   isNegativeAdjustmentMovement,
 } from './calculations';
 
@@ -875,5 +878,165 @@ describe('budget/utils/calculations', () => {
       (e) => e.id === 'disfrute',
     );
     expect(Object.is(subDisfrute.byMethod.binance, 0)).toBe(true);
+  });
+
+  it('tracks custom USD/VES accounts as first-class envelope custodies without double counting and populates Ready to Assign', () => {
+    const customAccounts: CustomAccount[] = [
+      {
+        id: 'acct_bancamiga',
+        name: 'Bancamiga - Cuenta Cash',
+        currency: 'USD',
+        createdAt: '2026-11-18',
+      },
+      {
+        id: 'acct_mercantil_bs',
+        name: 'Mercantil Bs',
+        currency: 'VES',
+        createdAt: '2026-11-18',
+      },
+    ];
+    const bcvRate = 500;
+
+    // 1) Disfrute has $30 cash; user moves $10.20 from Disfrute (efectivo_usd) -> Disfrute (acct_bancamiga)
+    // 2) Also Imprescindibles holds $20 in Mercantil Bs (10,000 Bs) AND $10.20 sits unassigned in acct_bancamiga
+    const movements: LedgerMovement[] = [
+      {
+        id: 'm1',
+        date: '2026-11-10',
+        bucket: 'disfrute',
+        type: 'Ingreso a Sobre',
+        amountUsd: 30,
+        paymentMethod: 'efectivo_usd',
+      },
+      {
+        id: 'm2',
+        date: '2026-11-20',
+        bucket: 'disfrute',
+        type: 'Transferencia (Salida)',
+        amountUsd: 10.2,
+        paymentMethod: 'efectivo_usd',
+      },
+      {
+        id: 'm3',
+        date: '2026-11-20',
+        bucket: 'disfrute',
+        type: 'Transferencia (Entrada)',
+        amountUsd: 10.2,
+        paymentMethod: 'acct_bancamiga',
+      },
+      {
+        id: 'm4',
+        date: '2026-11-20',
+        bucket: 'imprescindibles',
+        type: 'Ingreso a Sobre',
+        amountUsd: 20,
+        amountBs: 10000,
+        bcvRateUsed: bcvRate,
+        paymentMethod: 'acct_mercantil_bs',
+      },
+      {
+        id: 'm5',
+        date: '2026-11-20',
+        bucket: 'acct_bancamiga',
+        type: 'Ingreso a Sobre',
+        amountUsd: 10.2,
+        paymentMethod: 'acct_bancamiga',
+      },
+    ];
+
+    const { funds, totalNetWorth, envelopes } = calculateFundSummaries(
+      movements,
+      bcvRate,
+      customAccounts,
+    );
+
+    const disfrute = envelopes.find((e) => e.id === 'disfrute')!;
+    const imp = envelopes.find((e) => e.id === 'imprescindibles')!;
+
+    expect(disfrute.available).toBeCloseTo(30, 2);
+    expect(disfrute.spent).toBeCloseTo(0, 2);
+    expect(disfrute.byMethod.efectivo).toBeCloseTo(19.8, 2);
+    expect(disfrute.byMethod.custom.acct_bancamiga).toBeCloseTo(10.2, 2);
+    expect(imp.byMethod.custom.acct_mercantil_bs).toBeCloseTo(20, 2);
+
+    // Consolidated fund totals: Cash = 19.80, Bancamiga = 10.20 (in Disfrute) + 10.20 (unassigned) = 20.40, Mercantil = 20.00 (10,000 Bs)
+    expect(funds.find((f) => f.id === 'efectivo_sobres')!.balance).toBeCloseTo(19.8, 2);
+    expect(funds.find((f) => f.id === 'acct_bancamiga')!.balance).toBeCloseTo(20.4, 2);
+    expect(funds.find((f) => f.id === 'acct_mercantil_bs')!.balance).toBeCloseTo(20, 2);
+    expect(funds.find((f) => f.id === 'acct_mercantil_bs')!.balanceBs).toBeCloseTo(10000, 2);
+    expect(totalNetWorth).toBeCloseTo(60.2, 2);
+
+    // Only the unassigned $10.20 in acct_bancamiga appears in Ready to Assign (Mercantil Bs is inside Imprescindibles)
+    const rta = calculateReadyToAssignAndRunway({
+      movements,
+      expenses: [],
+      installments: [],
+      bcvRate,
+      customAccounts,
+    });
+    expect(rta.totalReadyToAssignUsd).toBeCloseTo(10.2, 2);
+    expect(rta.items).toHaveLength(1);
+    expect(rta.items[0].sourceBucket).toBe('acct_bancamiga');
+    expect(rta.items[0].paymentMethod).toBe('acct_bancamiga');
+  });
+
+  it('supports renaming and hiding native accounts via nativeAccountOverrides while preserving net worth', () => {
+    const customAccounts: CustomAccount[] = [
+      {
+        id: 'acct_chase',
+        name: 'Chase Checking',
+        currency: 'USD',
+        createdAt: '2026-11-20',
+      },
+    ];
+    const overrides: NativeAccountOverrides = {
+      cuenta_bolivares: { hidden: true },
+      efectivo_sobres: { name: 'Cash Wallet', hidden: true },
+      inversiones_binance: { name: 'Brokerage USD' },
+    };
+
+    const movements: LedgerMovement[] = [
+      {
+        id: 'm1',
+        date: '2026-11-20',
+        bucket: 'imprescindibles',
+        type: 'Ingreso a Sobre',
+        amountUsd: 100,
+        paymentMethod: 'efectivo_usd',
+      },
+      {
+        id: 'm2',
+        date: '2026-11-20',
+        bucket: 'ahorro_inversion',
+        type: 'Ingreso a Sobre',
+        amountUsd: 250,
+        paymentMethod: 'acct_chase',
+      },
+    ];
+
+    const { funds, totalNetWorth } = calculateFundSummaries(
+      movements,
+      null,
+      customAccounts,
+      undefined,
+      { nativeAccountOverrides: overrides },
+    );
+
+    const cashFund = funds.find((f) => f.id === 'efectivo_sobres')!;
+    const bsFund = funds.find((f) => f.id === 'cuenta_bolivares')!;
+    const brokerFund = funds.find((f) => f.id === 'inversiones_binance')!;
+
+    expect(cashFund.name).toBe('Cash Wallet');
+    expect(cashFund.hidden).toBe(true);
+    expect(bsFund.hidden).toBe(true);
+    expect(brokerFund.name).toBe('Brokerage USD');
+    expect(brokerFund.hidden).toBe(false);
+    // Hidden cash balance is still preserved in Patrimonio Total
+    expect(totalNetWorth).toBeCloseTo(350, 2);
+
+    const activeCustodies = getActiveCustodyOptions(customAccounts, overrides);
+    expect(activeCustodies.map((c) => c.id)).toEqual(['binance_usdt', 'acct_chase', 'otro']);
+    expect(getPaymentMethodLabel('binance_usdt', customAccounts, overrides)).toBe('Brokerage USD');
+    expect(getPaymentMethodLabel('acct_chase', customAccounts, overrides)).toBe('Chase Checking (USD)');
   });
 });

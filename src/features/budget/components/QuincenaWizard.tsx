@@ -3,6 +3,7 @@ import {
   Banknote,
   CheckCircle2,
   Coins,
+  Landmark,
   Save,
   Smartphone,
   Sparkles,
@@ -10,21 +11,31 @@ import {
 } from 'lucide-react';
 import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { PrivacyValue } from '../../../shared/ui/PrivacyValue';
-import { ENVELOPE_META, PAYMENT_METHOD_LABELS } from '../data/defaultSeed';
+import { ENVELOPE_META } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
 import type { AllocationMode, EnvelopeId, EnvelopeRule, PaymentMethod } from '../types';
-import { computeQuincenaPreview, formatBs, formatUsd } from '../utils/calculations';
+import {
+  computeQuincenaPreview,
+  formatBs,
+  formatUsd,
+  getActiveCustodyOptions,
+  getPaymentMethodLabel,
+  isBsPaymentMethod,
+} from '../utils/calculations';
 
 interface QuincenaWizardProps {
   onCompleteNavigate: () => void;
 }
 
-const PAYMENT_OPTIONS: { id: PaymentMethod; label: string; icon: React.ReactNode }[] = [
-  { id: 'efectivo_usd', label: 'Efectivo USD', icon: <Banknote size={16} /> },
-  { id: 'binance_usdt', label: 'Binance USDT/USDC', icon: <Coins size={16} /> },
-  { id: 'bolivares_pago_movil', label: 'Bs / Pago Móvil', icon: <Smartphone size={16} /> },
-  { id: 'otro', label: 'Otro', icon: <Wallet size={16} /> },
-];
+function getCustodyIcon(id: PaymentMethod, currency: 'USD' | 'VES', isCustom: boolean) {
+  if (isCustom) {
+    return currency === 'VES' ? <Smartphone size={16} /> : <Landmark size={16} />;
+  }
+  if (id === 'efectivo_usd') return <Banknote size={16} />;
+  if (id === 'binance_usdt') return <Coins size={16} />;
+  if (id === 'bolivares_pago_movil') return <Smartphone size={16} />;
+  return <Wallet size={16} />;
+}
 
 export function QuincenaWizard({ onCompleteNavigate }: QuincenaWizardProps) {
   const isPrivate = usePortfolioStore((s) => s.isPrivate);
@@ -32,14 +43,23 @@ export function QuincenaWizard({ onCompleteNavigate }: QuincenaWizardProps) {
     quincenaConfig,
     expenses,
     installments,
+    customAccounts,
+    nativeAccountOverrides,
     bcvRate,
     updateQuincenaConfig,
     confirmQuincena,
   } = useBudgetStore();
 
+  const custodyOptions = useMemo(
+    () => getActiveCustodyOptions(customAccounts, nativeAccountOverrides, { includeOtro: true }),
+    [customAccounts, nativeAccountOverrides],
+  );
+
   const [amountInput, setAmountInput] = useState('500');
   const [inputInBs, setInputInBs] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
+    () => custodyOptions[0]?.id ?? 'efectivo_usd',
+  );
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [notes, setNotes] = useState('');
   const [rules, setRules] = useState<EnvelopeRule[]>(quincenaConfig.rules);
@@ -125,7 +145,7 @@ export function QuincenaWizard({ onCompleteNavigate }: QuincenaWizardProps) {
           <span className="text-text-primary font-semibold">
             <PrivacyValue value={formatUsd(grossAmount)} isPrivate={isPrivate} />
           </span>{' '}
-          ({PAYMENT_METHOD_LABELS[paymentMethod]}).
+          ({getPaymentMethodLabel(paymentMethod, customAccounts, nativeAccountOverrides)}).
         </p>
         <div className="flex flex-col sm:flex-row gap-3 justify-center pt-2">
           <button
@@ -231,7 +251,9 @@ export function QuincenaWizard({ onCompleteNavigate }: QuincenaWizardProps) {
                   ≈ {formatUsd(grossAmount)} USD según tasa BCV (Bs. {effectiveRate.toFixed(2)}/$)
                 </p>
               )}
-              {!inputInBs && hasValidRate && paymentMethod === 'bolivares_pago_movil' && (
+              {!inputInBs &&
+                hasValidRate &&
+                isBsPaymentMethod(paymentMethod, customAccounts) && (
                 <p className="text-[11px] text-cyan-300 mt-1">
                   ≈ {formatBs(grossAmount * effectiveRate)} según tasa BCV
                 </p>
@@ -252,19 +274,20 @@ export function QuincenaWizard({ onCompleteNavigate }: QuincenaWizardProps) {
 
             <div>
               <label className="text-xs text-text-muted block mb-1.5">
-                ¿Cómo te lo pagaron?
+                ¿En qué cuenta / custodia te pagaron?
               </label>
               <div className="grid grid-cols-2 gap-2">
-                {PAYMENT_OPTIONS.map((opt) => (
+                {custodyOptions.map((opt) => (
                   <button
                     key={opt.id}
                     type="button"
                     onClick={() => {
                       setPaymentMethod(opt.id);
-                      if (opt.id === 'bolivares_pago_movil' && hasValidRate && !inputInBs) {
+                      const isBsOpt = opt.currency === 'VES';
+                      if (isBsOpt && hasValidRate && !inputInBs) {
                         setInputInBs(true);
                         setAmountInput((rawInputVal * effectiveRate).toFixed(2));
-                      } else if (opt.id !== 'bolivares_pago_movil' && inputInBs && hasValidRate) {
+                      } else if (!isBsOpt && inputInBs && hasValidRate) {
                         setInputInBs(false);
                         setAmountInput(grossAmount.toFixed(2));
                       }
@@ -275,7 +298,7 @@ export function QuincenaWizard({ onCompleteNavigate }: QuincenaWizardProps) {
                         : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
                     }`}
                   >
-                    {opt.icon}
+                    {getCustodyIcon(opt.id, opt.currency, opt.isCustom)}
                     <span className="truncate">{opt.label}</span>
                   </button>
                 ))}

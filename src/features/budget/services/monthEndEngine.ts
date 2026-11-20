@@ -1,6 +1,7 @@
 import { ENVELOPE_META } from '../data/defaultSeed';
 import type {
   AssetBucketId,
+  CustomAccount,
   EnvelopeId,
   EnvelopeSummary,
   InstallmentPlan,
@@ -12,7 +13,11 @@ import type {
   QuincenaConfig,
   RecurringExpense,
 } from '../types';
-import { calculateDaysLeft, calculateMonthlyEssentials } from '../utils/calculations';
+import {
+  calculateDaysLeft,
+  calculateMonthlyEssentials,
+  isBsPaymentMethod,
+} from '../utils/calculations';
 
 export interface MonthEndSimulationInput {
   envelopes: EnvelopeSummary[];
@@ -536,18 +541,22 @@ export function buildLedgerMovementsFromSimulation(
   simulation: MonthEndSimulationResult,
   envelopes: EnvelopeSummary[],
   bcvRate: number | null,
+  customAccounts: CustomAccount[] = [],
 ): Omit<LedgerMovement, 'id'>[] {
-  const custodyPools: Record<
-    string,
-    { efectivo_usd: number; binance_usdt: number; bolivares_pago_movil: number }
-  > = {};
+  const custodyPools: Record<string, Record<string, number>> = {};
 
   for (const env of envelopes) {
-    custodyPools[env.id] = {
+    const pool: Record<string, number> = {
       efectivo_usd: Math.max(0, env.byMethod.efectivo),
       binance_usdt: Math.max(0, env.byMethod.binance),
       bolivares_pago_movil: Math.max(0, env.byMethod.bolivares),
     };
+    for (const [acctId, val] of Object.entries(env.byMethod.custom ?? {})) {
+      if (val > 0) {
+        pool[acctId] = val;
+      }
+    }
+    custodyPools[env.id] = pool;
   }
 
   const ledgerEntries: Omit<LedgerMovement, 'id'>[] = [];
@@ -559,14 +568,22 @@ export function buildLedgerMovementsFromSimulation(
 
     const slices: { method: PaymentMethod; amount: number }[] = [];
     if (pool) {
-      const order: PaymentMethod[] = ['efectivo_usd', 'binance_usdt', 'bolivares_pago_movil'];
+      const order: PaymentMethod[] = [
+        'efectivo_usd',
+        'binance_usdt',
+        'bolivares_pago_movil',
+        ...Object.keys(pool).filter(
+          (k) =>
+            k !== 'efectivo_usd' && k !== 'binance_usdt' && k !== 'bolivares_pago_movil',
+        ) as PaymentMethod[],
+      ];
       for (const method of order) {
         if (remaining <= 0.005) break;
-        const avail = pool[method as keyof typeof pool];
+        const avail = pool[method] ?? 0;
         if (avail > 0) {
           const take = round2(Math.min(remaining, avail));
           if (take > 0) {
-            pool[method as keyof typeof pool] = round2(avail - take);
+            pool[method] = round2(avail - take);
             remaining = round2(remaining - take);
             slices.push({ method, amount: take });
           }
@@ -579,7 +596,8 @@ export function buildLedgerMovementsFromSimulation(
     }
 
     for (const slice of slices) {
-      const isBs = slice.method === 'bolivares_pago_movil' && Boolean(bcvRate && bcvRate > 0);
+      const isBs =
+        isBsPaymentMethod(slice.method, customAccounts) && Boolean(bcvRate && bcvRate > 0);
       const bsVal = isBs && bcvRate ? round2(slice.amount * bcvRate) : undefined;
       const toBucket: AssetBucketId =
         sw.toBucket === 'emergencias' && slice.method === 'binance_usdt'

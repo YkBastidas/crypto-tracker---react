@@ -1,29 +1,47 @@
-import { useState } from 'react';
-import { Banknote, CheckCircle2, Coins, Smartphone, Wallet, X } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Banknote, CheckCircle2, Coins, Landmark, Smartphone, Wallet, X } from 'lucide-react';
 import { ENVELOPE_META } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
-import type { AssetBucketId, EnvelopeId, InstallmentPlan, PaymentMethod } from '../types';
-import { formatBs, formatUsd } from '../utils/calculations';
+import type { EnvelopeId, InstallmentPlan, PaymentMethod } from '../types';
+import {
+  formatBs,
+  formatUsd,
+  getActiveCustodyOptions,
+  isBsPaymentMethod,
+} from '../utils/calculations';
 
 interface RecordInstallmentModalProps {
   plan: InstallmentPlan;
   onClose: () => void;
 }
 
-const PAYMENT_OPTIONS: { id: PaymentMethod; label: string; icon: React.ReactNode }[] = [
-  { id: 'efectivo_usd', label: 'Efectivo USD', icon: <Banknote size={15} /> },
-  { id: 'binance_usdt', label: 'Binance USDT / USDC', icon: <Coins size={15} /> },
-  { id: 'bolivares_pago_movil', label: 'Bolívares / Pago Móvil', icon: <Smartphone size={15} /> },
-  { id: 'otro', label: 'Otro', icon: <Wallet size={15} /> },
-];
+function getCustodyIcon(id: PaymentMethod, currency: 'USD' | 'VES', isCustom: boolean) {
+  if (isCustom) {
+    return currency === 'VES' ? <Smartphone size={15} /> : <Landmark size={15} />;
+  }
+  if (id === 'efectivo_usd') return <Banknote size={15} />;
+  if (id === 'binance_usdt') return <Coins size={15} />;
+  if (id === 'bolivares_pago_movil') return <Smartphone size={15} />;
+  return <Wallet size={15} />;
+}
 
 export function RecordInstallmentModal({ plan, onClose }: RecordInstallmentModalProps) {
-  const { recordInstallmentPayment, customAccounts, bcvRate } = useBudgetStore();
+  const { recordInstallmentPayment, customAccounts, nativeAccountOverrides, bcvRate } =
+    useBudgetStore();
   const isReceivable = (plan.direction ?? 'receivable') === 'receivable';
 
+  const custodyOptions = useMemo(
+    () =>
+      getActiveCustodyOptions(customAccounts, nativeAccountOverrides, {
+        includeOtro: true,
+      }),
+    [customAccounts, nativeAccountOverrides],
+  );
+
   const [amount, setAmount] = useState(String(plan.installmentAmount));
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('efectivo_usd');
-  const [customBucketId, setCustomBucketId] = useState<AssetBucketId | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
+    () => custodyOptions[0]?.id ?? 'efectivo_usd',
+  );
   const [inputInBs, setInputInBs] = useState(false);
   const [envelopeId, setEnvelopeId] = useState<EnvelopeId>(
     isReceivable ? 'ahorro_inversion' : 'imprescindibles',
@@ -34,17 +52,18 @@ export function RecordInstallmentModal({ plan, onClose }: RecordInstallmentModal
   const parsedVal = parseFloat(amount) || 0;
   const computedUsd = inputInBs && hasValidRate ? parsedVal / effectiveRate : parsedVal;
   const computedBs = inputInBs ? parsedVal : hasValidRate ? parsedVal * effectiveRate : 0;
+  const isSelectedBs = isBsPaymentMethod(paymentMethod, customAccounts);
 
   const remainingCap =
     plan.maxCap !== null ? Math.max(0, Number((plan.maxCap - plan.paidTotal).toFixed(2))) : null;
 
   const handleSelectMethod = (next: PaymentMethod) => {
-    setCustomBucketId(null);
     setPaymentMethod(next);
-    if (next === 'bolivares_pago_movil' && hasValidRate && !inputInBs) {
+    const nextIsBs = isBsPaymentMethod(next, customAccounts);
+    if (nextIsBs && hasValidRate && !inputInBs) {
       setInputInBs(true);
       setAmount((parsedVal * effectiveRate).toFixed(2));
-    } else if (next !== 'bolivares_pago_movil' && inputInBs && hasValidRate) {
+    } else if (!nextIsBs && inputInBs && hasValidRate) {
       setInputInBs(false);
       setAmount((parsedVal / effectiveRate).toFixed(2));
     }
@@ -58,11 +77,8 @@ export function RecordInstallmentModal({ plan, onClose }: RecordInstallmentModal
       amountOverride: Number(computedUsd.toFixed(2)),
       paymentMethod,
       envelopeId,
-      bucketOverride: customBucketId ?? undefined,
       amountBs:
-        paymentMethod === 'bolivares_pago_movil' && hasValidRate
-          ? Number(computedBs.toFixed(2))
-          : undefined,
+        isSelectedBs && hasValidRate ? Number(computedBs.toFixed(2)) : undefined,
       bcvRateUsed: hasValidRate ? effectiveRate : undefined,
     });
     onClose();
@@ -97,49 +113,25 @@ export function RecordInstallmentModal({ plan, onClose }: RecordInstallmentModal
         <form onSubmit={handleConfirm} className="space-y-4">
           <div>
             <label className="text-xs text-text-muted block mb-1.5">
-              {isReceivable ? '¿Dónde recibiste el dinero?' : '¿De dónde salió el dinero?'}
+              {isReceivable ? '¿En qué cuenta / custodia recibiste el dinero?' : '¿De qué cuenta / custodia salió?'}
             </label>
             <div className="grid grid-cols-2 gap-2">
-              {PAYMENT_OPTIONS.map((opt) => (
+              {custodyOptions.map((opt) => (
                 <button
                   key={opt.id}
                   type="button"
                   onClick={() => handleSelectMethod(opt.id)}
                   className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
-                    !customBucketId && paymentMethod === opt.id
+                    paymentMethod === opt.id
                       ? 'bg-accent-blue/20 border-accent-blue text-accent-blue'
                       : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
                   }`}
                 >
-                  {opt.icon}
+                  {getCustodyIcon(opt.id, opt.currency, opt.isCustom)}
                   <span className="truncate">{opt.label}</span>
                 </button>
               ))}
             </div>
-
-            {customAccounts.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mt-2">
-                {customAccounts.map((acct) => (
-                  <button
-                    key={acct.id}
-                    type="button"
-                    onClick={() => {
-                      const targetMethod: PaymentMethod =
-                        acct.currency === 'VES' ? 'bolivares_pago_movil' : 'otro';
-                      handleSelectMethod(targetMethod);
-                      setCustomBucketId(acct.id);
-                    }}
-                    className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border cursor-pointer ${
-                      customBucketId === acct.id
-                        ? 'bg-accent-green/20 border-accent-green text-accent-green'
-                        : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
-                    }`}
-                  >
-                    {acct.name} ({acct.currency})
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -182,31 +174,29 @@ export function RecordInstallmentModal({ plan, onClose }: RecordInstallmentModal
                 <p className="text-[10px] text-cyan-300 mt-1">
                   {inputInBs
                     ? `≈ ${formatUsd(computedUsd)} USD (BCV)`
-                    : paymentMethod === 'bolivares_pago_movil'
+                    : isSelectedBs
                       ? `≈ ${formatBs(computedBs)} (BCV)`
                       : ''}
                 </p>
               )}
             </div>
 
-            {!customBucketId && (
-              <div>
-                <label className="text-xs text-text-muted block mb-1.5">
-                  {isReceivable ? 'Asignar a sobre' : 'Descontar de sobre'}
-                </label>
-                <select
-                  value={envelopeId}
-                  onChange={(e) => setEnvelopeId(e.target.value as EnvelopeId)}
-                  className="w-full px-3 py-2.5 rounded-xl text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
-                >
-                  {(Object.keys(ENVELOPE_META) as EnvelopeId[]).map((id) => (
-                    <option key={id} value={id}>
-                      {ENVELOPE_META[id].name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
+            <div>
+              <label className="text-xs text-text-muted block mb-1.5">
+                {isReceivable ? 'Asignar a sobre' : 'Descontar de sobre'}
+              </label>
+              <select
+                value={envelopeId}
+                onChange={(e) => setEnvelopeId(e.target.value as EnvelopeId)}
+                className="w-full px-3 py-2.5 rounded-xl text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
+              >
+                {(Object.keys(ENVELOPE_META) as EnvelopeId[]).map((id) => (
+                  <option key={id} value={id}>
+                    {ENVELOPE_META[id].name}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <button

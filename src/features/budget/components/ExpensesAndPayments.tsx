@@ -22,18 +22,14 @@ import type {
   RecurringExpense,
 } from '../types';
 
-const PREFERRED_METHOD_LABELS: Record<PaymentMethod, string> = {
-  efectivo_usd: '💵 Efectivo USD',
-  binance_usdt: '🪙 Binance USDT',
-  bolivares_pago_movil: '🇻🇪 Bolívares',
-  otro: '💼 Otro',
-};
 import {
   calculateDaysLeft,
   formatUsd,
+  getActiveCustodyOptions,
   getExpenseBiweeklyQuota,
   getInstallmentArrears,
   getInstallmentBiweeklyQuota,
+  getPaymentMethodLabel,
 } from '../utils/calculations';
 import { PayExpenseModal } from './PayExpenseModal';
 import { RecordInstallmentModal } from './RecordInstallmentModal';
@@ -43,6 +39,8 @@ export function ExpensesAndPayments() {
   const {
     expenses,
     installments,
+    customAccounts,
+    nativeAccountOverrides,
     addExpense,
     updateExpense,
     removeExpense,
@@ -50,6 +48,11 @@ export function ExpensesAndPayments() {
     updateInstallment,
     removeInstallment,
   } = useBudgetStore();
+
+  const custodyOptions = useMemo(
+    () => getActiveCustodyOptions(customAccounts, nativeAccountOverrides),
+    [customAccounts, nativeAccountOverrides],
+  );
 
   const [expenseFilter, setExpenseFilter] = useState<'all' | 'mensual' | 'anual'>('all');
   const [showAddExpense, setShowAddExpense] = useState(false);
@@ -380,10 +383,11 @@ export function ExpensesAndPayments() {
                   className="flex-1 px-3 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary"
                 >
                   <option value="">Cualquiera / Sin preferencia</option>
-                  <option value="efectivo_usd">Efectivo USD (o Banco USD)</option>
-                  <option value="binance_usdt">Binance USDT (Tarjeta / P2P)</option>
-                  <option value="bolivares_pago_movil">Bolívares / Pago Móvil</option>
-                  <option value="otro">Otro</option>
+                  {custodyOptions.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
+                    </option>
+                  ))}
                 </select>
                 <button
                   type="submit"
@@ -421,7 +425,11 @@ export function ExpensesAndPayments() {
                     </span>
                     {item.preferredPaymentMethod && (
                       <span className="text-[10px] px-2 py-0.5 rounded bg-accent-blue/10 border border-accent-blue/25 text-accent-blue font-medium">
-                        {PREFERRED_METHOD_LABELS[item.preferredPaymentMethod]}
+                        {getPaymentMethodLabel(
+                          item.preferredPaymentMethod,
+                          customAccounts,
+                          nativeAccountOverrides,
+                        )}
                       </span>
                     )}
                     <span

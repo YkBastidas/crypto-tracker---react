@@ -1,26 +1,36 @@
 import { useMemo, useState } from 'react';
-import { Banknote, CheckCircle2, Coins, Smartphone, Wallet, X } from 'lucide-react';
+import { Banknote, CheckCircle2, Coins, Landmark, Smartphone, Wallet, X } from 'lucide-react';
 import { ENVELOPE_META } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
-import type { AssetBucketId, EnvelopeId, PaymentMethod, RecurringExpense } from '../types';
-import { calculateEnvelopeSummaries, formatBs, formatUsd } from '../utils/calculations';
+import type { EnvelopeId, PaymentMethod, RecurringExpense } from '../types';
+import {
+  calculateEnvelopeSummaries,
+  formatBs,
+  formatUsd,
+  getActiveCustodyOptions,
+  isBsPaymentMethod,
+} from '../utils/calculations';
 
 interface PayExpenseModalProps {
   expense: RecurringExpense;
   onClose: () => void;
 }
 
-const PAYMENT_OPTIONS: { id: PaymentMethod; label: string; icon: React.ReactNode }[] = [
-  { id: 'efectivo_usd', label: 'Efectivo USD', icon: <Banknote size={15} /> },
-  { id: 'binance_usdt', label: 'Binance USDT / USDC', icon: <Coins size={15} /> },
-  { id: 'bolivares_pago_movil', label: 'Bolívares / Pago Móvil', icon: <Smartphone size={15} /> },
-  { id: 'otro', label: 'Otro', icon: <Wallet size={15} /> },
-];
+function getCustodyIcon(id: PaymentMethod, currency: 'USD' | 'VES', isCustom: boolean) {
+  if (isCustom) {
+    return currency === 'VES' ? <Smartphone size={15} /> : <Landmark size={15} />;
+  }
+  if (id === 'efectivo_usd') return <Banknote size={15} />;
+  if (id === 'binance_usdt') return <Coins size={15} />;
+  if (id === 'bolivares_pago_movil') return <Smartphone size={15} />;
+  return <Wallet size={15} />;
+}
 
 export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
   const {
     markExpensePaid,
     customAccounts,
+    nativeAccountOverrides,
     bcvRate,
     movements,
     freeBsPoolMode,
@@ -28,23 +38,33 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
   } = useBudgetStore();
   const initialMethod: PaymentMethod = expense.preferredPaymentMethod ?? 'efectivo_usd';
   const hasValidRateInit = Boolean(bcvRate && bcvRate > 0);
-  const initialInBs = initialMethod === 'bolivares_pago_movil' && hasValidRateInit;
+  const initialInBs =
+    isBsPaymentMethod(initialMethod, customAccounts) && hasValidRateInit;
   const [amount, setAmount] = useState(() =>
     initialInBs && bcvRate ? (expense.amountUsd * bcvRate).toFixed(2) : String(expense.amountUsd),
   );
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(initialMethod);
-  const [customBucketId, setCustomBucketId] = useState<AssetBucketId | null>(null);
   const [inputInBs, setInputInBs] = useState(initialInBs);
   const [envelopeId, setEnvelopeId] = useState<EnvelopeId>(() =>
     expense.frequency === 'anual' ? 'provisiones_anuales' : expense.envelopeId,
   );
   const [logToLedger, setLogToLedger] = useState(true);
 
+  const custodyOptions = useMemo(
+    () =>
+      getActiveCustodyOptions(customAccounts, nativeAccountOverrides, {
+        includeOtro: true,
+        forceInclude: initialMethod,
+      }),
+    [customAccounts, nativeAccountOverrides, initialMethod],
+  );
+
   const hasValidRate = Boolean(bcvRate && bcvRate > 0);
   const effectiveRate = bcvRate ?? 0;
   const parsedVal = parseFloat(amount) || 0;
   const computedUsd = inputInBs && hasValidRate ? parsedVal / effectiveRate : parsedVal;
   const computedBs = inputInBs ? parsedVal : hasValidRate ? parsedVal * effectiveRate : 0;
+  const isSelectedBs = isBsPaymentMethod(paymentMethod, customAccounts);
 
   const envBsAvail = useMemo(
     () =>
@@ -54,17 +74,16 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
   );
   const bsExceedsEnvelope =
     logToLedger &&
-    !customBucketId &&
     paymentMethod === 'bolivares_pago_movil' &&
     computedUsd > Math.max(0, envBsAvail) + 0.01;
 
   const handleSelectMethod = (next: PaymentMethod) => {
-    setCustomBucketId(null);
     setPaymentMethod(next);
-    if (next === 'bolivares_pago_movil' && hasValidRate && !inputInBs) {
+    const nextIsBs = isBsPaymentMethod(next, customAccounts);
+    if (nextIsBs && hasValidRate && !inputInBs) {
       setInputInBs(true);
       setAmount((parsedVal * effectiveRate).toFixed(2));
-    } else if (next !== 'bolivares_pago_movil' && inputInBs && hasValidRate) {
+    } else if (!nextIsBs && inputInBs && hasValidRate) {
       setInputInBs(false);
       setAmount((parsedVal / effectiveRate).toFixed(2));
     }
@@ -79,12 +98,9 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
       paymentMethod,
       amountUsd: Number.isFinite(computedUsd) && computedUsd > 0 ? computedUsd : expense.amountUsd,
       amountBs:
-        paymentMethod === 'bolivares_pago_movil' && hasValidRate
-          ? Number(computedBs.toFixed(2))
-          : undefined,
+        isSelectedBs && hasValidRate ? Number(computedBs.toFixed(2)) : undefined,
       bcvRateUsed: hasValidRate ? effectiveRate : undefined,
       envelopeId,
-      bucketOverride: customBucketId ?? undefined,
     });
     onClose();
   };
@@ -114,51 +130,25 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
           {/* Payment source */}
           <div>
             <label className="text-xs text-text-muted block mb-1.5">
-              ¿De dónde salió el dinero?
+              ¿De dónde salió el dinero? (Custodia)
             </label>
             <div className="grid grid-cols-2 gap-2">
-              {PAYMENT_OPTIONS.map((opt) => (
+              {custodyOptions.map((opt) => (
                 <button
                   key={opt.id}
                   type="button"
                   onClick={() => handleSelectMethod(opt.id)}
                   className={`flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
-                    !customBucketId && paymentMethod === opt.id
+                    paymentMethod === opt.id
                       ? 'bg-accent-blue/20 border-accent-blue text-accent-blue'
                       : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
                   }`}
                 >
-                  {opt.icon}
+                  {getCustodyIcon(opt.id, opt.currency, opt.isCustom)}
                   <span className="truncate">{opt.label}</span>
                 </button>
               ))}
             </div>
-            {customAccounts.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mt-2">
-                {customAccounts.map((acct) => {
-                  const selected = customBucketId === acct.id;
-                  return (
-                    <button
-                      key={acct.id}
-                      type="button"
-                      onClick={() => {
-                        const targetMethod: PaymentMethod =
-                          acct.currency === 'VES' ? 'bolivares_pago_movil' : 'otro';
-                        handleSelectMethod(targetMethod);
-                        setCustomBucketId(acct.id);
-                      }}
-                      className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border cursor-pointer ${
-                        selected
-                          ? 'bg-accent-green/20 border-accent-green text-accent-green'
-                          : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
-                      }`}
-                    >
-                      {acct.name} ({acct.currency})
-                    </button>
-                  );
-                })}
-              </div>
-            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -201,7 +191,7 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
                 <p className="text-[10px] text-cyan-300 mt-1">
                   {inputInBs
                     ? `≈ ${formatUsd(computedUsd)} USD (BCV)`
-                    : paymentMethod === 'bolivares_pago_movil'
+                    : isSelectedBs
                       ? `≈ ${formatBs(computedBs)} (BCV)`
                       : ''}
                 </p>

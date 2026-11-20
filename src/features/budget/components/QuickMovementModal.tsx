@@ -9,10 +9,11 @@ import {
   Zap,
 } from 'lucide-react';
 import { usePortfolioStore } from '../../../shared/store/portfolioStore';
-import { ENVELOPE_META, PAYMENT_METHOD_LABELS } from '../data/defaultSeed';
+import { ENVELOPE_META } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
 import type {
   AssetBucketId,
+  BuiltinFundId,
   CustomAccount,
   EnvelopeId,
   MovementType,
@@ -23,6 +24,10 @@ import {
   calculateFundSummaries,
   formatBs,
   formatUsd,
+  getActiveCustodyOptions,
+  getEnvelopeCustodyBalance,
+  isBsPaymentMethod,
+  isCustomAccountId,
   isNegativeAdjustmentMovement,
 } from '../utils/calculations';
 
@@ -47,17 +52,6 @@ const ENVELOPE_SET = new Set<AssetBucketId>([
   'provisiones_anuales',
 ]);
 
-function getEnvelopeMethodBalance(
-  byMethod: { efectivo: number; binance: number; bolivares: number },
-  totalBalance: number,
-  method: PaymentMethod,
-): number {
-  if (method === 'efectivo_usd') return byMethod.efectivo;
-  if (method === 'binance_usdt') return byMethod.binance;
-  if (method === 'bolivares_pago_movil') return byMethod.bolivares;
-  return Math.max(0, totalBalance - byMethod.efectivo - byMethod.binance - byMethod.bolivares);
-}
-
 function isUsdtCustodyHolder(bucket: AssetBucketId, method: PaymentMethod): boolean {
   return bucket === 'binance_usdt' || (ENVELOPE_SET.has(bucket) && method === 'binance_usdt');
 }
@@ -76,19 +70,23 @@ const INVESTMENT_BUCKETS = new Set<AssetBucketId>([
   'wallet_btc',
 ]);
 
-const BUCKET_OPTIONS: { id: AssetBucketId; label: string }[] = [
+const BASE_BUCKET_OPTIONS: {
+  id: AssetBucketId;
+  label: string;
+  parentFund?: BuiltinFundId;
+}[] = [
   { id: 'imprescindibles', label: `Sobre: ${ENVELOPE_META.imprescindibles.name}` },
   { id: 'disfrute', label: `Sobre: ${ENVELOPE_META.disfrute.name}` },
   { id: 'crecimiento_personal', label: `Sobre: ${ENVELOPE_META.crecimiento_personal.name}` },
   { id: 'provisiones_anuales', label: `Sobre: ${ENVELOPE_META.provisiones_anuales.name}` },
   { id: 'ahorro_inversion', label: `Sobre: ${ENVELOPE_META.ahorro_inversion.name}` },
-  { id: 'banco_bolivares', label: 'Cuenta en Bolívares (Pago Móvil)' },
-  { id: 'binance_usdt', label: 'Inversiones Binance (USDT)' },
-  { id: 'binance_crypto', label: 'Inversiones Binance (Crypto)' },
-  { id: 'binance_paxg', label: 'Inversiones Binance (PAXG)' },
-  { id: 'emergencias', label: 'Fondo Emergencia (Efectivo)' },
-  { id: 'binance_usdc', label: 'Fondo Emergencia (Binance USDC)' },
-  { id: 'wallet_btc', label: 'Billetera BTC' },
+  { id: 'banco_bolivares', label: 'Cuenta en Bolívares (Pago Móvil)', parentFund: 'cuenta_bolivares' },
+  { id: 'binance_usdt', label: 'Inversiones Binance (USDT)', parentFund: 'inversiones_binance' },
+  { id: 'binance_crypto', label: 'Inversiones Binance (Crypto)', parentFund: 'inversiones_binance' },
+  { id: 'binance_paxg', label: 'Inversiones Binance (PAXG)', parentFund: 'inversiones_binance' },
+  { id: 'emergencias', label: 'Fondo Emergencia (Efectivo)', parentFund: 'fondo_emergencia' },
+  { id: 'binance_usdc', label: 'Fondo Emergencia (Binance USDC)', parentFund: 'fondo_emergencia' },
+  { id: 'wallet_btc', label: 'Billetera BTC', parentFund: 'billetera_btc' },
 ];
 
 const OUTFLOW_TYPES: MovementType[] = [
@@ -106,8 +104,11 @@ function isBsBucketOrAccount(bucket: AssetBucketId, customAccounts: CustomAccoun
 function inferDefaultMethod(
   bucket: AssetBucketId,
   customAccounts: CustomAccount[],
+  fallbackUsdMethod: PaymentMethod = 'efectivo_usd',
 ): PaymentMethod {
-  if (isBsBucketOrAccount(bucket, customAccounts)) return 'bolivares_pago_movil';
+  const custom = customAccounts.find((a) => a.id === bucket);
+  if (custom) return custom.id;
+  if (bucket === 'banco_bolivares') return 'bolivares_pago_movil';
   if (
     bucket === 'binance_usdt' ||
     bucket === 'binance_crypto' ||
@@ -116,9 +117,7 @@ function inferDefaultMethod(
   ) {
     return 'binance_usdt';
   }
-  const custom = customAccounts.find((a) => a.id === bucket);
-  if (custom) return 'otro';
-  return 'efectivo_usd';
+  return fallbackUsdMethod;
 }
 
 function getBucketBalance(
@@ -127,6 +126,7 @@ function getBucketBalance(
   bcvRate: number | null,
   customAccounts: CustomAccount[],
   freeBsPoolMode: boolean,
+  consolidated = false,
 ): { usd: number; bs: number } {
   if (ENVELOPE_SET.has(bucket)) {
     const { envelopes } = calculateFundSummaries(movements, bcvRate, customAccounts, undefined, {
@@ -137,15 +137,20 @@ function getBucketBalance(
     return { usd, bs: bcvRate ? usd * bcvRate : 0 };
   }
 
-  if (bucket === 'banco_bolivares') {
+  if (bucket === 'banco_bolivares' || (consolidated && isCustomAccountId(bucket))) {
     const { funds } = calculateFundSummaries(movements, bcvRate, customAccounts, undefined, {
       freeBsPoolMode,
     });
-    const bsFund = funds.find((f) => f.id === 'cuenta_bolivares');
-    return {
-      usd: Number((bsFund?.balance ?? 0).toFixed(2)),
-      bs: Number((bsFund?.balanceBs ?? 0).toFixed(2)),
-    };
+    const fundId = bucket === 'banco_bolivares' ? 'cuenta_bolivares' : bucket;
+    const foundFund = funds.find((f) => f.id === fundId);
+    const usd = Number((foundFund?.balance ?? 0).toFixed(2));
+    const bs =
+      typeof foundFund?.balanceBs === 'number'
+        ? Number(foundFund.balanceBs.toFixed(2))
+        : bcvRate && bcvRate > 0
+          ? Number((usd * bcvRate).toFixed(2))
+          : 0;
+    return { usd, bs };
   }
 
   const isBsBucket = isBsBucketOrAccount(bucket, customAccounts);
@@ -190,6 +195,7 @@ export function QuickMovementModal({
     movements,
     expenses,
     customAccounts,
+    nativeAccountOverrides,
     freeBsPoolMode,
     setFreeBsPoolMode,
     addMovement,
@@ -197,6 +203,12 @@ export function QuickMovementModal({
     multiEnvelopeCustodyExchange,
     bcvRate,
   } = useBudgetStore();
+
+  const defaultUsdCustody = useMemo(() => {
+    const active = getActiveCustodyOptions(customAccounts, nativeAccountOverrides);
+    return active.find((o) => o.currency === 'USD')?.id ?? active[0]?.id ?? 'efectivo_usd';
+  }, [customAccounts, nativeAccountOverrides]);
+
   const [tab, setTab] = useState<QuickModalTab>(initialTab);
   const [transferMode, setTransferMode] = useState<'single' | 'multi'>('single');
   const [direction, setDirection] = useState<MovementDirection>(initialDirection);
@@ -207,7 +219,7 @@ export function QuickMovementModal({
   );
   const [amount, setAmount] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(() =>
-    inferDefaultMethod(initialBucket, customAccounts),
+    inferDefaultMethod(initialBucket, customAccounts, defaultUsdCustody),
   );
   const [notes, setNotes] = useState('');
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -215,15 +227,19 @@ export function QuickMovementModal({
   // Transfer state (single)
   const [fromBucket, setFromBucket] = useState<AssetBucketId>('binance_usdt');
   const [toBucket, setToBucket] = useState<AssetBucketId>('imprescindibles');
-  const [fromMethod, setFromMethod] = useState<PaymentMethod>('binance_usdt');
-  const [toMethod, setToMethod] = useState<PaymentMethod>('efectivo_usd');
+  const [fromMethod, setFromMethod] = useState<PaymentMethod>(() =>
+    nativeAccountOverrides?.inversiones_binance?.hidden ? defaultUsdCustody : 'binance_usdt',
+  );
+  const [toMethod, setToMethod] = useState<PaymentMethod>(defaultUsdCustody);
   const [amountFrom, setAmountFrom] = useState('');
   const [amountTo, setAmountTo] = useState('');
   const [transferToInBs, setTransferToInBs] = useState(false);
 
   // Multi-envelope custody exchange state
-  const [multiFromMethod, setMultiFromMethod] = useState<PaymentMethod>('binance_usdt');
-  const [multiToMethod, setMultiToMethod] = useState<PaymentMethod>('efectivo_usd');
+  const [multiFromMethod, setMultiFromMethod] = useState<PaymentMethod>(() =>
+    nativeAccountOverrides?.inversiones_binance?.hidden ? defaultUsdCustody : 'binance_usdt',
+  );
+  const [multiToMethod, setMultiToMethod] = useState<PaymentMethod>(defaultUsdCustody);
   const [multiTotalUsd, setMultiTotalUsd] = useState('');
   const [multiReceived, setMultiReceived] = useState('');
   const [multiSplits, setMultiSplits] = useState<Record<EnvelopeId, string>>({
@@ -234,19 +250,38 @@ export function QuickMovementModal({
     ahorro_inversion: '',
   });
 
-  const bucketOptions = useMemo(
-    () => [
-      ...BUCKET_OPTIONS,
+  const custodyOptions = useMemo(
+    () => getActiveCustodyOptions(customAccounts, nativeAccountOverrides),
+    [customAccounts, nativeAccountOverrides],
+  );
+
+  const bucketOptions = useMemo(() => {
+    const visibleNative = BASE_BUCKET_OPTIONS.filter((opt) => {
+      if (!opt.parentFund) return true;
+      const isHidden = Boolean(nativeAccountOverrides?.[opt.parentFund]?.hidden);
+      if (!isHidden) return true;
+      return opt.id === bucket || opt.id === fromBucket || opt.id === toBucket;
+    }).map((opt) => {
+      if (opt.id === 'banco_bolivares' && nativeAccountOverrides?.cuenta_bolivares?.name?.trim()) {
+        return { ...opt, label: nativeAccountOverrides.cuenta_bolivares.name.trim() };
+      }
+      if (opt.id === 'wallet_btc' && nativeAccountOverrides?.billetera_btc?.name?.trim()) {
+        return { ...opt, label: nativeAccountOverrides.billetera_btc.name.trim() };
+      }
+      return opt;
+    });
+
+    return [
+      ...visibleNative,
       ...customAccounts.map((a) => ({
         id: a.id as AssetBucketId,
         label: `Cuenta: ${a.name} (${a.currency})`,
       })),
-    ],
-    [customAccounts],
-  );
+    ];
+  }, [customAccounts, nativeAccountOverrides, bucket, fromBucket, toBucket]);
 
   const currentBucketBalance = useMemo(
-    () => getBucketBalance(bucket, movements, bcvRate, customAccounts, freeBsPoolMode),
+    () => getBucketBalance(bucket, movements, bcvRate, customAccounts, freeBsPoolMode, true),
     [bucket, movements, bcvRate, customAccounts, freeBsPoolMode],
   );
 
@@ -258,16 +293,14 @@ export function QuickMovementModal({
   const transferOriginBalance = useMemo((): { usd: number; bs: number } => {
     if (ENVELOPE_SET.has(fromBucket)) {
       const summary = envelopeSummaries.find((e) => e.id === fromBucket);
-      const byMethod = summary?.byMethod ?? { efectivo: 0, binance: 0, bolivares: 0 };
-      const totalBal = summary?.available ?? 0;
-      const rawUsd = getEnvelopeMethodBalance(byMethod, totalBal, fromMethod);
+      const rawUsd = getEnvelopeCustodyBalance(summary, fromMethod);
       const cleanUsd = Math.abs(rawUsd) < 0.005 ? 0 : Number(rawUsd.toFixed(2));
       return {
         usd: cleanUsd,
         bs: bcvRate && bcvRate > 0 ? Number((cleanUsd * bcvRate).toFixed(2)) : 0,
       };
     }
-    return getBucketBalance(fromBucket, movements, bcvRate, customAccounts, freeBsPoolMode);
+    return getBucketBalance(fromBucket, movements, bcvRate, customAccounts, freeBsPoolMode, false);
   }, [
     fromBucket,
     fromMethod,
@@ -278,23 +311,16 @@ export function QuickMovementModal({
     freeBsPoolMode,
   ]);
 
+  const transferOriginConsolidatedCustomUsd = useMemo(() => {
+    if (!isCustomAccountId(fromBucket)) return 0;
+    return getBucketBalance(fromBucket, movements, bcvRate, customAccounts, freeBsPoolMode, true).usd;
+  }, [fromBucket, movements, bcvRate, customAccounts, freeBsPoolMode]);
+
   const multiEnvelopeMeta = useMemo(() => {
     return ENVELOPE_IDS.map((envId) => {
       const summary = envelopeSummaries.find((e) => e.id === envId);
-      const byMethod = summary?.byMethod ?? {
-        efectivo: 0,
-        binance: 0,
-        bolivares: 0,
-      };
-      const totalBal = summary?.available ?? 0;
-      const originAvail = Math.max(
-        0,
-        getEnvelopeMethodBalance(byMethod, totalBal, multiFromMethod),
-      );
-      const destAvail = Math.max(
-        0,
-        getEnvelopeMethodBalance(byMethod, totalBal, multiToMethod),
-      );
+      const originAvail = Math.max(0, getEnvelopeCustodyBalance(summary, multiFromMethod));
+      const destAvail = Math.max(0, getEnvelopeCustodyBalance(summary, multiToMethod));
 
       const activeInEnv = expenses.filter((e) => e.active && e.envelopeId === envId);
       const destPrefDemand = activeInEnv
@@ -353,42 +379,44 @@ export function QuickMovementModal({
 
   const isDestinationBs =
     isBsBucketOrAccount(toBucket, customAccounts) ||
-    (ENVELOPE_SET.has(toBucket) && toMethod === 'bolivares_pago_movil');
+    (ENVELOPE_SET.has(toBucket) && isBsPaymentMethod(toMethod, customAccounts));
 
   const isOriginBs =
     isBsBucketOrAccount(fromBucket, customAccounts) ||
-    (ENVELOPE_SET.has(fromBucket) && fromMethod === 'bolivares_pago_movil');
+    (ENVELOPE_SET.has(fromBucket) && isBsPaymentMethod(fromMethod, customAccounts));
 
   const handleSelectBucket = (next: AssetBucketId) => {
     setBucket(next);
-    const inferred = inferDefaultMethod(next, customAccounts);
+    const inferred = inferDefaultMethod(next, customAccounts, defaultUsdCustody);
     setPaymentMethod(inferred);
-    if (inferred === 'bolivares_pago_movil' && hasValidRate) {
+    const nextIsBs = isBsPaymentMethod(inferred, customAccounts);
+    if (nextIsBs && hasValidRate) {
       setInputCurrency('BS');
-    } else if (inferred !== 'bolivares_pago_movil') {
+    } else if (!nextIsBs) {
       setInputCurrency('USD');
     }
   };
 
   const handleSelectMethod = (next: PaymentMethod) => {
     setPaymentMethod(next);
-    if (next === 'bolivares_pago_movil' && hasValidRate) {
+    const nextIsBs = isBsPaymentMethod(next, customAccounts);
+    if (nextIsBs && hasValidRate) {
       setInputCurrency('BS');
-    } else if (next !== 'bolivares_pago_movil') {
+    } else if (!nextIsBs) {
       setInputCurrency('USD');
     }
   };
 
   const handleSelectFromBucket = (next: AssetBucketId) => {
     setFromBucket(next);
-    setFromMethod(inferDefaultMethod(next, customAccounts));
+    setFromMethod(inferDefaultMethod(next, customAccounts, defaultUsdCustody));
   };
 
   const handleSelectToBucket = (next: AssetBucketId) => {
     setToBucket(next);
-    const nextMethod = inferDefaultMethod(next, customAccounts);
+    const nextMethod = inferDefaultMethod(next, customAccounts, defaultUsdCustody);
     setToMethod(nextMethod);
-    setTransferToInBs(nextMethod === 'bolivares_pago_movil' && hasValidRate);
+    setTransferToInBs(isBsPaymentMethod(nextMethod, customAccounts) && hasValidRate);
   };
 
   const handleSubmitMovement = (e: React.FormEvent) => {
@@ -398,7 +426,7 @@ export function QuickMovementModal({
     const isBsMovement =
       inputCurrency === 'BS' ||
       isBsBucketOrAccount(bucket, customAccounts) ||
-      paymentMethod === 'bolivares_pago_movil';
+      isBsPaymentMethod(paymentMethod, customAccounts);
 
     if (direction === 'set_balance') {
       if (!Number.isFinite(parsedInput) || parsedInput < 0) return;
@@ -482,10 +510,10 @@ export function QuickMovementModal({
 
     const actualFromMethod = ENVELOPE_SET.has(fromBucket)
       ? fromMethod
-      : inferDefaultMethod(fromBucket, customAccounts);
+      : inferDefaultMethod(fromBucket, customAccounts, defaultUsdCustody);
     const actualToMethod = ENVELOPE_SET.has(toBucket)
       ? toMethod
-      : inferDefaultMethod(toBucket, customAccounts);
+      : inferDefaultMethod(toBucket, customAccounts, defaultUsdCustody);
 
     transferBetweenBuckets({
       date,
@@ -641,8 +669,8 @@ export function QuickMovementModal({
 
     const totalOut = multiAllocatedTotal;
     const rawReceived = multiReceived.trim() ? parseFloat(multiReceived) : NaN;
-    const toIsBs = multiToMethod === 'bolivares_pago_movil';
-    const fromIsBs = multiFromMethod === 'bolivares_pago_movil';
+    const toIsBs = isBsPaymentMethod(multiToMethod, customAccounts);
+    const fromIsBs = isBsPaymentMethod(multiFromMethod, customAccounts);
 
     let totalUsdIn = totalOut;
     let totalBsIn: number | undefined;
@@ -898,7 +926,9 @@ export function QuickMovementModal({
                   {effectiveRate.toFixed(2)}/$)
                 </p>
               )}
-              {inputCurrency === 'USD' && hasValidRate && paymentMethod === 'bolivares_pago_movil' && (
+              {inputCurrency === 'USD' &&
+                hasValidRate &&
+                isBsPaymentMethod(paymentMethod, customAccounts) && (
                 <p className="text-[11px] text-cyan-300 mt-1">
                   ≈ {formatBs(computedBsFromInput)} según tasa BCV
                 </p>
@@ -964,9 +994,9 @@ export function QuickMovementModal({
                   onChange={(e) => handleSelectMethod(e.target.value as PaymentMethod)}
                   className="w-full px-3 py-2 rounded-xl text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
                 >
-                  {(Object.keys(PAYMENT_METHOD_LABELS) as PaymentMethod[]).map((k) => (
-                    <option key={k} value={k}>
-                      {PAYMENT_METHOD_LABELS[k]}
+                  {custodyOptions.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label}
                     </option>
                   ))}
                 </select>
@@ -1111,41 +1141,54 @@ export function QuickMovementModal({
                 </p>
 
                 {/* Quick custody presets */}
-                <div className="flex flex-wrap gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMultiFromMethod('binance_usdt');
-                      setMultiToMethod('efectivo_usd');
-                      setNotes('Cambio multi-sobre USDT a Efectivo');
-                    }}
-                    className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-blue/10 border border-accent-blue/30 text-accent-blue cursor-pointer"
-                  >
-                    USDT → Efectivo
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMultiFromMethod('binance_usdt');
-                      setMultiToMethod('bolivares_pago_movil');
-                      setNotes('Cambio multi-sobre USDT a Bs');
-                    }}
-                    className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-gold/10 border border-accent-gold/30 text-accent-gold cursor-pointer"
-                  >
-                    USDT → Bolívares
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMultiFromMethod('efectivo_usd');
-                      setMultiToMethod('bolivares_pago_movil');
-                      setNotes('Cambio multi-sobre Efectivo a Bs');
-                    }}
-                    className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-green/10 border border-accent-green/30 text-accent-green cursor-pointer"
-                  >
-                    Efectivo → Bolívares
-                  </button>
-                </div>
+                {(!nativeAccountOverrides?.inversiones_binance?.hidden ||
+                  !nativeAccountOverrides?.cuenta_bolivares?.hidden ||
+                  !nativeAccountOverrides?.efectivo_sobres?.hidden) && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {!nativeAccountOverrides?.inversiones_binance?.hidden &&
+                      !nativeAccountOverrides?.efectivo_sobres?.hidden && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMultiFromMethod('binance_usdt');
+                            setMultiToMethod('efectivo_usd');
+                            setNotes('Cambio multi-sobre USDT a Efectivo');
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-blue/10 border border-accent-blue/30 text-accent-blue cursor-pointer"
+                        >
+                          USDT → Efectivo
+                        </button>
+                      )}
+                    {!nativeAccountOverrides?.inversiones_binance?.hidden &&
+                      !nativeAccountOverrides?.cuenta_bolivares?.hidden && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMultiFromMethod('binance_usdt');
+                            setMultiToMethod('bolivares_pago_movil');
+                            setNotes('Cambio multi-sobre USDT a Bs');
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-gold/10 border border-accent-gold/30 text-accent-gold cursor-pointer"
+                        >
+                          USDT → Bolívares
+                        </button>
+                      )}
+                    {!nativeAccountOverrides?.efectivo_sobres?.hidden &&
+                      !nativeAccountOverrides?.cuenta_bolivares?.hidden && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMultiFromMethod('efectivo_usd');
+                            setMultiToMethod('bolivares_pago_movil');
+                            setNotes('Cambio multi-sobre Efectivo a Bs');
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-green/10 border border-accent-green/30 text-accent-green cursor-pointer"
+                        >
+                          Efectivo → Bolívares
+                        </button>
+                      )}
+                  </div>
+                )}
 
                 {/* Custody origin & destination */}
                 <div className="grid grid-cols-2 gap-2.5">
@@ -1156,10 +1199,11 @@ export function QuickMovementModal({
                       onChange={(e) => setMultiFromMethod(e.target.value as PaymentMethod)}
                       className="w-full px-2.5 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary"
                     >
-                      <option value="binance_usdt">Binance USDT</option>
-                      <option value="efectivo_usd">Efectivo USD</option>
-                      <option value="bolivares_pago_movil">Bolívares</option>
-                      <option value="otro">Otro</option>
+                      {custodyOptions.map((opt) => (
+                        <option key={opt.id} value={opt.id}>
+                          {opt.label}
+                        </option>
+                      ))}
                     </select>
                   </div>
                   <div>
@@ -1169,10 +1213,11 @@ export function QuickMovementModal({
                       onChange={(e) => setMultiToMethod(e.target.value as PaymentMethod)}
                       className="w-full px-2.5 py-2 rounded-lg text-xs bg-bg-input border border-border text-text-primary"
                     >
-                      <option value="efectivo_usd">Efectivo USD</option>
-                      <option value="binance_usdt">Binance USDT</option>
-                      <option value="bolivares_pago_movil">Bolívares</option>
-                      <option value="otro">Otro</option>
+                      {custodyOptions.map((opt) => (
+                        <option key={opt.id} value={opt.id}>
+                          {opt.label}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -1231,7 +1276,7 @@ export function QuickMovementModal({
                   </div>
                   <div>
                     <label className="text-[11px] text-text-muted block mb-1">
-                      {multiToMethod === 'bolivares_pago_movil'
+                      {isBsPaymentMethod(multiToMethod, customAccounts)
                         ? 'Recibido (Bs opcional)'
                         : 'Recibido ($ opcional)'}
                     </label>
@@ -1243,7 +1288,7 @@ export function QuickMovementModal({
                       value={multiReceived}
                       onChange={(e) => setMultiReceived(e.target.value)}
                       placeholder={
-                        multiToMethod === 'bolivares_pago_movil' && hasValidRate
+                        isBsPaymentMethod(multiToMethod, customAccounts) && hasValidRate
                           ? ((parseFloat(multiTotalUsd) || multiAllocatedTotal || 0) * effectiveRate).toFixed(2)
                           : multiTotalUsd || 'Igual'
                       }
@@ -1386,50 +1431,63 @@ export function QuickMovementModal({
             ) : (
               <form onSubmit={handleSubmitTransfer} className="space-y-4">
             {/* Quick presets */}
-            <div className="flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                onClick={() => {
-                  setFromBucket('binance_usdt');
-                  setFromMethod('binance_usdt');
-                  setToBucket('imprescindibles');
-                  setToMethod('efectivo_usd');
-                  setTransferToInBs(false);
-                  setNotes('Cambio USDT a USD efectivo');
-                }}
-                className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-blue/10 border border-accent-blue/30 text-accent-blue cursor-pointer"
-              >
-                USDT → Efectivo
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setFromBucket('binance_usdt');
-                  setFromMethod('binance_usdt');
-                  setToBucket('banco_bolivares');
-                  setToMethod('bolivares_pago_movil');
-                  setTransferToInBs(hasValidRate);
-                  setNotes('Cambio USDT a Bolívares');
-                }}
-                className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-gold/10 border border-accent-gold/30 text-accent-gold cursor-pointer"
-              >
-                USDT → Cuenta Bs
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setFromBucket('imprescindibles');
-                  setFromMethod('efectivo_usd');
-                  setToBucket('banco_bolivares');
-                  setToMethod('bolivares_pago_movil');
-                  setTransferToInBs(hasValidRate);
-                  setNotes('Cambio efectivo a Bolívares');
-                }}
-                className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-green/10 border border-accent-green/30 text-accent-green cursor-pointer"
-              >
-                Efectivo → Cuenta Bs
-              </button>
-            </div>
+            {(!nativeAccountOverrides?.inversiones_binance?.hidden ||
+              !nativeAccountOverrides?.cuenta_bolivares?.hidden ||
+              !nativeAccountOverrides?.efectivo_sobres?.hidden) && (
+              <div className="flex flex-wrap gap-1.5">
+                {!nativeAccountOverrides?.inversiones_binance?.hidden &&
+                  !nativeAccountOverrides?.efectivo_sobres?.hidden && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFromBucket('binance_usdt');
+                        setFromMethod('binance_usdt');
+                        setToBucket('imprescindibles');
+                        setToMethod('efectivo_usd');
+                        setTransferToInBs(false);
+                        setNotes('Cambio USDT a USD efectivo');
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-blue/10 border border-accent-blue/30 text-accent-blue cursor-pointer"
+                    >
+                      USDT → Efectivo
+                    </button>
+                  )}
+                {!nativeAccountOverrides?.inversiones_binance?.hidden &&
+                  !nativeAccountOverrides?.cuenta_bolivares?.hidden && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFromBucket('binance_usdt');
+                        setFromMethod('binance_usdt');
+                        setToBucket('banco_bolivares');
+                        setToMethod('bolivares_pago_movil');
+                        setTransferToInBs(hasValidRate);
+                        setNotes('Cambio USDT a Bolívares');
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-gold/10 border border-accent-gold/30 text-accent-gold cursor-pointer"
+                    >
+                      USDT → Cuenta Bs
+                    </button>
+                  )}
+                {!nativeAccountOverrides?.efectivo_sobres?.hidden &&
+                  !nativeAccountOverrides?.cuenta_bolivares?.hidden && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFromBucket('imprescindibles');
+                        setFromMethod('efectivo_usd');
+                        setToBucket('banco_bolivares');
+                        setToMethod('bolivares_pago_movil');
+                        setTransferToInBs(hasValidRate);
+                        setNotes('Cambio efectivo a Bolívares');
+                      }}
+                      className="px-2.5 py-1.5 rounded-lg text-[11px] font-medium bg-accent-green/10 border border-accent-green/30 text-accent-green cursor-pointer"
+                    >
+                      Efectivo → Cuenta Bs
+                    </button>
+                  )}
+              </div>
+            )}
 
             {/* Origin */}
             <div className="space-y-2 bg-bg-input/40 border border-border rounded-xl p-3">
@@ -1451,9 +1509,11 @@ export function QuickMovementModal({
                   onChange={(e) => setFromMethod(e.target.value as PaymentMethod)}
                   className="w-full px-3 py-1.5 rounded-lg text-[11px] bg-bg-input border border-border text-text-muted"
                 >
-                  <option value="efectivo_usd">Custodia: Efectivo USD</option>
-                  <option value="binance_usdt">Custodia: Binance USDT</option>
-                  <option value="bolivares_pago_movil">Custodia: Bolívares</option>
+                  {custodyOptions.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      Custodia: {opt.label}
+                    </option>
+                  ))}
                 </select>
               )}
               <div className="flex items-center justify-between gap-2 pt-0.5 text-[11px]">
@@ -1490,6 +1550,13 @@ export function QuickMovementModal({
                   TODO
                 </button>
               </div>
+              {isCustomAccountId(fromBucket) &&
+                transferOriginBalance.usd <= 0.01 &&
+                transferOriginConsolidatedCustomUsd > 0.01 && (
+                  <p className="text-[10px] text-cyan-300 leading-snug pt-0.5">
+                    Nota: los {formatUsd(transferOriginConsolidatedCustomUsd)} de esta cuenta están asignados dentro de tus sobres. Selecciona el sobre arriba y elige esta cuenta en «Custodia».
+                  </p>
+                )}
             </div>
 
             {/* Destination */}
@@ -1512,16 +1579,48 @@ export function QuickMovementModal({
                   onChange={(e) => {
                     const next = e.target.value as PaymentMethod;
                     setToMethod(next);
-                    setTransferToInBs(next === 'bolivares_pago_movil' && hasValidRate);
+                    setTransferToInBs(isBsPaymentMethod(next, customAccounts) && hasValidRate);
                   }}
                   className="w-full px-3 py-1.5 rounded-lg text-[11px] bg-bg-input border border-border text-text-muted"
                 >
-                  <option value="efectivo_usd">Custodia: Efectivo USD</option>
-                  <option value="binance_usdt">Custodia: Binance USDT</option>
-                  <option value="bolivares_pago_movil">Custodia: Bolívares</option>
+                  {custodyOptions.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      Custodia: {opt.label}
+                    </option>
+                  ))}
                 </select>
               )}
             </div>
+
+            {ENVELOPE_SET.has(fromBucket) &&
+              isCustomAccountId(toBucket) &&
+              (() => {
+                const targetAcct = customAccounts.find((a) => a.id === toBucket);
+                const envShort =
+                  ENVELOPE_META[fromBucket as EnvelopeId]?.shortName ?? fromBucket;
+                if (!targetAcct) return null;
+                return (
+                  <div className="rounded-xl p-2.5 bg-accent-blue/10 border border-accent-blue/35 text-[11px] text-text-muted space-y-1.5">
+                    <p className="leading-snug">
+                      Enviarlo directo a la cuenta{' '}
+                      <strong className="text-text-primary">{targetAcct.name}</strong> lo sacará
+                      del sobre <strong className="text-text-primary">{envShort}</strong> (quedará
+                      «Sin sobre»).
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setToBucket(fromBucket);
+                        setToMethod(targetAcct.id);
+                        setTransferToInBs(targetAcct.currency === 'VES' && hasValidRate);
+                      }}
+                      className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-accent-blue/20 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/30 cursor-pointer"
+                    >
+                      Mantener en {envShort} (Custodia {targetAcct.name})
+                    </button>
+                  </div>
+                );
+              })()}
 
             {isSameTransferTarget && (
               <p className="text-xs text-accent-red">

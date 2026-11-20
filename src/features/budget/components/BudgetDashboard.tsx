@@ -8,6 +8,8 @@ import {
   CheckCircle2,
   Clock,
   Coins,
+  Eye,
+  EyeOff,
   Landmark,
   Pencil,
   Plus,
@@ -25,13 +27,13 @@ import {
 import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { PrivacyValue } from '../../../shared/ui/PrivacyValue';
 import { useInvestmentEngine } from '../../crypto-portfolio/hooks/useInvestmentEngine';
-import { ENVELOPE_META, PAYMENT_METHOD_LABELS } from '../data/defaultSeed';
+import { ENVELOPE_META } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
 import type {
   AssetBucketId,
+  BuiltinFundId,
   CustomAccount,
   CustomAccountId,
-  FundId,
   InstallmentPlan,
   ReadyToAssignItem,
   RecurringExpense,
@@ -44,10 +46,13 @@ import {
   extractLiveCryptoBalances,
   formatBs,
   formatUsd,
+  getPaymentMethodLabel,
+  isBsPaymentMethod,
+  isCustomAccountId,
   isNegativeAdjustmentMovement,
 } from '../utils/calculations';
 import { BackupControls } from './BackupControls';
-import { CreateAccountModal } from './CreateAccountModal';
+import { CreateAccountModal, type EditingNativeFundInfo } from './CreateAccountModal';
 import { EmergencyGoalModal } from './EmergencyGoalModal';
 import { MonthEndRolloverModal } from './MonthEndRolloverModal';
 import { PayExpenseModal } from './PayExpenseModal';
@@ -63,7 +68,6 @@ interface BudgetDashboardProps {
   onNavigateExpenses: () => void;
 }
 
-type BuiltinFundId = Exclude<FundId, CustomAccountId>;
 type BuiltinBucketId = Exclude<AssetBucketId, CustomAccountId>;
 
 const FUND_DEFAULT_BUCKET: Record<BuiltinFundId, AssetBucketId> = {
@@ -107,6 +111,7 @@ export function BudgetDashboard({
     expenses,
     installments,
     customAccounts,
+    nativeAccountOverrides,
     emergencyGoal,
     syncCryptoDca,
     setSyncCryptoDca,
@@ -123,6 +128,8 @@ export function BudgetDashboard({
   const [emergencyGoalOpen, setEmergencyGoalOpen] = useState(false);
   const [monthEndOpen, setMonthEndOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<CustomAccount | null>(null);
+  const [editingNativeFund, setEditingNativeFund] = useState<EditingNativeFundInfo | null>(null);
+  const [showHiddenFunds, setShowHiddenFunds] = useState(false);
   const [quickBucket, setQuickBucket] = useState<AssetBucketId>('imprescindibles');
   const [quickTab, setQuickTab] = useState<QuickModalTab>('movement');
   const [quickDirection, setQuickDirection] = useState<MovementDirection>('out');
@@ -149,8 +156,15 @@ export function BudgetDashboard({
     () =>
       calculateFundSummaries(movements, bcvRate, customAccounts, liveCrypto, {
         freeBsPoolMode,
+        nativeAccountOverrides,
       }),
-    [movements, bcvRate, customAccounts, liveCrypto, freeBsPoolMode],
+    [movements, bcvRate, customAccounts, liveCrypto, freeBsPoolMode, nativeAccountOverrides],
+  );
+
+  const hiddenFunds = useMemo(() => funds.filter((f) => f.hidden), [funds]);
+  const visibleFunds = useMemo(
+    () => (showHiddenFunds ? funds : funds.filter((f) => !f.hidden)),
+    [funds, showHiddenFunds],
   );
 
   const emergencyGoalStats = useMemo(
@@ -169,13 +183,22 @@ export function BudgetDashboard({
         bcvRate,
         customAccounts,
         freeBsPoolMode,
+        nativeAccountOverrides,
       }),
-    [movements, expenses, installments, bcvRate, customAccounts, freeBsPoolMode],
+    [
+      movements,
+      expenses,
+      installments,
+      bcvRate,
+      customAccounts,
+      freeBsPoolMode,
+      nativeAccountOverrides,
+    ],
   );
 
   const handleQuickAssign = (
     item: ReadyToAssignItem,
-    target: 'ahorro_inversion' | 'imprescindibles' | 'emergencia',
+    target: 'ahorro_inversion' | 'imprescindibles' | 'disfrute' | 'emergencia',
   ) => {
     const today = new Date().toISOString().slice(0, 10);
     let amountToMove = item.amountUsd;
@@ -188,6 +211,9 @@ export function BudgetDashboard({
       if (item.sourceBucket === 'binance_usdt') {
         toBucket = 'binance_usdc';
         toMethod = 'binance_usdt';
+      } else if (isCustomAccountId(item.sourceBucket)) {
+        toBucket = 'emergencias';
+        toMethod = item.paymentMethod;
       } else {
         toBucket = 'emergencias';
         toMethod = 'efectivo_usd';
@@ -211,18 +237,30 @@ export function BudgetDashboard({
       amountTo: Number(amountToMove.toFixed(2)),
       amountBsFrom: scaledBs,
       amountBsTo: scaledBs,
-      bcvRateUsed: item.sourceBucket === 'banco_bolivares' && bcvRate ? bcvRate : undefined,
+      bcvRateUsed:
+        isBsPaymentMethod(item.paymentMethod, customAccounts) && bcvRate ? bcvRate : undefined,
       notes: 'Asignación rápida (Por Asignar)',
     });
   };
 
   const bucketLabelMap = useMemo(() => {
     const map: Record<string, string> = { ...BUCKET_LABELS };
+    if (nativeAccountOverrides?.cuenta_bolivares?.name?.trim()) {
+      map.banco_bolivares = nativeAccountOverrides.cuenta_bolivares.name.trim();
+    }
+    if (nativeAccountOverrides?.billetera_btc?.name?.trim()) {
+      map.wallet_btc = nativeAccountOverrides.billetera_btc.name.trim();
+    }
     for (const acct of customAccounts) {
       map[acct.id] = acct.name;
     }
     return map;
-  }, [customAccounts]);
+  }, [customAccounts, nativeAccountOverrides]);
+
+  const customAccountMap = useMemo(
+    () => new Map(customAccounts.map((a) => [a.id, a])),
+    [customAccounts],
+  );
 
   const upcomingAlerts = useMemo(() => {
     const expenseItems = expenses
@@ -424,6 +462,13 @@ export function BudgetDashboard({
                     </button>
                     <button
                       type="button"
+                      onClick={() => handleQuickAssign(item, 'disfrute')}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-cyan-500/15 border border-cyan-500/35 text-cyan-300 hover:bg-cyan-500/25 cursor-pointer"
+                    >
+                      → Disfrute
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => handleQuickAssign(item, 'emergencia')}
                       className="px-2.5 py-1 rounded-md text-[11px] font-medium bg-accent-gold/15 border border-accent-gold/35 text-accent-gold hover:bg-accent-gold/25 cursor-pointer"
                     >
@@ -517,23 +562,38 @@ export function BudgetDashboard({
 
       {/* Fondos y Cuentas */}
       <section>
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
           <h2 className="text-sm font-bold uppercase tracking-wider text-text-muted">
             Resumen por Fondos y Cuentas
           </h2>
-          <button
-            type="button"
-            onClick={() => {
-              setEditingAccount(null);
-              setCreateAccountOpen(true);
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-blue/15 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/25 cursor-pointer"
-          >
-            <Plus size={14} /> Crear Cuenta
-          </button>
+          <div className="flex items-center gap-2">
+            {hiddenFunds.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setShowHiddenFunds((v) => !v)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-bg-input border border-border text-text-muted hover:text-text-primary cursor-pointer"
+              >
+                {showHiddenFunds ? <EyeOff size={13} /> : <Eye size={13} />}
+                {showHiddenFunds
+                  ? 'Ocultar archivadas'
+                  : `Mostrar ocultas (${hiddenFunds.length})`}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setEditingAccount(null);
+                setEditingNativeFund(null);
+                setCreateAccountOpen(true);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-blue/15 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/25 cursor-pointer"
+            >
+              <Plus size={14} /> Crear Cuenta
+            </button>
+          </div>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3.5">
-          {funds.map((fund) => {
+          {visibleFunds.map((fund) => {
             const targetBucket: AssetBucketId = fund.isCustom
               ? (fund.id as CustomAccountId)
               : FUND_DEFAULT_BUCKET[fund.id as BuiltinFundId];
@@ -551,7 +611,9 @@ export function BudgetDashboard({
             return (
               <div
                 key={fund.id}
-                className="bg-bg-card border border-border rounded-xl p-4 flex flex-col justify-between gap-3"
+                className={`bg-bg-card border rounded-xl p-4 flex flex-col justify-between gap-3 ${
+                  fund.hidden ? 'border-dashed border-border/80 opacity-75' : 'border-border'
+                }`}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex items-center gap-2.5 min-w-0">
@@ -559,9 +621,16 @@ export function BudgetDashboard({
                       {iconNode}
                     </div>
                     <div className="min-w-0">
-                      <h3 className="text-sm font-bold text-text-primary leading-tight truncate">
-                        {fund.name}
-                      </h3>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <h3 className="text-sm font-bold text-text-primary leading-tight truncate">
+                          {fund.name}
+                        </h3>
+                        {fund.hidden && (
+                          <span className="text-[9px] font-semibold uppercase px-1.5 py-0.5 rounded bg-bg-input border border-border text-text-muted shrink-0">
+                            Oculta
+                          </span>
+                        )}
+                      </div>
                       <p className="text-[11px] text-text-muted truncate">{fund.assetType}</p>
                     </div>
                   </div>
@@ -587,13 +656,14 @@ export function BudgetDashboard({
                         <Target size={12} />
                       </button>
                     )}
-                    {fund.isCustom && (
+                    {fund.isCustom ? (
                       <>
                         <button
                           type="button"
                           onClick={() => {
                             const found = customAccounts.find((a) => a.id === fund.id);
                             if (found) {
+                              setEditingNativeFund(null);
                               setEditingAccount(found);
                               setCreateAccountOpen(true);
                             }
@@ -612,6 +682,28 @@ export function BudgetDashboard({
                           <Trash2 size={12} />
                         </button>
                       </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingAccount(null);
+                          setEditingNativeFund({
+                            id: fund.id as BuiltinFundId,
+                            name: fund.name,
+                            assetType: fund.assetType,
+                            notes: fund.notes,
+                            defaultName: fund.defaultName ?? fund.name,
+                            defaultAssetType: fund.defaultAssetType ?? fund.assetType,
+                            hidden: Boolean(fund.hidden),
+                            balance: fund.balance,
+                          });
+                          setCreateAccountOpen(true);
+                        }}
+                        title={`Configurar / ocultar ${fund.name}`}
+                        className="p-1 rounded-md bg-bg-input border border-border text-text-muted hover:text-accent-gold hover:border-accent-gold/40 cursor-pointer"
+                      >
+                        <Pencil size={12} />
+                      </button>
                     )}
                   </div>
                 </div>
@@ -860,15 +952,18 @@ export function BudgetDashboard({
 
                   {/* Custody breakdown per envelope */}
                   <div className="flex flex-wrap gap-1.5 mt-2.5 pt-2 border-t border-border text-[10px] text-text-muted">
-                    <span className="px-1.5 py-0.5 rounded bg-bg-input">
-                      Efec:{' '}
-                      <strong className="text-text-primary">
-                        <PrivacyValue
-                          value={formatUsd(env.byMethod.efectivo)}
-                          isPrivate={isPrivate}
-                        />
-                      </strong>
-                    </span>
+                    {(!nativeAccountOverrides?.efectivo_sobres?.hidden ||
+                      Math.abs(env.byMethod.efectivo) >= 0.01) && (
+                      <span className="px-1.5 py-0.5 rounded bg-bg-input">
+                        {nativeAccountOverrides?.efectivo_sobres?.name?.trim() || 'Efec'}:{' '}
+                        <strong className="text-text-primary">
+                          <PrivacyValue
+                            value={formatUsd(env.byMethod.efectivo)}
+                            isPrivate={isPrivate}
+                          />
+                        </strong>
+                      </span>
+                    )}
                     {Math.abs(env.byMethod.binance) >= 0.01 && (
                       <span className="px-1.5 py-0.5 rounded bg-accent-blue/10 text-accent-blue">
                         USDT:{' '}
@@ -891,6 +986,25 @@ export function BudgetDashboard({
                         </strong>
                       </span>
                     )}
+                    {Object.entries(env.byMethod.custom ?? {}).map(([acctId, val]) => {
+                      if (Math.abs(val) < 0.01) return null;
+                      const acct = customAccountMap.get(acctId as CustomAccountId);
+                      return (
+                        <span
+                          key={acctId}
+                          className={`px-1.5 py-0.5 rounded ${
+                            acct?.currency === 'VES'
+                              ? 'bg-cyan-500/10 text-cyan-300'
+                              : 'bg-accent-green/10 text-accent-green'
+                          }`}
+                        >
+                          {acct?.name ?? 'Cuenta'}:{' '}
+                          <strong>
+                            <PrivacyValue value={formatUsd(val)} isPrivate={isPrivate} />
+                          </strong>
+                        </span>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -1029,7 +1143,13 @@ export function BudgetDashboard({
                       </p>
                       <p className="text-[11px] text-text-muted">
                         {m.date} · {bucketLabelMap[m.bucket] ?? m.bucket}
-                        {m.paymentMethod ? ` · ${PAYMENT_METHOD_LABELS[m.paymentMethod]}` : ''}
+                        {m.paymentMethod
+                          ? ` · ${getPaymentMethodLabel(
+                              m.paymentMethod,
+                              customAccounts,
+                              nativeAccountOverrides,
+                            )}`
+                          : ''}
                       </p>
                     </div>
                   </div>
@@ -1104,11 +1224,13 @@ export function BudgetDashboard({
 
       {createAccountOpen && (
         <CreateAccountModal
-          key={editingAccount?.id ?? 'new'}
+          key={editingAccount?.id ?? editingNativeFund?.id ?? 'new'}
           editingAccount={editingAccount}
+          editingNativeFund={editingNativeFund}
           onClose={() => {
             setCreateAccountOpen(false);
             setEditingAccount(null);
+            setEditingNativeFund(null);
           }}
         />
       )}

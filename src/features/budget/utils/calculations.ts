@@ -1,8 +1,11 @@
 import type { CoinHolding } from '../../../shared/types';
-import { ENVELOPE_META } from '../data/defaultSeed';
+import { ENVELOPE_META, PAYMENT_METHOD_LABELS } from '../data/defaultSeed';
 import type {
+  AccountCurrency,
   AssetBucketId,
+  BuiltinFundId,
   CustomAccount,
+  CustomAccountId,
   EmergencyGoalConfig,
   EnvelopeId,
   EnvelopeRule,
@@ -11,10 +14,177 @@ import type {
   InstallmentPlan,
   LedgerMovement,
   LiveCryptoBalances,
+  NativeAccountOverrides,
+  PaymentMethod,
   ReadyToAssignAndRunwaySummary,
   ReadyToAssignItem,
   RecurringExpense,
 } from '../types';
+
+export const DEFAULT_NATIVE_FUND_META: Record<
+  BuiltinFundId,
+  { name: string; assetType: string; notes: string }
+> = {
+  efectivo_sobres: {
+    name: 'Efectivo en Sobres',
+    assetType: 'Efectivo Físico USD',
+    notes: 'Billetes físicos asignados a sobres',
+  },
+  cuenta_bolivares: {
+    name: 'Cuenta en Bolívares',
+    assetType: 'Banco / Pago Móvil',
+    notes: 'Saldo operativo para recargas, parking y pagos en Bs',
+  },
+  inversiones_binance: {
+    name: 'Inversiones y USDT Binance',
+    assetType: 'Binance (Crypto + USDT + PAXG)',
+    notes: 'Incluye capital activo y USDT asignado a sobres',
+  },
+  fondo_emergencia: {
+    name: 'Fondo de Emergencia',
+    assetType: 'Efectivo + Binance USDC',
+    notes: 'Reserva de seguridad y estabilidad',
+  },
+  billetera_btc: {
+    name: 'Billetera BTC',
+    assetType: 'Trust Wallet / BTC',
+    notes: 'Reserva de valor estratégica',
+  },
+};
+
+export interface CustodyOption {
+  id: PaymentMethod;
+  label: string;
+  shortLabel: string;
+  currency: AccountCurrency;
+  isCustom: boolean;
+}
+
+export function isCustomAccountId(value: string | undefined | null): value is CustomAccountId {
+  return typeof value === 'string' && value.startsWith('acct_');
+}
+
+export function isBsPaymentMethod(
+  method: PaymentMethod | undefined,
+  customAccounts: CustomAccount[] = [],
+): boolean {
+  if (method === 'bolivares_pago_movil') return true;
+  if (isCustomAccountId(method)) {
+    return customAccounts.some((a) => a.id === method && a.currency === 'VES');
+  }
+  return false;
+}
+
+export function getPaymentMethodLabel(
+  method: PaymentMethod,
+  customAccounts: CustomAccount[] = [],
+  nativeAccountOverrides?: NativeAccountOverrides,
+): string {
+  if (isCustomAccountId(method)) {
+    const found = customAccounts.find((a) => a.id === method);
+    return found ? `${found.name} (${found.currency})` : 'Cuenta personalizada';
+  }
+  if (method === 'efectivo_usd') {
+    const customName = nativeAccountOverrides?.efectivo_sobres?.name?.trim();
+    return customName || PAYMENT_METHOD_LABELS.efectivo_usd;
+  }
+  if (method === 'binance_usdt') {
+    const customName = nativeAccountOverrides?.inversiones_binance?.name?.trim();
+    return customName || PAYMENT_METHOD_LABELS.binance_usdt;
+  }
+  if (method === 'bolivares_pago_movil') {
+    const customName = nativeAccountOverrides?.cuenta_bolivares?.name?.trim();
+    return customName || PAYMENT_METHOD_LABELS.bolivares_pago_movil;
+  }
+  return PAYMENT_METHOD_LABELS[method] ?? 'Otro';
+}
+
+export function getActiveCustodyOptions(
+  customAccounts: CustomAccount[] = [],
+  nativeAccountOverrides?: NativeAccountOverrides,
+  options?: { includeOtro?: boolean; forceInclude?: PaymentMethod },
+): CustodyOption[] {
+  const result: CustodyOption[] = [];
+  const force = options?.forceInclude;
+
+  const efectivoName = nativeAccountOverrides?.efectivo_sobres?.name?.trim();
+  if (!nativeAccountOverrides?.efectivo_sobres?.hidden || force === 'efectivo_usd') {
+    result.push({
+      id: 'efectivo_usd',
+      label: efectivoName || PAYMENT_METHOD_LABELS.efectivo_usd,
+      shortLabel: efectivoName || 'Efectivo USD',
+      currency: 'USD',
+      isCustom: false,
+    });
+  }
+
+  const binanceName = nativeAccountOverrides?.inversiones_binance?.name?.trim();
+  if (!nativeAccountOverrides?.inversiones_binance?.hidden || force === 'binance_usdt') {
+    result.push({
+      id: 'binance_usdt',
+      label: binanceName || PAYMENT_METHOD_LABELS.binance_usdt,
+      shortLabel: binanceName || 'USDT',
+      currency: 'USD',
+      isCustom: false,
+    });
+  }
+
+  const bsName = nativeAccountOverrides?.cuenta_bolivares?.name?.trim();
+  if (!nativeAccountOverrides?.cuenta_bolivares?.hidden || force === 'bolivares_pago_movil') {
+    result.push({
+      id: 'bolivares_pago_movil',
+      label: bsName || PAYMENT_METHOD_LABELS.bolivares_pago_movil,
+      shortLabel: bsName || 'Bolívares',
+      currency: 'VES',
+      isCustom: false,
+    });
+  }
+
+  for (const acct of customAccounts) {
+    result.push({
+      id: acct.id,
+      label: `${acct.name} (${acct.currency})`,
+      shortLabel: acct.name,
+      currency: acct.currency,
+      isCustom: true,
+    });
+  }
+
+  if (options?.includeOtro !== false || result.length === 0 || force === 'otro') {
+    result.push({
+      id: 'otro',
+      label: PAYMENT_METHOD_LABELS.otro,
+      shortLabel: 'Otro',
+      currency: 'USD',
+      isCustom: false,
+    });
+  }
+
+  return result;
+}
+
+export function getEnvelopeCustodyBalance(
+  env: EnvelopeSummary | undefined,
+  method: PaymentMethod,
+): number {
+  if (!env) return 0;
+  if (method === 'efectivo_usd') return env.byMethod.efectivo;
+  if (method === 'binance_usdt') return env.byMethod.binance;
+  if (method === 'bolivares_pago_movil') return env.byMethod.bolivares;
+  if (isCustomAccountId(method)) return env.byMethod.custom?.[method] ?? 0;
+
+  const customSum = Object.values(env.byMethod.custom ?? {}).reduce((a, b) => a + b, 0);
+  return roundCurrency(
+    Math.max(
+      0,
+      env.available -
+        env.byMethod.efectivo -
+        env.byMethod.binance -
+        env.byMethod.bolivares -
+        customSum,
+    ),
+  );
+}
 
 const ENVELOPE_IDS: EnvelopeId[] = [
   'ahorro_inversion',
@@ -180,48 +350,68 @@ function computeEnvelopeSummariesWithBsPool(
   envelopes: EnvelopeSummary[];
   absorbedFromUnassignedBsUsd: number;
 } {
+  const createEmptyMethodTotals = () => ({
+    efectivo: 0,
+    binance: 0,
+    bolivares: 0,
+    custom: {} as Record<CustomAccountId, number>,
+  });
+
   const totals: Record<
     EnvelopeId,
     {
       assigned: number;
       spent: number;
-      byMethod: { efectivo: number; binance: number; bolivares: number };
+      byMethod: {
+        efectivo: number;
+        binance: number;
+        bolivares: number;
+        custom: Record<CustomAccountId, number>;
+      };
     }
   > = {
-    ahorro_inversion: { assigned: 0, spent: 0, byMethod: { efectivo: 0, binance: 0, bolivares: 0 } },
-    imprescindibles: { assigned: 0, spent: 0, byMethod: { efectivo: 0, binance: 0, bolivares: 0 } },
-    disfrute: { assigned: 0, spent: 0, byMethod: { efectivo: 0, binance: 0, bolivares: 0 } },
-    crecimiento_personal: { assigned: 0, spent: 0, byMethod: { efectivo: 0, binance: 0, bolivares: 0 } },
-    provisiones_anuales: { assigned: 0, spent: 0, byMethod: { efectivo: 0, binance: 0, bolivares: 0 } },
+    ahorro_inversion: { assigned: 0, spent: 0, byMethod: createEmptyMethodTotals() },
+    imprescindibles: { assigned: 0, spent: 0, byMethod: createEmptyMethodTotals() },
+    disfrute: { assigned: 0, spent: 0, byMethod: createEmptyMethodTotals() },
+    crecimiento_personal: { assigned: 0, spent: 0, byMethod: createEmptyMethodTotals() },
+    provisiones_anuales: { assigned: 0, spent: 0, byMethod: createEmptyMethodTotals() },
   };
 
   for (const m of movements) {
     if (!ENVELOPE_IDS.includes(m.bucket as EnvelopeId)) continue;
     const envId = m.bucket as EnvelopeId;
-    const custody: 'efectivo' | 'binance' | 'bolivares' =
-      m.paymentMethod === 'binance_usdt'
-        ? 'binance'
-        : m.paymentMethod === 'bolivares_pago_movil'
-          ? 'bolivares'
-          : 'efectivo';
+    const amt = Math.abs(m.amountUsd);
 
+    let deltaSign = 0;
     if (
       m.type === 'Ingreso a Sobre' ||
       m.type === 'Transferencia (Entrada)' ||
       (m.type === 'Ajuste' && !isNegativeAdjustmentMovement(m))
     ) {
-      const amt = Math.abs(m.amountUsd);
       totals[envId].assigned += amt;
-      totals[envId].byMethod[custody] += amt;
+      deltaSign = 1;
     } else if (m.type === 'Transferencia (Salida)') {
       // Las transferencias/cambios mueven saldo asignado o custodia sin contar como egreso/gasto real
-      const amt = Math.abs(m.amountUsd);
       totals[envId].assigned -= amt;
-      totals[envId].byMethod[custody] -= amt;
+      deltaSign = -1;
     } else if (OUTFLOW_TYPES.has(m.type) || isNegativeAdjustmentMovement(m)) {
-      const amt = Math.abs(m.amountUsd);
       totals[envId].spent += amt;
-      totals[envId].byMethod[custody] -= amt;
+      deltaSign = -1;
+    }
+
+    if (deltaSign !== 0) {
+      if (isCustomAccountId(m.paymentMethod)) {
+        const prev = totals[envId].byMethod.custom[m.paymentMethod] ?? 0;
+        totals[envId].byMethod.custom[m.paymentMethod] = prev + deltaSign * amt;
+      } else {
+        const custody: 'efectivo' | 'binance' | 'bolivares' =
+          m.paymentMethod === 'binance_usdt'
+            ? 'binance'
+            : m.paymentMethod === 'bolivares_pago_movil'
+              ? 'bolivares'
+              : 'efectivo';
+        totals[envId].byMethod[custody] += deltaSign * amt;
+      }
     }
   }
 
@@ -267,7 +457,15 @@ function computeEnvelopeSummariesWithBsPool(
     const rawAssigned = totals[id].assigned;
     const rawSpent = totals[id].spent;
     const rawAvailable = rawAssigned - rawSpent;
-    const { efectivo, binance, bolivares } = totals[id].byMethod;
+    const { efectivo, binance, bolivares, custom } = totals[id].byMethod;
+
+    const cleanCustom: Record<CustomAccountId, number> = {};
+    for (const [acctId, val] of Object.entries(custom)) {
+      const rounded = roundCurrency(val);
+      if (rounded !== 0) {
+        cleanCustom[acctId as CustomAccountId] = rounded;
+      }
+    }
 
     return {
       id,
@@ -280,6 +478,7 @@ function computeEnvelopeSummariesWithBsPool(
         efectivo: roundCurrency(efectivo),
         binance: roundCurrency(binance),
         bolivares: roundCurrency(bolivares),
+        custom: cleanCustom,
       },
     };
   });
@@ -353,11 +552,17 @@ function sumCustomBsBalance(
   movements: LedgerMovement[],
   bucketId: AssetBucketId,
   bcvRate: number | null,
+  includeEnvelopeCustody = false,
 ): { balanceBs: number; hasBsData: boolean } {
   let balanceBs = 0;
   let hasBsData = false;
   for (const m of movements) {
-    if (m.bucket !== bucketId) continue;
+    const matchesDirect = m.bucket === bucketId;
+    const matchesEnvelopeCustody =
+      includeEnvelopeCustody &&
+      ENVELOPE_IDS.includes(m.bucket as EnvelopeId) &&
+      m.paymentMethod === bucketId;
+    if (!matchesDirect && !matchesEnvelopeCustody) continue;
     hasBsData = true;
     const bsVal =
       typeof m.amountBs === 'number'
@@ -418,7 +623,10 @@ export function calculateFundSummaries(
   bcvRate: number | null = null,
   customAccounts: CustomAccount[] = [],
   liveCrypto?: LiveCryptoBalances,
-  options?: { freeBsPoolMode?: boolean },
+  options?: {
+    freeBsPoolMode?: boolean;
+    nativeAccountOverrides?: NativeAccountOverrides;
+  },
 ): {
   funds: FundSummary[];
   totalNetWorth: number;
@@ -428,6 +636,7 @@ export function calculateFundSummaries(
     movements,
     options,
   );
+  const overrides = options?.nativeAccountOverrides ?? {};
   const efectivoSobres = envelopes.reduce((acc, e) => acc + e.byMethod.efectivo, 0);
   const bolivaresSobres = envelopes.reduce((acc, e) => acc + e.byMethod.bolivares, 0);
   const binanceSobres = envelopes.reduce((acc, e) => acc + e.byMethod.binance, 0);
@@ -458,60 +667,79 @@ export function calculateFundSummaries(
       ? Number(liveCrypto.walletBtcUsd.toFixed(2))
       : sumBucketBalance(movements, ['wallet_btc']);
 
+  const applyOverride = (
+    id: BuiltinFundId,
+    base: Omit<FundSummary, 'id' | 'percentage'>,
+  ): Omit<FundSummary, 'percentage'> => {
+    const def = DEFAULT_NATIVE_FUND_META[id];
+    const patch = overrides[id];
+    return {
+      id,
+      ...base,
+      name: patch?.name?.trim() || def.name,
+      assetType: patch?.assetType?.trim() || def.assetType,
+      notes: patch?.notes?.trim() || def.notes,
+      defaultName: def.name,
+      defaultAssetType: def.assetType,
+      hidden: Boolean(patch?.hidden),
+    };
+  };
+
   const rawFunds: Omit<FundSummary, 'percentage'>[] = [
-    {
-      id: 'efectivo_sobres',
-      name: 'Efectivo en Sobres',
-      assetType: 'Efectivo Físico USD',
-      notes: 'Billetes físicos asignados a sobres',
+    applyOverride('efectivo_sobres', {
+      name: DEFAULT_NATIVE_FUND_META.efectivo_sobres.name,
+      assetType: DEFAULT_NATIVE_FUND_META.efectivo_sobres.assetType,
+      notes: DEFAULT_NATIVE_FUND_META.efectivo_sobres.notes,
       balance: efectivoSobres,
-    },
-    {
-      id: 'cuenta_bolivares',
-      name: 'Cuenta en Bolívares',
-      assetType: 'Banco / Pago Móvil',
-      notes: 'Saldo operativo para recargas, parking y pagos en Bs',
+    }),
+    applyOverride('cuenta_bolivares', {
+      name: DEFAULT_NATIVE_FUND_META.cuenta_bolivares.name,
+      assetType: DEFAULT_NATIVE_FUND_META.cuenta_bolivares.assetType,
+      notes: DEFAULT_NATIVE_FUND_META.cuenta_bolivares.notes,
       balance: cuentaBolivares,
       balanceBs: hasBsData ? balanceBs : bcvRate && bcvRate > 0 ? cuentaBolivares * bcvRate : 0,
-    },
-    {
-      id: 'inversiones_binance',
-      name: 'Inversiones y USDT Binance',
-      assetType: 'Binance (Crypto + USDT + PAXG)',
-      notes: 'Incluye capital activo y USDT asignado a sobres',
+    }),
+    applyOverride('inversiones_binance', {
+      name: DEFAULT_NATIVE_FUND_META.inversiones_binance.name,
+      assetType: DEFAULT_NATIVE_FUND_META.inversiones_binance.assetType,
+      notes: DEFAULT_NATIVE_FUND_META.inversiones_binance.notes,
       balance: inversionesBinance,
       breakdown: [
         { label: 'Crypto', amount: binanceCryptoBal },
         { label: 'USDT', amount: binanceUsdtBal },
         { label: 'PAXG', amount: binancePaxgBal },
       ],
-    },
-    {
-      id: 'fondo_emergencia',
-      name: 'Fondo de Emergencia',
-      assetType: 'Efectivo + Binance USDC',
-      notes: 'Reserva de seguridad y estabilidad',
+    }),
+    applyOverride('fondo_emergencia', {
+      name: DEFAULT_NATIVE_FUND_META.fondo_emergencia.name,
+      assetType: DEFAULT_NATIVE_FUND_META.fondo_emergencia.assetType,
+      notes: DEFAULT_NATIVE_FUND_META.fondo_emergencia.notes,
       balance: fondoEmergencia,
       breakdown: [
         { label: 'Efectivo', amount: emergenciaEfectivoBal },
         { label: 'USDC', amount: emergenciaUsdcBal },
       ],
-    },
-    {
-      id: 'billetera_btc',
-      name: 'Billetera BTC',
-      assetType: 'Trust Wallet / BTC',
-      notes: 'Reserva de valor estratégica',
+    }),
+    applyOverride('billetera_btc', {
+      name: DEFAULT_NATIVE_FUND_META.billetera_btc.name,
+      assetType: DEFAULT_NATIVE_FUND_META.billetera_btc.assetType,
+      notes: DEFAULT_NATIVE_FUND_META.billetera_btc.notes,
       balance: billeteraBtc,
-    },
+    }),
   ];
 
   for (const acct of customAccounts) {
     const usdLedger = sumBucketBalance(movements, [acct.id]);
+    const customEnvelopeUsd = envelopes.reduce(
+      (acc, e) => acc + (e.byMethod.custom?.[acct.id] ?? 0),
+      0,
+    );
     if (acct.currency === 'VES') {
-      const bsInfo = sumCustomBsBalance(movements, acct.id, bcvRate);
+      const bsInfo = sumCustomBsBalance(movements, acct.id, bcvRate, true);
       const usdVal =
-        bsInfo.hasBsData && bcvRate && bcvRate > 0 ? bsInfo.balanceBs / bcvRate : usdLedger;
+        bsInfo.hasBsData && bcvRate && bcvRate > 0
+          ? roundCurrency(bsInfo.balanceBs / bcvRate)
+          : roundCurrency(usdLedger + customEnvelopeUsd);
       rawFunds.push({
         id: acct.id,
         name: acct.name,
@@ -519,9 +747,9 @@ export function calculateFundSummaries(
         notes: acct.subtitle || 'Cuenta personalizada en Bs',
         balance: usdVal,
         balanceBs: bsInfo.hasBsData
-          ? bsInfo.balanceBs
+          ? roundCurrency(bsInfo.balanceBs)
           : bcvRate && bcvRate > 0
-            ? usdVal * bcvRate
+            ? roundCurrency(usdVal * bcvRate)
             : 0,
         isCustom: true,
         currency: 'VES',
@@ -532,7 +760,7 @@ export function calculateFundSummaries(
         name: acct.name,
         assetType: acct.subtitle || 'Cuenta en Dólares (USD)',
         notes: acct.subtitle || 'Cuenta personalizada en USD',
-        balance: usdLedger,
+        balance: roundCurrency(usdLedger + customEnvelopeUsd),
         isCustom: true,
         currency: 'USD',
       });
@@ -654,6 +882,7 @@ export function calculateReadyToAssignAndRunway(params: {
   bcvRate?: number | null;
   customAccounts?: CustomAccount[];
   freeBsPoolMode?: boolean;
+  nativeAccountOverrides?: NativeAccountOverrides;
 }): ReadyToAssignAndRunwaySummary {
   const {
     movements,
@@ -662,6 +891,7 @@ export function calculateReadyToAssignAndRunway(params: {
     bcvRate = null,
     customAccounts = [],
     freeBsPoolMode = false,
+    nativeAccountOverrides,
   } = params;
 
   const items: ReadyToAssignItem[] = [];
@@ -671,15 +901,16 @@ export function calculateReadyToAssignAndRunway(params: {
     Number(sumBucketBalance(movements, ['binance_usdt']).toFixed(2)),
   );
   if (unassignedUsdt > 0.01) {
+    const binanceCustomName = nativeAccountOverrides?.inversiones_binance?.name?.trim();
     items.push({
       sourceBucket: 'binance_usdt',
-      label: 'Binance USDT (sin sobre)',
+      label: binanceCustomName ? `${binanceCustomName} USDT (sin sobre)` : 'Binance USDT (sin sobre)',
       paymentMethod: 'binance_usdt',
       amountUsd: unassignedUsdt,
     });
   }
 
-  const bsInfo = sumCustomBsBalance(movements, 'banco_bolivares', bcvRate);
+  const bsInfo = sumCustomBsBalance(movements, 'banco_bolivares', bcvRate, false);
   const usdLedgerBs = sumBucketBalance(movements, ['banco_bolivares']);
   const unassignedBsUsdRaw =
     bsInfo.hasBsData && bcvRate && bcvRate > 0 ? bsInfo.balanceBs / bcvRate : usdLedgerBs;
@@ -691,13 +922,50 @@ export function calculateReadyToAssignAndRunway(params: {
       : undefined;
 
   if (!freeBsPoolMode && unassignedBsUsd > 0.01) {
+    const bsCustomName = nativeAccountOverrides?.cuenta_bolivares?.name?.trim();
     items.push({
       sourceBucket: 'banco_bolivares',
-      label: 'Cuenta en Bolívares (sin sobre)',
+      label: bsCustomName ? `${bsCustomName} (sin sobre)` : 'Cuenta en Bolívares (sin sobre)',
       paymentMethod: 'bolivares_pago_movil',
       amountUsd: unassignedBsUsd,
       amountBs: unassignedBsVal,
     });
+  }
+
+  for (const acct of customAccounts) {
+    const directUsdLedger = sumBucketBalance(movements, [acct.id]);
+    if (acct.currency === 'VES') {
+      const acctBsInfo = sumCustomBsBalance(movements, acct.id, bcvRate, false);
+      const rawUsd =
+        acctBsInfo.hasBsData && bcvRate && bcvRate > 0
+          ? acctBsInfo.balanceBs / bcvRate
+          : directUsdLedger;
+      const cleanUsd = Math.max(0, roundCurrency(rawUsd));
+      const cleanBs = acctBsInfo.hasBsData
+        ? Math.max(0, roundCurrency(acctBsInfo.balanceBs))
+        : bcvRate && bcvRate > 0
+          ? roundCurrency(cleanUsd * bcvRate)
+          : undefined;
+      if (cleanUsd > 0.01) {
+        items.push({
+          sourceBucket: acct.id,
+          label: `${acct.name} (sin sobre)`,
+          paymentMethod: acct.id,
+          amountUsd: cleanUsd,
+          amountBs: cleanBs,
+        });
+      }
+    } else {
+      const cleanUsd = Math.max(0, roundCurrency(directUsdLedger));
+      if (cleanUsd > 0.01) {
+        items.push({
+          sourceBucket: acct.id,
+          label: `${acct.name} (sin sobre)`,
+          paymentMethod: acct.id,
+          amountUsd: cleanUsd,
+        });
+      }
+    }
   }
 
   const totalReadyToAssignUsd = Number(
@@ -710,7 +978,7 @@ export function calculateReadyToAssignAndRunway(params: {
     bcvRate,
     customAccounts,
     undefined,
-    { freeBsPoolMode },
+    { freeBsPoolMode, nativeAccountOverrides },
   );
   const getFundBal = (id: FundSummary['id']) =>
     Math.max(0, funds.find((f) => f.id === id)?.balance ?? 0);

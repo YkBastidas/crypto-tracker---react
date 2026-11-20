@@ -9,13 +9,23 @@ export interface CustomAccount {
   createdAt: string;
 }
 
-export type FundId =
+export type BuiltinFundId =
   | 'efectivo_sobres'
   | 'cuenta_bolivares'
   | 'inversiones_binance'
   | 'fondo_emergencia'
-  | 'billetera_btc'
-  | CustomAccountId;
+  | 'billetera_btc';
+
+export type FundId = BuiltinFundId | CustomAccountId;
+
+export interface NativeAccountOverride {
+  name?: string;
+  assetType?: string;
+  notes?: string;
+  hidden?: boolean;
+}
+
+export type NativeAccountOverrides = Partial<Record<BuiltinFundId, NativeAccountOverride>>;
 
 export type EnvelopeId =
   | 'ahorro_inversion'
@@ -35,11 +45,13 @@ export type AssetBucketId =
   | 'wallet_btc'
   | CustomAccountId;
 
-export type PaymentMethod =
+export type NativePaymentMethod =
   | 'efectivo_usd'
   | 'binance_usdt'
   | 'bolivares_pago_movil'
   | 'otro';
+
+export type PaymentMethod = NativePaymentMethod | CustomAccountId;
 
 export type MovementType =
   | 'Ingreso a Sobre'
@@ -145,6 +157,7 @@ export interface BudgetSnapshot {
   installments: InstallmentPlan[];
   quincenaConfig: QuincenaConfig;
   customAccounts?: CustomAccount[];
+  nativeAccountOverrides?: NativeAccountOverrides;
   emergencyGoal?: EmergencyGoalConfig;
   freeBsPoolMode?: boolean;
 }
@@ -154,6 +167,9 @@ export interface FundSummary {
   name: string;
   assetType: string;
   notes: string;
+  defaultName?: string;
+  defaultAssetType?: string;
+  hidden?: boolean;
   balance: number;
   balanceBs?: number;
   percentage: number;
@@ -173,6 +189,7 @@ export interface EnvelopeSummary {
     efectivo: number;
     binance: number;
     bolivares: number;
+    custom: Record<CustomAccountId, number>;
   };
 }
 
@@ -211,7 +228,7 @@ export interface LiveCryptoBalances {
 }
 
 export interface ReadyToAssignItem {
-  sourceBucket: 'binance_usdt' | 'banco_bolivares';
+  sourceBucket: 'binance_usdt' | 'banco_bolivares' | CustomAccountId;
   label: string;
   paymentMethod: PaymentMethod;
   amountUsd: number;
