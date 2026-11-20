@@ -101,7 +101,14 @@ export type DipTier = 0 | 1 | 2 | 3;
 
 export type VolatilityProfileId = 'crypto' | 'defensive_gold';
 
+export type TacticalProfilePresetId =
+  | 'conservador'
+  | 'equilibrado'
+  | 'agresivo'
+  | 'personalizado';
+
 export interface TacticalDipConfig {
+  presetId?: TacticalProfilePresetId;
   monthlyIncomeUsd: number;
   tier1Usd: number;
   tier2Usd: number;
@@ -109,12 +116,28 @@ export interface TacticalDipConfig {
   tier3MaxFreeUsdtPct: number;
   biweeklyDcaReserveUsd: number;
   cooldownAdditionalDropPct: number;
-  /** Capitulation escape hatch % drop below last Tier 3 buy to unlock another buy without waiting for rebound */
+  /** Minimum USD per tactical order to avoid dust orders (default $20) */
+  minOrderUsd?: number;
+  /** Temporal lock window in hours after a tactical buy (default 48h) */
+  temporalCooldownHours?: number;
+  /** Max first-pass share (%) per asset when splitting across >= 2 eligible assets (default 60%) */
+  multiAssetFirstPassMaxSharePct?: number;
+  /** Group overweight tolerance (+%) before halving tactical block (default +5%) */
+  groupOverweightThresholdPct?: number;
+  /** Capitulation / Flash Crash % drop below last buy for Crypto (default 15%) */
   tier3EscapeDropPct?: number;
   /** Defensive Gold (PAXG/XAUT) cooldown additional drop % (default 3.5%) */
   goldCooldownAdditionalDropPct?: number;
-  /** Defensive Gold (PAXG/XAUT) Tier 3 capitulation escape drop % (default 8%) */
+  /** Defensive Gold (PAXG/XAUT) Tier 3 capitulation / Flash Crash drop % (default 8%) */
   goldTier3EscapeDropPct?: number;
+  /** Custom Crypto drawdown thresholds (%) for Tiers 1/2/3 (defaults 10 / 15 / 22) */
+  cryptoTier1MinDropPct?: number;
+  cryptoTier2MinDropPct?: number;
+  cryptoTier3MinDropPct?: number;
+  /** Custom Defensive Gold drawdown thresholds (%) for Tiers 1/2/3 (defaults 5 / 8 / 12) */
+  goldTier1MinDropPct?: number;
+  goldTier2MinDropPct?: number;
+  goldTier3MinDropPct?: number;
 }
 
 export interface SmartTradeRecommendation {

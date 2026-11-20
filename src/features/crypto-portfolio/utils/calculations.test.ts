@@ -6,12 +6,16 @@ import type {
   Transaction,
 } from '../../../shared/types';
 import {
+  DEFAULT_TACTICAL_DIP_CONFIG,
   buildAiPortfolioReportMarkdown,
+  buildPresetTacticalConfig,
   computeHoldings,
   computePortfolioExposure,
   computePortfolioSummary,
   computeSmartTradeRecommendation,
+  evaluateTacticalConfigRisk,
   recommendTacticalTiersFromIncome,
+  simulateTacticalConfigImpact,
 } from './calculations';
 
 describe('crypto-portfolio/utils/calculations', () => {
@@ -1198,5 +1202,169 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(recBtcOpen.priorityRank).toBe(2);
     expect(recBtcOpen.isGroupOverweightTrimmed).toBe(false);
     expect(recBtcOpen.tacticalBuyUsd).toBe(40);
+  });
+
+  it('builds Conservador/Equilibrado/Agresivo presets scaled by income and evaluates Green/Yellow/Red risk levels', () => {
+    const eq = buildPresetTacticalConfig('equilibrado', 900);
+    expect(eq).toEqual(DEFAULT_TACTICAL_DIP_CONFIG);
+
+    const cons = buildPresetTacticalConfig('conservador', 900);
+    expect(cons.tier1Usd).toBe(30);
+    expect(cons.tier2Usd).toBe(50);
+    expect(cons.tier3Usd).toBe(75);
+    expect(cons.tier3MaxFreeUsdtPct).toBe(25);
+    expect(cons.temporalCooldownHours).toBe(72);
+    expect(cons.minOrderUsd).toBe(25);
+
+    const aggr = buildPresetTacticalConfig('agresivo', 1800);
+    expect(aggr.tier1Usd).toBe(120);
+    expect(aggr.tier2Usd).toBe(180);
+    expect(aggr.tier3Usd).toBe(260);
+    expect(aggr.tier3MaxFreeUsdtPct).toBe(65);
+    expect(aggr.temporalCooldownHours).toBe(24);
+    expect(aggr.biweeklyDcaReserveUsd).toBe(100);
+
+    expect(evaluateTacticalConfigRisk(cons).level).toBe('green');
+    expect(evaluateTacticalConfigRisk(eq).level).toBe('green');
+
+    const aggrRisk = evaluateTacticalConfigRisk(buildPresetTacticalConfig('agresivo', 900));
+    expect(aggrRisk.level).toBe('yellow');
+    expect(aggrRisk.warnings.length).toBeGreaterThan(0);
+
+    const redRisk = evaluateTacticalConfigRisk({
+      ...eq,
+      tier3MaxFreeUsdtPct: 80,
+      temporalCooldownHours: 0,
+      biweeklyDcaReserveUsd: 0,
+      multiAssetFirstPassMaxSharePct: 90,
+      minOrderUsd: 5,
+    });
+    expect(redRisk.level).toBe('red');
+    expect(redRisk.warnings.length).toBeGreaterThanOrEqual(4);
+    expect(redRisk.estimatedDaysToExhaustNetLiquidity).toBeCloseTo(1.3, 1);
+  });
+
+  it('honors injected persisted config parameters (minOrderUsd, cooldownHours, firstPassShare, overweightPct, custom tier drawdowns)', () => {
+    // Custom drawdown thresholds + temporalCooldownHours = 0 / 24h
+    const buyTime = '2026-11-20 00:00:00';
+    const plus25HoursMs = new Date(2026, 10, 21, 1, 0, 0).getTime();
+
+    const customCfg = {
+      ...DEFAULT_TACTICAL_DIP_CONFIG,
+      cryptoTier1MinDropPct: 8,
+      goldTier2MinDropPct: 7,
+      minOrderUsd: 10,
+      temporalCooldownHours: 24,
+      multiAssetFirstPassMaxSharePct: 75,
+      groupOverweightThresholdPct: 8,
+    };
+
+    const txs: Transaction[] = [
+      { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'BTC', tokens: '10', usdValue: 1000 },
+      { date: buyTime, type: 'Buy', asset: 'BTC', tokens: '1', usdValue: 88 }, // consumed Tier 1 (>8% drop) 25h ago
+      { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'PAXG', tokens: '2', usdValue: 200 }, // @ $92.50 -> -7.5% (custom Gold Tier 2 >= 7%)
+    ];
+
+    const holdingsCustom = computeHoldings(
+      txs,
+      { BTC: 'bitcoin', PAXG: 'pax-gold' },
+      { bitcoin: { usd: 80 }, 'pax-gold': { usd: 92.5 } },
+      { BTC: { buy: 8, sell: 30 }, PAXG: { buy: 5, sell: 15 } },
+      stablecoins,
+      customCfg,
+    );
+    const btc = holdingsCustom.find((h) => h.ticker === 'BTC')!;
+    const paxg = holdingsCustom.find((h) => h.ticker === 'PAXG')!;
+
+    // Verify group overweight tolerance at +7.03% (<= 8% custom threshold -> NOT trimmed; actual BTC = $880/$1065 = 82.63%)
+    const groupTargets = { 'GROUP:BTC': 75.6, 'GROUP:GOLD': 24.4 };
+    // 25h elapsed > custom 24h cooldown -> BTC unlocked, custom firstPassMaxShare = 75% on $100 daily cap -> $75/$25? Wait:
+    // BTC is Tier 2 ($70), PAXG is underweight Tier 2 ($70) with custom 7% threshold!
+    const recPaxg = computeSmartTradeRecommendation({
+      holding: paxg,
+      eligibleCapitalUsd: 300, // net = 250, dailyCap = 100
+      totalVolatileCryptoUsd: btc.currentValue + paxg.currentValue,
+      allVolatileHoldings: holdingsCustom,
+      tacticalConfig: customCfg,
+      targetAllocations: groupTargets,
+      nowMs: plus25HoursMs,
+    });
+    const recBtc = computeSmartTradeRecommendation({
+      holding: btc,
+      eligibleCapitalUsd: 300,
+      totalVolatileCryptoUsd: btc.currentValue + paxg.currentValue,
+      allVolatileHoldings: holdingsCustom,
+      tacticalConfig: customCfg,
+      targetAllocations: groupTargets,
+      nowMs: plus25HoursMs,
+    });
+
+    expect(recPaxg.dipTier).toBe(2); // -7.5% >= custom goldTier2MinDropPct (7%)
+    expect(recBtc.isTimeCooldownLocked).toBeUndefined(); // 25h >= 24h custom cooldown
+    expect(recBtc.isGroupOverweightTrimmed).toBe(false); // +7% <= 8% custom threshold
+    // Underweight PAXG #1 capped at $70 (min(block 70, firstPassShare 75)), BTC #2 gets remaining $30 (>= minOrderUsd $10!)
+    expect(recPaxg.tacticalBuyUsd).toBe(70);
+    expect(recBtc.tacticalBuyUsd).toBe(30);
+
+    // Custom minOrderUsd = $10 allows $15 Tier 1 solo order without discarding it
+    const [soloBtc] = computeHoldings(
+      [{ date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '10', usdValue: 1000 }],
+      { BTC: 'bitcoin' },
+      { bitcoin: { usd: 91.5 } }, // -8.5% -> custom cryptoTier1MinDropPct 8%
+      { BTC: { buy: 8, sell: 30 } },
+      stablecoins,
+      customCfg,
+    );
+    const recSoloSmall = computeSmartTradeRecommendation({
+      holding: soloBtc,
+      eligibleCapitalUsd: 300,
+      totalVolatileCryptoUsd: soloBtc.currentValue,
+      tacticalConfig: { ...customCfg, tier1Usd: 15 },
+    });
+    expect(recSoloSmall.dipTier).toBe(1);
+    expect(recSoloSmall.tacticalBuyUsd).toBe(15);
+  });
+
+  it('simulates live Before-vs-After liquidity caps and asset suggestion changes accurately', () => {
+    const holdings = computeHoldings(
+      [
+        { date: '2026-04-01', type: 'Buy', asset: 'BTC', tokens: '10', usdValue: 1000 },
+        { date: '2026-04-01', type: 'Buy', asset: 'PAXG', tokens: '2', usdValue: 200 },
+      ],
+      { BTC: 'bitcoin', PAXG: 'pax-gold' },
+      { bitcoin: { usd: 88 }, 'pax-gold': { usd: 89 } }, // BTC -12% (N1), PAXG -11% (Gold N2)
+      { BTC: { buy: 10, sell: 30 }, PAXG: { buy: 5, sell: 15 } },
+      stablecoins,
+    );
+
+    const balanced = buildPresetTacticalConfig('equilibrado', 900);
+    const conservative = buildPresetTacticalConfig('conservador', 900);
+    const comparison = simulateTacticalConfigImpact({
+      holdings,
+      eligibleCapitalUsd: 300, // net = 250
+      targetAllocations: { 'GROUP:BTC': 85, 'GROUP:GOLD': 15 },
+      currentConfig: balanced,
+      candidateConfig: conservative,
+    });
+
+    // Equilibrado: dailyCap $100 -> PAXG $60 (min($70, 60%)) + BTC $40 (Pass 1 min($45, 60%, 40)) -> Pass 2? Wait: PAXG $70, BTC $45 -> Pass 1 gives PAXG $60, BTC $40 ($100 total)
+    expect(comparison.before.dailyCapUsd).toBe(100);
+    expect(comparison.after.dailyCapUsd).toBe(62.5); // 25% of $250
+    expect(comparison.dailyCapDeltaUsd).toBe(-37.5);
+
+    expect(comparison.before.totalSuggestedBuyTodayUsd).toBe(100);
+    expect(comparison.after.totalSuggestedBuyTodayUsd).toBe(62.5); // PAXG $31.25 (50%) + BTC $30 (Tier 1 conservative = $30) = $61.25! Wait: let's check Pass 2:
+    // Conservador: dailyCap = 62.50, firstPassShare = 50% -> leaderPass1Cap = min(31.25, 62.5 - 25) = 31.25; Pass 1 gives PAXG 31.25, remaining = 31.25, BTC min(30, 31.25, 31.25) = 30, remaining = 1.25 -> Pass 2 PAXG headroom = 50 - 31.25 -> +1.25 -> PAXG = 32.50, BTC = 30 -> total = 62.50!
+    expect(comparison.totalBuyDeltaUsd).toBe(-37.5);
+    expect(comparison.before.remainingLiquidityAfterOpsUsd).toBe(200);
+    expect(comparison.after.remainingLiquidityAfterOpsUsd).toBe(237.5);
+    expect(comparison.remainingLiquidityDeltaUsd).toBe(37.5);
+
+    const paxgChange = comparison.changedAssets.find((c) => c.ticker === 'PAXG')!;
+    const btcChange = comparison.changedAssets.find((c) => c.ticker === 'BTC')!;
+    expect(paxgChange.beforeUsd).toBe(60);
+    expect(paxgChange.afterUsd).toBe(32.5);
+    expect(btcChange.beforeUsd).toBe(40);
+    expect(btcChange.afterUsd).toBe(30);
   });
 });

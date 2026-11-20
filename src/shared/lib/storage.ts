@@ -2,6 +2,7 @@ import type {
   CoinMappings,
   CoinTargets,
   TacticalDipConfig,
+  TacticalProfilePresetId,
   TargetAllocations,
   Transaction,
 } from '../types';
@@ -28,6 +29,7 @@ export const DEFAULT_TARGET_ALLOCATIONS: TargetAllocations = {
 };
 
 export const DEFAULT_TACTICAL_DIP_CONFIG: TacticalDipConfig = {
+  presetId: 'equilibrado',
   monthlyIncomeUsd: 900,
   tier1Usd: 45,
   tier2Usd: 70,
@@ -35,9 +37,19 @@ export const DEFAULT_TACTICAL_DIP_CONFIG: TacticalDipConfig = {
   tier3MaxFreeUsdtPct: 40,
   biweeklyDcaReserveUsd: 50,
   cooldownAdditionalDropPct: 7.5,
+  minOrderUsd: 20,
+  temporalCooldownHours: 48,
+  multiAssetFirstPassMaxSharePct: 60,
+  groupOverweightThresholdPct: 5,
   tier3EscapeDropPct: 15,
   goldCooldownAdditionalDropPct: 3.5,
   goldTier3EscapeDropPct: 8,
+  cryptoTier1MinDropPct: 10,
+  cryptoTier2MinDropPct: 15,
+  cryptoTier3MinDropPct: 22,
+  goldTier1MinDropPct: 5,
+  goldTier2MinDropPct: 8,
+  goldTier3MinDropPct: 12,
 };
 
 const DEFAULT_GOAL_TARGET = 20_000;
@@ -194,11 +206,23 @@ function sanitizeNumber(value: unknown, fallback: number, min = 0, max = 1_000_0
   return Number(Math.min(max, Math.max(min, value)).toFixed(2));
 }
 
+const VALID_TACTICAL_PRESETS = new Set<TacticalProfilePresetId>([
+  'conservador',
+  'equilibrado',
+  'agresivo',
+  'personalizado',
+]);
+
 export function sanitizeTacticalDipConfig(
   raw: Partial<TacticalDipConfig> | null | undefined,
 ): TacticalDipConfig {
   const src = raw ?? {};
+  const rawPreset = src.presetId;
+  const presetId: TacticalProfilePresetId =
+    rawPreset && VALID_TACTICAL_PRESETS.has(rawPreset) ? rawPreset : 'equilibrado';
+
   return {
+    presetId,
     monthlyIncomeUsd: sanitizeNumber(
       src.monthlyIncomeUsd,
       DEFAULT_TACTICAL_DIP_CONFIG.monthlyIncomeUsd,
@@ -224,23 +248,83 @@ export function sanitizeTacticalDipConfig(
       0,
       90,
     ),
+    minOrderUsd: sanitizeNumber(
+      src.minOrderUsd,
+      DEFAULT_TACTICAL_DIP_CONFIG.minOrderUsd ?? 20,
+      0,
+      100_000,
+    ),
+    temporalCooldownHours: sanitizeNumber(
+      src.temporalCooldownHours,
+      DEFAULT_TACTICAL_DIP_CONFIG.temporalCooldownHours ?? 48,
+      0,
+      720,
+    ),
+    multiAssetFirstPassMaxSharePct: sanitizeNumber(
+      src.multiAssetFirstPassMaxSharePct,
+      DEFAULT_TACTICAL_DIP_CONFIG.multiAssetFirstPassMaxSharePct ?? 60,
+      10,
+      100,
+    ),
+    groupOverweightThresholdPct: sanitizeNumber(
+      src.groupOverweightThresholdPct,
+      DEFAULT_TACTICAL_DIP_CONFIG.groupOverweightThresholdPct ?? 5,
+      0,
+      100,
+    ),
     tier3EscapeDropPct: sanitizeNumber(
       src.tier3EscapeDropPct,
       DEFAULT_TACTICAL_DIP_CONFIG.tier3EscapeDropPct ?? 15,
-      5,
+      1,
       90,
     ),
     goldCooldownAdditionalDropPct: sanitizeNumber(
       src.goldCooldownAdditionalDropPct,
       DEFAULT_TACTICAL_DIP_CONFIG.goldCooldownAdditionalDropPct ?? 3.5,
-      0.5,
-      30,
+      0,
+      50,
     ),
     goldTier3EscapeDropPct: sanitizeNumber(
       src.goldTier3EscapeDropPct,
       DEFAULT_TACTICAL_DIP_CONFIG.goldTier3EscapeDropPct ?? 8,
-      3,
-      50,
+      1,
+      90,
+    ),
+    cryptoTier1MinDropPct: sanitizeNumber(
+      src.cryptoTier1MinDropPct,
+      DEFAULT_TACTICAL_DIP_CONFIG.cryptoTier1MinDropPct ?? 10,
+      1,
+      95,
+    ),
+    cryptoTier2MinDropPct: sanitizeNumber(
+      src.cryptoTier2MinDropPct,
+      DEFAULT_TACTICAL_DIP_CONFIG.cryptoTier2MinDropPct ?? 15,
+      1,
+      95,
+    ),
+    cryptoTier3MinDropPct: sanitizeNumber(
+      src.cryptoTier3MinDropPct,
+      DEFAULT_TACTICAL_DIP_CONFIG.cryptoTier3MinDropPct ?? 22,
+      1,
+      95,
+    ),
+    goldTier1MinDropPct: sanitizeNumber(
+      src.goldTier1MinDropPct,
+      DEFAULT_TACTICAL_DIP_CONFIG.goldTier1MinDropPct ?? 5,
+      1,
+      95,
+    ),
+    goldTier2MinDropPct: sanitizeNumber(
+      src.goldTier2MinDropPct,
+      DEFAULT_TACTICAL_DIP_CONFIG.goldTier2MinDropPct ?? 8,
+      1,
+      95,
+    ),
+    goldTier3MinDropPct: sanitizeNumber(
+      src.goldTier3MinDropPct,
+      DEFAULT_TACTICAL_DIP_CONFIG.goldTier3MinDropPct ?? 12,
+      1,
+      95,
     ),
   };
 }

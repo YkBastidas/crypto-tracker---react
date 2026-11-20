@@ -286,7 +286,7 @@ export function CoinCard({
               </div>
               {recommendation.tacticalBuyUsd > 0 ? (
                 <p className="text-text-muted leading-snug">
-                  Compra táctica sugerida:{' '}
+                  Cupo táctico según tus reglas:{' '}
                   <strong className="text-accent-gold">
                     {pv(formatUsd(recommendation.tacticalBuyUsd))}
                   </strong>{' '}

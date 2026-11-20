@@ -15,6 +15,7 @@ export type {
   CoinTargets,
   SmartTradeRecommendation,
   TacticalDipConfig,
+  TacticalProfilePresetId,
   TargetAllocations,
   VolatilityProfileId,
 } from '../../../shared/types';

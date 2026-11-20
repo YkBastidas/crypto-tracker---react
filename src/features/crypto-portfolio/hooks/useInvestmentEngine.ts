@@ -12,7 +12,7 @@ import { getCoinTargets } from '../../../shared/lib/storage';
  * Synchronizes USDT (Inversiones Binance) and USDC (Fondo Emergencia) live balances from Budget Store when active.
  */
 export function useInvestmentEngine() {
-  const { transactions, coinMappings, stablecoins } = usePortfolioStore();
+  const { transactions, coinMappings, stablecoins, tacticalDipConfig } = usePortfolioStore();
   const movements = useBudgetStore((s) => s.movements);
   const syncCryptoDca = useBudgetStore((s) => s.syncCryptoDca);
   const targets = getCoinTargets();
@@ -36,7 +36,14 @@ export function useInvestmentEngine() {
   );
 
   const holdings = useMemo(() => {
-    const raw = computeHoldings(transactions, coinMappings, prices, targets, stablecoins);
+    const raw = computeHoldings(
+      transactions,
+      coinMappings,
+      prices,
+      targets,
+      stablecoins,
+      tacticalDipConfig,
+    );
     if (!syncCryptoDca || movements.length === 0) return raw;
 
     const usdtBal = Math.max(
@@ -84,7 +91,17 @@ export function useInvestmentEngine() {
       }
       return h;
     });
-  }, [transactions, coinMappings, prices, targets, stablecoins, syncCryptoDca, movements.length, budgetFundSummary]);
+  }, [
+    transactions,
+    coinMappings,
+    prices,
+    targets,
+    stablecoins,
+    tacticalDipConfig,
+    syncCryptoDca,
+    movements.length,
+    budgetFundSummary,
+  ]);
 
   const summary = useMemo(
     () => computePortfolioSummary(transactions, holdings),

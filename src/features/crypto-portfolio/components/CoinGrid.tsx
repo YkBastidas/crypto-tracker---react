@@ -20,15 +20,14 @@ import { useBudgetStore } from '../../budget/store/budgetStore';
 import { calculateEligibleInvestmentCapital } from '../../budget/utils/calculations';
 import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { CoinCard } from './CoinCard';
+import { TacticalConfigPanel } from './TacticalConfigPanel';
 import type { CoinHolding, SmartTradeRecommendation } from '../types';
 import {
-  DEFAULT_TACTICAL_DIP_CONFIG,
   buildAiPortfolioReportMarkdown,
   computePortfolioExposure,
   computeSmartTradeRecommendation,
   formatTokens,
   formatUsd,
-  recommendTacticalTiersFromIncome,
 } from '../utils/calculations';
 
 const EXPOSURE_GROUP_COLORS: Record<string, string> = {
@@ -148,11 +147,6 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
     unassignedUsdtUsd,
     excludedPhysicalCashUsd,
   } = useMemo(() => calculateEligibleInvestmentCapital(movements), [movements]);
-
-  const freeTacticalUsdtUsd = Math.max(
-    0,
-    Number((totalEligibleUsd - tacticalDipConfig.biweeklyDcaReserveUsd).toFixed(2)),
-  );
 
   const totalVolatileCryptoUsd = useMemo(
     () =>
@@ -628,255 +622,18 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
         )}
 
         {showTacticalPanel && (
-          <div className="bg-bg-card border border-border rounded-xl p-4 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h4 className="text-xs font-bold uppercase tracking-wider text-text-primary">
-                  Parámetros del Motor Táctico de Caídas
-                </h4>
-                <p className="text-[11px] text-text-muted mt-0.5">
-                  Usa solo USDT digital en Binance ({pv(formatUsd(ahorroEnvelopeUsd))} sobre Ahorro +{' '}
-                  {pv(formatUsd(unassignedUsdtUsd))} USDT libre).
-                  {excludedPhysicalCashUsd > 0 && (
-                    <> Excluido efectivo físico: {pv(formatUsd(excludedPhysicalCashUsd))}.</>
-                  )}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setTacticalDipConfig(DEFAULT_TACTICAL_DIP_CONFIG)}
-                className="px-2.5 py-1 rounded-lg text-[11px] bg-bg-input border border-border text-text-muted hover:text-text-primary cursor-pointer"
-              >
-                Restaurar ($900/mes)
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
-              <div className="bg-bg-input/60 border border-border rounded-lg p-2.5">
-                <span className="text-[10px] text-text-muted block">USDT Digital Libre</span>
-                <strong className="text-accent-blue text-sm">{pv(formatUsd(totalEligibleUsd))}</strong>
-              </div>
-              <div className="bg-bg-input/60 border border-border rounded-lg p-2.5">
-                <span className="text-[10px] text-text-muted block">Reserva DCA Quincenal</span>
-                <strong className="text-text-primary text-sm">
-                  -{pv(formatUsd(tacticalDipConfig.biweeklyDcaReserveUsd))}
-                </strong>
-              </div>
-              <div className="bg-bg-input/60 border border-border rounded-lg p-2.5">
-                <span className="text-[10px] text-text-muted block">Liquidez Táctica Neta</span>
-                <strong className="text-text-primary text-sm">{pv(formatUsd(freeTacticalUsdtUsd))}</strong>
-              </div>
-              <div className="bg-bg-input/60 border border-border rounded-lg p-2.5">
-                <span className="text-[10px] text-text-muted block">
-                  Cupo Máximo Diario ({tacticalDipConfig.tier3MaxFreeUsdtPct}%)
-                </span>
-                <strong className="text-accent-gold text-sm">
-                  {pv(
-                    formatUsd(
-                      Number(
-                        (
-                          freeTacticalUsdtUsd *
-                          (tacticalDipConfig.tier3MaxFreeUsdtPct / 100)
-                        ).toFixed(2),
-                      ),
-                    ),
-                  )}
-                </strong>
-              </div>
-            </div>
-
-            <p className="text-[10px] text-text-muted leading-snug">
-              <strong className="text-text-primary">Crypto:</strong> N1 10–14.9% · N2 15–21.9% · N3 ≥22%
-              <span className="mx-1.5 opacity-40">|</span>
-              <strong className="text-accent-gold">Oro (PAXG/XAUT):</strong> N1 5–7.9% · N2 8–11.9% · N3 ≥12%
-              <span className="mx-1.5 opacity-40">|</span>
-              Cooldown 48h · Máx. 60%/activo si cupo ≥ $40
-            </p>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs">
-              <div className="col-span-2 sm:col-span-3 lg:col-span-2 flex items-end gap-2">
-                <label className="flex-1 block">
-                  <span className="text-[10px] text-text-muted block mb-1">Ingreso Mensual ($)</span>
-                  <input
-                    type="number"
-                    min={0}
-                    step={50}
-                    value={tacticalDipConfig.monthlyIncomeUsd}
-                    onChange={(e) =>
-                      setTacticalDipConfig({
-                        monthlyIncomeUsd: Math.max(0, parseFloat(e.target.value) || 0),
-                      })
-                    }
-                    className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const recommended = recommendTacticalTiersFromIncome(
-                      tacticalDipConfig.monthlyIncomeUsd,
-                    );
-                    setTacticalDipConfig({
-                      monthlyIncomeUsd: recommended.monthlyIncomeUsd,
-                      tier1Usd: recommended.tier1Usd,
-                      tier2Usd: recommended.tier2Usd,
-                      tier3Usd: recommended.tier3Usd,
-                      biweeklyDcaReserveUsd: recommended.biweeklyDcaReserveUsd,
-                    });
-                  }}
-                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-accent-blue/20 border border-accent-blue/40 text-accent-blue hover:bg-accent-blue/30 cursor-pointer shrink-0"
-                >
-                  Recalcular tramos
-                </button>
-              </div>
-
-              <label className="block">
-                <span className="text-[10px] text-text-muted block mb-1">Bloque Nivel 1 ($)</span>
-                <input
-                  type="number"
-                  min={0}
-                  step={5}
-                  value={tacticalDipConfig.tier1Usd}
-                  onChange={(e) =>
-                    setTacticalDipConfig({ tier1Usd: Math.max(0, parseFloat(e.target.value) || 0) })
-                  }
-                  className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
-                />
-              </label>
-
-              <label className="block">
-                <span className="text-[10px] text-text-muted block mb-1">Bloque Nivel 2 ($)</span>
-                <input
-                  type="number"
-                  min={0}
-                  step={5}
-                  value={tacticalDipConfig.tier2Usd}
-                  onChange={(e) =>
-                    setTacticalDipConfig({ tier2Usd: Math.max(0, parseFloat(e.target.value) || 0) })
-                  }
-                  className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
-                />
-              </label>
-
-              <label className="block">
-                <span className="text-[10px] text-text-muted block mb-1">Bloque Nivel 3 ($)</span>
-                <input
-                  type="number"
-                  min={0}
-                  step={5}
-                  value={tacticalDipConfig.tier3Usd}
-                  onChange={(e) =>
-                    setTacticalDipConfig({ tier3Usd: Math.max(0, parseFloat(e.target.value) || 0) })
-                  }
-                  className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
-                />
-              </label>
-
-              <label className="block">
-                <span className="text-[10px] text-text-muted block mb-1">Cupo Diario (% Neto)</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={100}
-                  step={5}
-                  value={tacticalDipConfig.tier3MaxFreeUsdtPct}
-                  onChange={(e) =>
-                    setTacticalDipConfig({
-                      tier3MaxFreeUsdtPct: Math.min(
-                        100,
-                        Math.max(1, parseFloat(e.target.value) || 40),
-                      ),
-                    })
-                  }
-                  className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
-                />
-              </label>
-
-              <label className="block">
-                <span className="text-[10px] text-text-muted block mb-1">Reserva DCA ($)</span>
-                <input
-                  type="number"
-                  min={0}
-                  step={5}
-                  value={tacticalDipConfig.biweeklyDcaReserveUsd}
-                  onChange={(e) =>
-                    setTacticalDipConfig({
-                      biweeklyDcaReserveUsd: Math.max(0, parseFloat(e.target.value) || 0),
-                    })
-                  }
-                  className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
-                />
-              </label>
-
-              <label className="block">
-                <span className="text-[10px] text-text-muted block mb-1">Cooldown Crypto %</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={50}
-                  step={0.5}
-                  value={tacticalDipConfig.cooldownAdditionalDropPct}
-                  onChange={(e) =>
-                    setTacticalDipConfig({
-                      cooldownAdditionalDropPct: Math.max(0, parseFloat(e.target.value) || 0),
-                    })
-                  }
-                  className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
-                />
-              </label>
-
-              <label className="block">
-                <span className="text-[10px] text-text-muted block mb-1">Escape N3 Crypto (%)</span>
-                <input
-                  type="number"
-                  min={5}
-                  max={50}
-                  step={1}
-                  value={tacticalDipConfig.tier3EscapeDropPct ?? 15}
-                  onChange={(e) =>
-                    setTacticalDipConfig({
-                      tier3EscapeDropPct: Math.max(5, parseFloat(e.target.value) || 15),
-                    })
-                  }
-                  className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
-                />
-              </label>
-
-              <label className="block">
-                <span className="text-[10px] text-accent-gold block mb-1">Cooldown Oro (PAXG) %</span>
-                <input
-                  type="number"
-                  min={0.5}
-                  max={30}
-                  step={0.5}
-                  value={tacticalDipConfig.goldCooldownAdditionalDropPct ?? 3.5}
-                  onChange={(e) =>
-                    setTacticalDipConfig({
-                      goldCooldownAdditionalDropPct: Math.max(0.5, parseFloat(e.target.value) || 3.5),
-                    })
-                  }
-                  className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-gold"
-                />
-              </label>
-
-              <label className="block">
-                <span className="text-[10px] text-accent-gold block mb-1">Escape N3 Oro (%)</span>
-                <input
-                  type="number"
-                  min={3}
-                  max={50}
-                  step={0.5}
-                  value={tacticalDipConfig.goldTier3EscapeDropPct ?? 8}
-                  onChange={(e) =>
-                    setTacticalDipConfig({
-                      goldTier3EscapeDropPct: Math.max(3, parseFloat(e.target.value) || 8),
-                    })
-                  }
-                  className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-gold"
-                />
-              </label>
-            </div>
-          </div>
+          <TacticalConfigPanel
+            savedConfig={tacticalDipConfig}
+            holdings={cryptoHoldings}
+            ahorroEnvelopeUsd={ahorroEnvelopeUsd}
+            unassignedUsdtUsd={unassignedUsdtUsd}
+            totalEligibleUsd={totalEligibleUsd}
+            excludedPhysicalCashUsd={excludedPhysicalCashUsd}
+            targetAllocations={targetAllocations}
+            isPrivate={isPrivate}
+            onSave={(nextConfig) => setTacticalDipConfig(nextConfig)}
+            onClose={() => setShowTacticalPanel(false)}
+          />
         )}
 
         {cryptoHoldings.length === 0 ? (
