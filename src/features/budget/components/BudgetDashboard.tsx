@@ -27,6 +27,7 @@ import {
 import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { PrivacyValue } from '../../../shared/ui/PrivacyValue';
 import { useInvestmentEngine } from '../../crypto-portfolio/hooks/useInvestmentEngine';
+import { sumReservedLimitUsdt } from '../../crypto-portfolio/utils/calculations';
 import { ENVELOPE_META } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
 import type {
@@ -106,6 +107,11 @@ export function BudgetDashboard({
   onNavigateExpenses,
 }: BudgetDashboardProps) {
   const isPrivate = usePortfolioStore((s) => s.isPrivate);
+  const openLimitOrders = usePortfolioStore((s) => s.openLimitOrders);
+  const reservedLimitUsdt = useMemo(
+    () => sumReservedLimitUsdt(openLimitOrders),
+    [openLimitOrders],
+  );
   const {
     movements,
     expenses,
@@ -831,6 +837,17 @@ export function BudgetDashboard({
                           </strong>
                         </span>
                       ))}
+                      {fund.id === 'inversiones_binance' && reservedLimitUsdt > 0 && (
+                        <span
+                          title="USDT comprometido en órdenes LIMIT abiertas (no altera tu patrimonio hasta ejecutarse)"
+                          className="px-1.5 py-0.5 rounded bg-cyan-500/15 text-cyan-300 border border-cyan-500/30"
+                        >
+                          En LIMIT:{' '}
+                          <strong>
+                            <PrivacyValue value={formatUsd(reservedLimitUsdt)} isPrivate={isPrivate} />
+                          </strong>
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>

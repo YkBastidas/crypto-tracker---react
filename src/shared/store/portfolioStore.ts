@@ -1,5 +1,11 @@
 import { create } from 'zustand';
-import type { Transaction, CoinMappings, TacticalDipConfig, TargetAllocations } from '../types';
+import type {
+  Transaction,
+  CoinMappings,
+  OpenLimitOrder,
+  TacticalDipConfig,
+  TargetAllocations,
+} from '../types';
 import {
   DEFAULT_TRANSACTIONS,
   DEFAULT_TARGET_ALLOCATIONS,
@@ -20,6 +26,9 @@ import {
   sanitizeTacticalDipConfig,
   getTargetAllocations,
   saveTargetAllocations,
+  getOpenLimitOrders,
+  saveOpenLimitOrders,
+  sanitizeOpenLimitOrders,
 } from '../lib/storage';
 
 interface PortfolioState {
@@ -34,6 +43,7 @@ interface PortfolioState {
   archivedCoins: string[];
   tacticalDipConfig: TacticalDipConfig;
   targetAllocations: TargetAllocations;
+  openLimitOrders: OpenLimitOrder[];
   undoTransactions: Transaction[] | null;
   undoLabel: string | null;
 
@@ -50,6 +60,15 @@ interface PortfolioState {
   setTacticalDipConfig: (patch: Partial<TacticalDipConfig>) => void;
   setTargetAllocation: (id: string, pct: number | null) => void;
   resetTargetAllocations: () => void;
+  addOpenLimitOrder: (
+    order: Omit<OpenLimitOrder, 'id' | 'createdAt'> & { createdAt?: string },
+  ) => OpenLimitOrder | null;
+  updateOpenLimitOrder: (
+    id: string,
+    patch: Partial<Pick<OpenLimitOrder, 'limitPrice' | 'reservedUsd' | 'notes'>>,
+  ) => void;
+  removeOpenLimitOrder: (id: string) => void;
+  clearOpenLimitOrders: () => void;
   undoLastPortfolioAction: () => void;
   dismissPortfolioUndo: () => void;
   togglePrivacy: () => void;
@@ -73,6 +92,7 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
   archivedCoins: getArchivedCoins(),
   tacticalDipConfig: getTacticalDipConfig(),
   targetAllocations: getTargetAllocations(),
+  openLimitOrders: getOpenLimitOrders(),
   undoTransactions: null,
   undoLabel: null,
 
@@ -144,9 +164,12 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
     persistTransactions(updated);
     const nextArchived = get().archivedCoins.filter((t) => t.toUpperCase() !== clean);
     saveArchivedCoins(nextArchived);
+    const nextLimits = get().openLimitOrders.filter((o) => o.ticker.toUpperCase() !== clean);
+    saveOpenLimitOrders(nextLimits);
     set({
       transactions: updated,
       archivedCoins: nextArchived,
+      openLimitOrders: nextLimits,
       isDirty: true,
       undoTransactions: prev,
       undoLabel: `Eliminada moneda: ${clean}`,
@@ -199,6 +222,52 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
     set({ targetAllocations: fresh });
   },
 
+  addOpenLimitOrder: (input) => {
+    const cleanTicker = input.ticker.toUpperCase().trim();
+    if (
+      !cleanTicker ||
+      !Number.isFinite(input.limitPrice) ||
+      input.limitPrice <= 0 ||
+      !Number.isFinite(input.reservedUsd) ||
+      input.reservedUsd <= 0
+    ) {
+      return null;
+    }
+    const created: OpenLimitOrder = {
+      id: `lim-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      ticker: cleanTicker,
+      limitPrice: input.limitPrice,
+      reservedUsd: Number(input.reservedUsd.toFixed(2)),
+      createdAt: input.createdAt ?? new Date().toISOString(),
+      targetBuyPriceAtPlacement: input.targetBuyPriceAtPlacement,
+      unlockTriggerLabel: input.unlockTriggerLabel,
+      notes: input.notes?.trim() || undefined,
+    };
+    const next = sanitizeOpenLimitOrders([created, ...get().openLimitOrders]);
+    saveOpenLimitOrders(next);
+    set({ openLimitOrders: next });
+    return created;
+  },
+
+  updateOpenLimitOrder: (id, patch) => {
+    const next = sanitizeOpenLimitOrders(
+      get().openLimitOrders.map((o) => (o.id === id ? { ...o, ...patch } : o)),
+    );
+    saveOpenLimitOrders(next);
+    set({ openLimitOrders: next });
+  },
+
+  removeOpenLimitOrder: (id) => {
+    const next = get().openLimitOrders.filter((o) => o.id !== id);
+    saveOpenLimitOrders(next);
+    set({ openLimitOrders: next });
+  },
+
+  clearOpenLimitOrders: () => {
+    saveOpenLimitOrders([]);
+    set({ openLimitOrders: [] });
+  },
+
   undoLastPortfolioAction: () => {
     const prev = get().undoTransactions;
     if (!prev) return;
@@ -244,8 +313,10 @@ export const usePortfolioStore = create<PortfolioState>((set, get) => ({
 
   resetToDefaultTransactions: () => {
     persistTransactions(DEFAULT_TRANSACTIONS);
+    saveOpenLimitOrders([]);
     set({
       transactions: DEFAULT_TRANSACTIONS,
+      openLimitOrders: [],
       isDirty: false,
       undoTransactions: null,
       undoLabel: null,

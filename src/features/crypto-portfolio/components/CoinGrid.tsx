@@ -1,6 +1,7 @@
 import { useMemo, useState, type DragEvent } from 'react';
 import {
   ArrowUpDown,
+  BookmarkCheck,
   Bot,
   Check,
   ChevronDown,
@@ -28,6 +29,7 @@ import {
   computeSmartTradeRecommendation,
   formatTokens,
   formatUsd,
+  sumReservedLimitUsdt,
 } from '../utils/calculations';
 
 const EXPOSURE_GROUP_COLORS: Record<string, string> = {
@@ -130,6 +132,8 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
     archivedCoins,
     tacticalDipConfig,
     targetAllocations,
+    openLimitOrders,
+    removeOpenLimitOrder,
     setCustomCoinOrder,
     archiveCoin,
     unarchiveCoin,
@@ -147,6 +151,15 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
     unassignedUsdtUsd,
     excludedPhysicalCashUsd,
   } = useMemo(() => calculateEligibleInvestmentCapital(movements), [movements]);
+
+  const reservedLimitUsdt = useMemo(
+    () => sumReservedLimitUsdt(openLimitOrders),
+    [openLimitOrders],
+  );
+  const availableUncommittedUsdt = useMemo(
+    () => Math.max(0, Number((totalEligibleUsd - reservedLimitUsdt).toFixed(2))),
+    [totalEligibleUsd, reservedLimitUsdt],
+  );
 
   const totalVolatileCryptoUsd = useMemo(
     () =>
@@ -236,6 +249,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
         allVolatileHoldings: cryptoHoldings,
         tacticalConfig: tacticalDipConfig,
         targetAllocations,
+        openLimitOrders,
       });
     }
     return buildAiPortfolioReportMarkdown({
@@ -251,6 +265,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
       recommendations,
       groupExposure,
       coinExposure,
+      openLimitOrders,
     });
   }, [
     showAiPanel,
@@ -265,6 +280,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
     totalVolatileCryptoUsd,
     groupExposure,
     coinExposure,
+    openLimitOrders,
   ]);
 
   const handleCopyAiReport = async () => {
@@ -630,10 +646,47 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
             totalEligibleUsd={totalEligibleUsd}
             excludedPhysicalCashUsd={excludedPhysicalCashUsd}
             targetAllocations={targetAllocations}
+            openLimitOrders={openLimitOrders}
             isPrivate={isPrivate}
             onSave={(nextConfig) => setTacticalDipConfig(nextConfig)}
             onClose={() => setShowTacticalPanel(false)}
           />
+        )}
+
+        {openLimitOrders.length > 0 && (
+          <div className="bg-accent-blue/10 border border-accent-blue/35 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold text-accent-blue flex items-center gap-1.5">
+                <BookmarkCheck size={14} /> Órdenes LIMIT activas ({openLimitOrders.length}):
+              </span>
+              <span className="text-text-muted">
+                Reservado:{' '}
+                <strong className="text-accent-gold">{pv(formatUsd(reservedLimitUsdt))}</strong> · USDT
+                libre sin comprometer:{' '}
+                <strong className="text-accent-green">{pv(formatUsd(availableUncommittedUsdt))}</strong>
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {openLimitOrders.map((order) => (
+                <span
+                  key={order.id}
+                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-bg-card border border-border text-[11px]"
+                >
+                  <strong className="text-text-primary">{pv(order.ticker)}</strong>
+                  <span className="text-cyan-300">@ {pv(formatUsd(order.limitPrice))}</span>
+                  <span className="text-text-muted">({pv(formatUsd(order.reservedUsd))})</span>
+                  <button
+                    type="button"
+                    onClick={() => removeOpenLimitOrder(order.id)}
+                    title={`Cancelar LIMIT de ${order.ticker} y liberar USDT`}
+                    className="text-text-muted hover:text-accent-red bg-transparent border-none p-0 cursor-pointer"
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
         )}
 
         {cryptoHoldings.length === 0 ? (
@@ -652,6 +705,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
                   allVolatileHoldings={cryptoHoldings}
                   tacticalConfig={tacticalDipConfig}
                   targetAllocations={targetAllocations}
+                  openLimitOrders={openLimitOrders}
                   onTargetChange={onTargetChange}
                   onArchive={(t) => archiveCoin(t)}
                   draggable={sortMode === 'manual'}
@@ -735,6 +789,7 @@ export function CoinGrid({ holdings, onTargetChange }: CoinGridProps) {
                 holding={holding}
                 eligibleCapitalUsd={totalEligibleUsd}
                 totalVolatileCryptoUsd={totalVolatileCryptoUsd}
+                openLimitOrders={openLimitOrders}
                 onTargetChange={onTargetChange}
                 onArchive={(t) => archiveCoin(t)}
                 draggable={sortMode === 'manual'}

@@ -142,6 +142,17 @@ export interface TacticalDipConfig {
   limitOrderProximityPct?: number;
 }
 
+export interface OpenLimitOrder {
+  id: string;
+  ticker: string;
+  limitPrice: number;
+  reservedUsd: number;
+  createdAt: string; // ISO timestamp
+  targetBuyPriceAtPlacement?: number;
+  unlockTriggerLabel?: string;
+  notes?: string;
+}
+
 export interface LimitOrderRecommendation {
   limitPrice: number;
   suggestedUsd: number;
@@ -194,6 +205,9 @@ export interface SmartTradeRecommendation {
   globalTierBudgetUsd?: number;
   dailyCapUsd?: number;
   remainingDailyCapAfterBuyUsd?: number;
+  reservedLimitUsdtUsd?: number;
+  availableEligibleCapitalUsd?: number;
+  activeOpenLimitOrders?: OpenLimitOrder[];
   limitOrder?: LimitOrderRecommendation;
   blockedReason?: string;
   concentrationWarning?: string;

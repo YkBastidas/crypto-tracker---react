@@ -1,6 +1,7 @@
 import type {
   CoinMappings,
   CoinTargets,
+  OpenLimitOrder,
   TacticalDipConfig,
   TacticalProfilePresetId,
   TargetAllocations,
@@ -18,6 +19,7 @@ const KEYS = {
   ARCHIVED_COINS: 'portfolio-archived-coins',
   TACTICAL_DIP_CONFIG: 'portfolio-tactical-dip-config',
   TARGET_ALLOCATIONS: 'portfolio-target-allocations',
+  OPEN_LIMIT_ORDERS: 'portfolio-open-limit-orders',
 } as const;
 
 export const DEFAULT_TARGET_ALLOCATIONS: TargetAllocations = {
@@ -375,4 +377,68 @@ export function getTargetAllocations(): TargetAllocations {
 
 export function saveTargetAllocations(targets: TargetAllocations): void {
   setJson(KEYS.TARGET_ALLOCATIONS, sanitizeTargetAllocations(targets));
+}
+
+// ── Public API: Open LIMIT Orders ──
+
+export function sanitizeOpenLimitOrders(raw: unknown): OpenLimitOrder[] {
+  if (!Array.isArray(raw)) return [];
+  const result: OpenLimitOrder[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const obj = item as Record<string, unknown>;
+    const ticker = typeof obj.ticker === 'string' ? obj.ticker.toUpperCase().trim() : '';
+    const limitPrice = typeof obj.limitPrice === 'number' ? obj.limitPrice : Number.NaN;
+    const reservedUsd = typeof obj.reservedUsd === 'number' ? obj.reservedUsd : Number.NaN;
+    if (
+      !ticker ||
+      !Number.isFinite(limitPrice) ||
+      limitPrice <= 0 ||
+      !Number.isFinite(reservedUsd) ||
+      reservedUsd <= 0
+    ) {
+      continue;
+    }
+    const id =
+      typeof obj.id === 'string' && obj.id.trim()
+        ? obj.id.trim()
+        : `lim-${ticker}-${result.length + 1}`;
+    const createdAt =
+      typeof obj.createdAt === 'string' && obj.createdAt.trim()
+        ? obj.createdAt
+        : new Date().toISOString();
+    const targetBuyPriceAtPlacement =
+      typeof obj.targetBuyPriceAtPlacement === 'number' &&
+      Number.isFinite(obj.targetBuyPriceAtPlacement) &&
+      obj.targetBuyPriceAtPlacement > 0
+        ? obj.targetBuyPriceAtPlacement
+        : undefined;
+    const unlockTriggerLabel =
+      typeof obj.unlockTriggerLabel === 'string' && obj.unlockTriggerLabel.trim()
+        ? obj.unlockTriggerLabel.trim()
+        : undefined;
+    const notes =
+      typeof obj.notes === 'string' && obj.notes.trim() ? obj.notes.trim() : undefined;
+
+    result.push({
+      id,
+      ticker,
+      limitPrice,
+      reservedUsd: Number(reservedUsd.toFixed(2)),
+      createdAt,
+      targetBuyPriceAtPlacement,
+      unlockTriggerLabel,
+      notes,
+    });
+  }
+  return result;
+}
+
+export function getOpenLimitOrders(): OpenLimitOrder[] {
+  const stored = getJson<unknown>(KEYS.OPEN_LIMIT_ORDERS, []);
+  return sanitizeOpenLimitOrders(stored);
+}
+
+export function saveOpenLimitOrders(orders: OpenLimitOrder[]): void {
+  setJson(KEYS.OPEN_LIMIT_ORDERS, sanitizeOpenLimitOrders(orders));
 }

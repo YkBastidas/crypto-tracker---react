@@ -15,6 +15,7 @@ import {
 import { DEFAULT_TACTICAL_DIP_CONFIG, sanitizeTacticalDipConfig } from '../../../shared/lib/storage';
 import type {
   CoinHolding,
+  OpenLimitOrder,
   TacticalDipConfig,
   TacticalProfilePresetId,
   TargetAllocations,
@@ -36,6 +37,7 @@ interface TacticalConfigPanelProps {
   totalEligibleUsd: number;
   excludedPhysicalCashUsd: number;
   targetAllocations: TargetAllocations;
+  openLimitOrders?: OpenLimitOrder[];
   isPrivate: boolean;
   onSave: (nextConfig: TacticalDipConfig) => void;
   onClose: () => void;
@@ -134,6 +136,7 @@ export function TacticalConfigPanel({
   totalEligibleUsd,
   excludedPhysicalCashUsd,
   targetAllocations,
+  openLimitOrders = [],
   isPrivate,
   onSave,
   onClose,
@@ -168,9 +171,18 @@ export function TacticalConfigPanel({
         targetAllocations,
         currentConfig: cleanSaved,
         candidateConfig: sanitizedDraft,
+        openLimitOrders,
         nowMs: previewNowMs,
       }),
-    [holdings, totalEligibleUsd, targetAllocations, cleanSaved, sanitizedDraft, previewNowMs],
+    [
+      holdings,
+      totalEligibleUsd,
+      targetAllocations,
+      cleanSaved,
+      sanitizedDraft,
+      openLimitOrders,
+      previewNowMs,
+    ],
   );
 
   const isDirty = !configsEqual(cleanSaved, sanitizedDraft);
@@ -260,7 +272,14 @@ export function TacticalConfigPanel({
           </h4>
           <p className="text-[11px] text-text-muted mt-0.5">
             Dosifica solo tu USDT digital libre en Binance ({pv(formatUsd(ahorroEnvelopeUsd))} sobre Ahorro +{' '}
-            {pv(formatUsd(unassignedUsdtUsd))} USDT sin sobre).
+            {pv(formatUsd(unassignedUsdtUsd))} USDT sin sobre
+            {impact.after.reservedLimitUsdtUsd > 0 && (
+              <>
+                {' '}
+                · <strong className="text-cyan-300">-{pv(formatUsd(impact.after.reservedLimitUsdtUsd))} reservado en LIMIT</strong>
+              </>
+            )}
+            ).
             {excludedPhysicalCashUsd > 0 && (
               <> Excluido efectivo físico: {pv(formatUsd(excludedPhysicalCashUsd))}.</>
             )}
@@ -444,7 +463,14 @@ export function TacticalConfigPanel({
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
           <div className="bg-bg-input/60 border border-border rounded-lg p-2.5">
             <span className="text-[10px] text-text-muted block">USDT Digital Libre</span>
-            <strong className="text-accent-blue text-sm">{pv(formatUsd(totalEligibleUsd))}</strong>
+            <strong className="text-accent-blue text-sm">
+              {pv(formatUsd(Math.max(0, totalEligibleUsd - impact.after.reservedLimitUsdtUsd)))}
+            </strong>
+            {impact.after.reservedLimitUsdtUsd > 0 && (
+              <span className="text-[10px] text-cyan-300 block">
+                (-{pv(formatUsd(impact.after.reservedLimitUsdtUsd))} en LIMIT)
+              </span>
+            )}
           </div>
           <div className="bg-bg-input/60 border border-border rounded-lg p-2.5">
             <span className="text-[10px] text-text-muted block">Reserva DCA Regular</span>

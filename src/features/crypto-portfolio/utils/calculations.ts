@@ -4,6 +4,7 @@ import type {
   CryptoGroupKey,
   DipTier,
   LimitOrderRecommendation,
+  OpenLimitOrder,
   PortfolioExposureItem,
   PortfolioSummary,
   LivePrices,
@@ -1147,9 +1148,19 @@ function evaluateLimitOrderCandidate(
   };
 }
 
+export function sumReservedLimitUsdt(openLimitOrders?: OpenLimitOrder[]): number {
+  if (!openLimitOrders || openLimitOrders.length === 0) return 0;
+  const total = openLimitOrders.reduce(
+    (acc, o) =>
+      Number.isFinite(o.reservedUsd) && o.reservedUsd > 0 ? acc + o.reservedUsd : acc,
+    0,
+  );
+  return Number(total.toFixed(2));
+}
+
 /**
  * Fixed-tier Tactical Dip-Buying engine with Dual-Filter Cooldown, Group Overweight Guard & Priority Queue.
- * - Uses fixed blocks anchored to monthly income ($45 / $70 / $100) bounded by free Binance USDT (after DCA reserve).
+ * - Uses fixed blocks anchored to monthly income ($45 / $70 / $100) bounded by free Binance USDT (after DCA reserve & open LIMIT orders).
  * - Halves tactical block (-50%) and deprioritizes assets whose strategic group exceeds target by > +5%.
  * - Never uses breakEvenBuyUsd to size or cap orders (informational only).
  * - Discards micro-orders (< $20) instead of inflating them.
@@ -1161,6 +1172,7 @@ export function computeSmartTradeRecommendation(params: {
   allVolatileHoldings?: CoinHolding[];
   tacticalConfig?: Partial<TacticalDipConfig>;
   targetAllocations?: TargetAllocations;
+  openLimitOrders?: OpenLimitOrder[];
   nowMs?: number;
 }): SmartTradeRecommendation {
   const {
@@ -1170,6 +1182,7 @@ export function computeSmartTradeRecommendation(params: {
     allVolatileHoldings,
     tacticalConfig,
     targetAllocations,
+    openLimitOrders = [],
     nowMs = Date.now(),
   } = params;
   const config = sanitizeTacticalDipConfig({
@@ -1177,13 +1190,32 @@ export function computeSmartTradeRecommendation(params: {
     ...tacticalConfig,
   });
   const cleanEligible = Math.max(0, Number(eligibleCapitalUsd.toFixed(2)));
-  const freeTacticalUsdtUsd = Number(
+  const reservedLimitUsdtUsd = sumReservedLimitUsdt(openLimitOrders);
+  const availableEligibleCapitalUsd = Number(
+    Math.max(0, cleanEligible - reservedLimitUsdtUsd).toFixed(2),
+  );
+  const baseFreeTacticalUsdtUsd = Number(
     Math.max(0, cleanEligible - config.biweeklyDcaReserveUsd).toFixed(2),
   );
-  // Rule 1: daily cap applies strictly to Net Tactical Liquidity (after deducting biweekly DCA reserve)
-  const dailyCapUsd = Number(
-    (freeTacticalUsdtUsd * (config.tier3MaxFreeUsdtPct / 100)).toFixed(2),
+  const baseDailyCapUsd = Number(
+    (baseFreeTacticalUsdtUsd * (config.tier3MaxFreeUsdtPct / 100)).toFixed(2),
   );
+  const freeTacticalUsdtUsd = Number(
+    Math.max(0, availableEligibleCapitalUsd - config.biweeklyDcaReserveUsd).toFixed(2),
+  );
+  // Rule 1 + Open LIMIT reservation: remaining daily cap respects both uncommitted net liquidity and base daily cap minus active open LIMIT orders
+  const dailyCapUsd = Number(
+    Math.min(
+      freeTacticalUsdtUsd,
+      Math.max(0, baseDailyCapUsd - reservedLimitUsdtUsd),
+    ).toFixed(2),
+  );
+  const holdingUpper = holding.ticker.toUpperCase();
+  const openLimitTickerSet = new Set(openLimitOrders.map((o) => o.ticker.toUpperCase()));
+  const activeOpenLimitOrders = openLimitOrders.filter(
+    (o) => o.ticker.toUpperCase() === holdingUpper,
+  );
+  const hasOpenLimitOnHolding = activeOpenLimitOrders.length > 0;
   const price = holding.livePrice;
   const dca = holding.dca;
   const q = dca > 0 ? holding.totalSpent / dca : 0;
@@ -1240,6 +1272,7 @@ export function computeSmartTradeRecommendation(params: {
   const activeBuyPeers = canOperateToday
     ? pool.filter((h) => {
         if (h.tradeSignal !== 'BUY') return false;
+        if (openLimitTickerSet.has(h.ticker.toUpperCase())) return false;
         const peerDrop = h.dca > 0 ? ((h.dca - h.livePrice) / h.dca) * 100 : 0;
         const peerTier = computeTierInfo(peerDrop, true, config, h.ticker).dipTier;
         return !evaluateCooldown(h, peerTier, config, nowMs).isCooldownLocked;
@@ -1279,16 +1312,25 @@ export function computeSmartTradeRecommendation(params: {
     : 0;
 
   if (holding.tradeSignal === 'BUY' && price > 0) {
-    if (cooldown.isCooldownLocked) {
+    if (hasOpenLimitOnHolding) {
+      tacticalBuyUsd = 0;
+      blockedReason =
+        'Orden LIMIT abierta en este activo (márcala como ejecutada o cancélala primero)';
+    } else if (cooldown.isCooldownLocked) {
       isCooldownLocked = true;
       blockedReason = cooldown.cooldownReason;
     } else if (freeTacticalUsdtUsd <= 0 || freeTacticalUsdtUsd < minOrderUsd) {
       blockedReason =
         cleanEligible <= 0 || cleanEligible < minOrderUsd
           ? `USDT digital libre < $${minOrderUsd} (esperar próxima quincena)`
-          : `Se reservan $${config.biweeklyDcaReserveUsd} para tu DCA quincenal (esperar liquidez)`;
+          : reservedLimitUsdtUsd > 0 && availableEligibleCapitalUsd < config.biweeklyDcaReserveUsd + minOrderUsd
+            ? `Liquidez libre tras reservas LIMIT (${formatUsd(reservedLimitUsdtUsd)}) y DCA (${formatUsd(config.biweeklyDcaReserveUsd)}) < $${minOrderUsd}`
+            : `Se reservan $${config.biweeklyDcaReserveUsd} para tu DCA quincenal (esperar liquidez)`;
     } else if (dailyCapUsd <= 0 || dailyCapUsd < minOrderUsd) {
-      blockedReason = `Cupo diario (${config.tier3MaxFreeUsdtPct}% de ${formatUsd(freeTacticalUsdtUsd)} neto = ${formatUsd(dailyCapUsd)}) es < $${minOrderUsd}`;
+      blockedReason =
+        reservedLimitUsdtUsd > 0 && baseDailyCapUsd >= minOrderUsd
+          ? `Cupo diario cubierto por órdenes LIMIT abiertas (${formatUsd(reservedLimitUsdtUsd)} reservado de ${formatUsd(baseDailyCapUsd)} máx.)`
+          : `Cupo diario (${config.tier3MaxFreeUsdtPct}% de ${formatUsd(freeTacticalUsdtUsd)} neto = ${formatUsd(dailyCapUsd)}) es < $${minOrderUsd}`;
     } else {
       if (sharedBuyAllocation) {
         const key = holding.ticker.toUpperCase();
@@ -1333,8 +1375,13 @@ export function computeSmartTradeRecommendation(params: {
 
   // Priority 2: LIMIT orders in "Zona de Acecho" funded only by remaining free Daily Cap (>= minOrderUsd)
   let limitOrder: LimitOrderRecommendation | undefined;
-  if (canOperateToday && remainingDailyCapAfterBuyUsd >= minOrderUsd) {
+  if (
+    canOperateToday &&
+    remainingDailyCapAfterBuyUsd >= minOrderUsd &&
+    !hasOpenLimitOnHolding
+  ) {
     const limitMetas = pool
+      .filter((h) => !openLimitTickerSet.has(h.ticker.toUpperCase()))
       .map((h) => evaluateLimitOrderCandidate(h, config, nowMs))
       .filter((m): m is LimitCandidateMeta => m !== null);
     const holdingKey = holding.ticker.toUpperCase();
@@ -1385,7 +1432,9 @@ export function computeSmartTradeRecommendation(params: {
     }
   }
 
-  const residualAfterBuyUsd = Number(Math.max(0, cleanEligible - tacticalBuyUsd).toFixed(2));
+  const residualAfterBuyUsd = Number(
+    Math.max(0, availableEligibleCapitalUsd - tacticalBuyUsd).toFixed(2),
+  );
 
   // Staged profit-taking on SELL (25% trim)
   const suggestedSellTokens =
@@ -1432,6 +1481,10 @@ export function computeSmartTradeRecommendation(params: {
     globalTierBudgetUsd,
     dailyCapUsd,
     remainingDailyCapAfterBuyUsd,
+    reservedLimitUsdtUsd,
+    availableEligibleCapitalUsd,
+    activeOpenLimitOrders:
+      activeOpenLimitOrders.length > 0 ? activeOpenLimitOrders : undefined,
     limitOrder,
     blockedReason,
     concentrationWarning,
@@ -1637,6 +1690,8 @@ export function buildAiPortfolioReportMarkdown(params: {
   recommendations: Record<string, SmartTradeRecommendation>;
   groupExposure: { items: PortfolioExposureItem[]; totalBaseUsd: number };
   coinExposure: { items: PortfolioExposureItem[]; totalBaseUsd: number };
+  openLimitOrders?: OpenLimitOrder[];
+  nowMs?: number;
 }): string {
   const {
     generatedAt = new Date().toISOString().slice(0, 10),
@@ -1647,6 +1702,8 @@ export function buildAiPortfolioReportMarkdown(params: {
     recommendations,
     groupExposure,
     coinExposure,
+    openLimitOrders = [],
+    nowMs = Date.now(),
   } = params;
 
   const cleanCfg = sanitizeTacticalDipConfig({
@@ -1654,12 +1711,26 @@ export function buildAiPortfolioReportMarkdown(params: {
     ...tacticalConfig,
   });
   const totalCryptoUsd = holdings.reduce((acc, h) => acc + h.currentValue, 0);
-  const freeTacticalUsdt = Math.max(
+  const reservedLimitUsdt = sumReservedLimitUsdt(openLimitOrders);
+  const availableEligibleUsdt = Number(
+    Math.max(0, eligibleCapital.totalEligibleUsd - reservedLimitUsdt).toFixed(2),
+  );
+  const baseFreeTacticalUsdt = Math.max(
     0,
     Number((eligibleCapital.totalEligibleUsd - cleanCfg.biweeklyDcaReserveUsd).toFixed(2)),
   );
+  const baseDailyCapUsd = Number(
+    (baseFreeTacticalUsdt * (cleanCfg.tier3MaxFreeUsdtPct / 100)).toFixed(2),
+  );
+  const freeTacticalUsdt = Math.max(
+    0,
+    Number((availableEligibleUsdt - cleanCfg.biweeklyDcaReserveUsd).toFixed(2)),
+  );
   const dailyCapUsd = Number(
-    (freeTacticalUsdt * (cleanCfg.tier3MaxFreeUsdtPct / 100)).toFixed(2),
+    Math.min(
+      freeTacticalUsdt,
+      Math.max(0, baseDailyCapUsd - reservedLimitUsdt),
+    ).toFixed(2),
   );
   const minOrderUsd = cleanCfg.minOrderUsd ?? DEFAULT_MIN_ORDER_USD;
   const multiAssetMinDaily = Number((minOrderUsd * 2).toFixed(2));
@@ -1684,9 +1755,14 @@ export function buildAiPortfolioReportMarkdown(params: {
     '## 1. Liquidez Disponible y Parámetros del Motor Táctico',
     `- **Valor total en activos crypto volátiles:** ${formatUsd(totalCryptoUsd)}`,
     `- **USDT digital libre en Binance:** ${formatUsd(eligibleCapital.totalEligibleUsd)} (${formatUsd(eligibleCapital.ahorroEnvelopeUsd)} en Ahorro e Inversión Binance + ${formatUsd(eligibleCapital.unassignedUsdtUsd)} USDT sin sobre)`,
+    ...(reservedLimitUsdt > 0
+      ? [
+          `- **USDT reservado en órdenes LIMIT abiertas (${openLimitOrders.length}):** -${formatUsd(reservedLimitUsdt)} (USDT disponible sin comprometer: ${formatUsd(availableEligibleUsdt)})`,
+        ]
+      : []),
     `- **Reserva protegida para próximo DCA quincenal:** -${formatUsd(cleanCfg.biweeklyDcaReserveUsd)}`,
     `- **Liquidez táctica neta disponible hoy:** ${formatUsd(freeTacticalUsdt)} (Efectivo físico excluido: ${formatUsd(eligibleCapital.excludedPhysicalCashUsd)})`,
-    `- **Cupo máximo diario (${cleanCfg.tier3MaxFreeUsdtPct}% sobre liquidez táctica neta):** ${formatUsd(dailyCapUsd)} (tope concentración ${firstPassShare}% por activo si cupo ≥ ${formatUsd(multiAssetMinDaily)} y ≥2 elegibles · piso ${formatUsd(minOrderUsd)})`,
+    `- **Cupo diario disponible hoy (${cleanCfg.tier3MaxFreeUsdtPct}% sobre liquidez neta${reservedLimitUsdt > 0 ? `, descontando LIMIT abiertas` : ''}):** ${formatUsd(dailyCapUsd)} (tope concentración ${firstPassShare}% por activo si cupo ≥ ${formatUsd(multiAssetMinDaily)} y ≥2 elegibles · piso ${formatUsd(minOrderUsd)})`,
     `- **Parámetros tácticos (Ingreso base ${formatUsd(cleanCfg.monthlyIncomeUsd)}/mes):** Bloques N1: ${formatUsd(cleanCfg.tier1Usd)} | N2: ${formatUsd(cleanCfg.tier2Usd)} | N3: ${formatUsd(cleanCfg.tier3Usd)} · Cooldown ${temporalHours}h (escape flash crash: -${cleanCfg.tier3EscapeDropPct ?? 15}% Core / -${cleanCfg.goldTier3EscapeDropPct ?? 8}% Oro · estricto Altcoins)`,
     `- **Zona de Acecho (Órdenes LIMIT):** ${limitProxPct > 0 ? `Activada a ≤ ${limitProxPct}% sobre el desbloqueo (solo tras fin del cooldown ${temporalHours}h, usando únicamente el remanente libre del cupo diario · caducidad 48h–72h)` : 'Desactivada (0%)'}`,
     `- **Perfil Crypto (BTC, ETH, SOL, Alts):** Escalones ${c1}–${c1Up}% / ${c2}–${c2Up}% / ≥${c3}% | Cooldown: +${cleanCfg.cooldownAdditionalDropPct}% caída extra | Escape N3: -${cleanCfg.tier3EscapeDropPct ?? 15}%`,
@@ -1766,6 +1842,31 @@ export function buildAiPortfolioReportMarkdown(params: {
         ({ ticker, limitOrder }) =>
           `- **${ticker} (${limitOrder.unlockTriggerLabel}):** Colocar LIMIT por **${formatUsd(limitOrder.suggestedUsd)}** (${formatTokens(limitOrder.suggestedTokens, ticker)}) a **${formatUsd(limitOrder.limitPrice)}** (a **-${limitOrder.distancePct.toFixed(2)}%** de su desbloqueo · ${limitOrder.dipTierLabel.split(' · ')[0]}). *${limitOrder.expiryRuleLabel}.*`,
       ),
+    );
+  }
+
+  if (openLimitOrders.length > 0) {
+    lines.push(
+      '',
+      '### Órdenes LIMIT Abiertas Actualmente (USDT Comprometido)',
+      ...openLimitOrders.map((order) => {
+        const createdMs = Date.parse(order.createdAt);
+        const ageHours = Number.isFinite(createdMs)
+          ? Math.max(0, Math.floor((nowMs - createdMs) / (1000 * 60 * 60)))
+          : 0;
+        const holdingMatch = holdings.find(
+          (h) => h.ticker.toUpperCase() === order.ticker.toUpperCase(),
+        );
+        const isHit =
+          holdingMatch && holdingMatch.livePrice > 0 && holdingMatch.livePrice <= order.limitPrice;
+        const isExpired = ageHours >= 72;
+        const statusTag = isHit
+          ? '⚡ Posible ejecución (precio alcanzado)'
+          : isExpired
+            ? '⏰ >72h abierta (evaluar cancelar)'
+            : `Abierta hace ${ageHours}h`;
+        return `- **${order.ticker}:** LIMIT abierta por **${formatUsd(order.reservedUsd)}** @ **${formatUsd(order.limitPrice)}** (${statusTag}${order.unlockTriggerLabel ? ` · ${order.unlockTriggerLabel}` : ''}).`;
+      }),
     );
   }
 
@@ -1969,6 +2070,7 @@ export function evaluateTacticalConfigRisk(
 export interface TacticalImpactSnapshot {
   freeTacticalUsdtUsd: number;
   dailyCapUsd: number;
+  reservedLimitUsdtUsd: number;
   totalSuggestedBuyTodayUsd: number;
   totalSuggestedLimitTodayUsd: number;
   remainingLiquidityAfterOpsUsd: number;
@@ -2002,13 +2104,27 @@ function summarizeConfigImpactSnapshot(
   targetAllocations: TargetAllocations | undefined,
   config: TacticalDipConfig,
   nowMs: number,
+  openLimitOrders: OpenLimitOrder[] = [],
 ): TacticalImpactSnapshot {
   const cleanEligible = Math.max(0, Number(eligibleCapitalUsd.toFixed(2)));
-  const freeTacticalUsdtUsd = Number(
+  const reservedLimitUsdtUsd = sumReservedLimitUsdt(openLimitOrders);
+  const availableEligible = Number(
+    Math.max(0, cleanEligible - reservedLimitUsdtUsd).toFixed(2),
+  );
+  const baseFreeTactical = Number(
     Math.max(0, cleanEligible - config.biweeklyDcaReserveUsd).toFixed(2),
   );
+  const baseDailyCap = Number(
+    (baseFreeTactical * (config.tier3MaxFreeUsdtPct / 100)).toFixed(2),
+  );
+  const freeTacticalUsdtUsd = Number(
+    Math.max(0, availableEligible - config.biweeklyDcaReserveUsd).toFixed(2),
+  );
   const dailyCapUsd = Number(
-    (freeTacticalUsdtUsd * (config.tier3MaxFreeUsdtPct / 100)).toFixed(2),
+    Math.min(
+      freeTacticalUsdtUsd,
+      Math.max(0, baseDailyCap - reservedLimitUsdtUsd),
+    ).toFixed(2),
   );
   const activeHoldings = holdings.filter((h) => !h.isStablecoin && h.livePrice > 0);
   const totalVolatileCryptoUsd = activeHoldings.reduce((acc, h) => acc + h.currentValue, 0);
@@ -2025,6 +2141,7 @@ function summarizeConfigImpactSnapshot(
       allVolatileHoldings: activeHoldings,
       tacticalConfig: config,
       targetAllocations,
+      openLimitOrders,
       nowMs,
     });
     assetSuggestions[h.ticker.toUpperCase()] = rec;
@@ -2039,10 +2156,11 @@ function summarizeConfigImpactSnapshot(
   return {
     freeTacticalUsdtUsd,
     dailyCapUsd,
+    reservedLimitUsdtUsd,
     totalSuggestedBuyTodayUsd,
     totalSuggestedLimitTodayUsd,
     remainingLiquidityAfterOpsUsd: Number(
-      Math.max(0, cleanEligible - totalSuggestedBuyTodayUsd).toFixed(2),
+      Math.max(0, availableEligible - totalSuggestedBuyTodayUsd).toFixed(2),
     ),
     remainingNetTacticalAfterOpsUsd: Number(
       Math.max(0, freeTacticalUsdtUsd - totalSuggestedBuyTodayUsd).toFixed(2),
@@ -2073,6 +2191,7 @@ export function simulateTacticalConfigImpact(params: {
   targetAllocations?: TargetAllocations;
   currentConfig: Partial<TacticalDipConfig>;
   candidateConfig: Partial<TacticalDipConfig>;
+  openLimitOrders?: OpenLimitOrder[];
   nowMs?: number;
 }): TacticalConfigImpactComparison {
   const {
@@ -2081,6 +2200,7 @@ export function simulateTacticalConfigImpact(params: {
     targetAllocations,
     currentConfig,
     candidateConfig,
+    openLimitOrders = [],
     nowMs = Date.now(),
   } = params;
 
@@ -2099,6 +2219,7 @@ export function simulateTacticalConfigImpact(params: {
     targetAllocations,
     resolvedCurrent,
     nowMs,
+    openLimitOrders,
   );
   const after = summarizeConfigImpactSnapshot(
     holdings,
@@ -2106,6 +2227,7 @@ export function simulateTacticalConfigImpact(params: {
     targetAllocations,
     resolvedCandidate,
     nowMs,
+    openLimitOrders,
   );
 
   const activeHoldings = holdings.filter((h) => !h.isStablecoin && h.livePrice > 0);

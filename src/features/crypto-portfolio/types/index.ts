@@ -10,6 +10,7 @@ export type {
   CryptoGroupKey,
   DipTier,
   LimitOrderRecommendation,
+  OpenLimitOrder,
   PortfolioExposureItem,
   PortfolioSummary,
   LivePrices,

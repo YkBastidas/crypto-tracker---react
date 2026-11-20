@@ -3,6 +3,8 @@ import {
   Archive,
   ArrowLeft,
   ArrowRight,
+  BookmarkCheck,
+  Check,
   ChevronDown,
   ChevronUp,
   Clock,
@@ -10,16 +12,27 @@ import {
   ExternalLink,
   GripVertical,
   Lock,
+  Plus,
   Sparkles,
+  X,
 } from 'lucide-react';
-import type { CoinHolding, TacticalDipConfig, TargetAllocations } from '../types';
+import type {
+  CoinHolding,
+  OpenLimitOrder,
+  TacticalDipConfig,
+  TargetAllocations,
+  Transaction,
+} from '../types';
 import {
   computeSmartTradeRecommendation,
   formatUsd,
   formatTokens,
+  sumReservedLimitUsdt,
 } from '../utils/calculations';
+import { formatTokenStr } from '../../../shared/lib/csv';
 import { getCoinTargets, saveCoinTargets } from '../../../shared/lib/storage';
 import { usePortfolioStore } from '../../../shared/store/portfolioStore';
+import { useBudgetStore } from '../../budget/store/budgetStore';
 
 interface CoinCardProps {
   holding: CoinHolding;
@@ -28,6 +41,7 @@ interface CoinCardProps {
   allVolatileHoldings?: CoinHolding[];
   tacticalConfig?: TacticalDipConfig;
   targetAllocations?: TargetAllocations;
+  openLimitOrders?: OpenLimitOrder[];
   onTargetChange?: () => void;
   onArchive?: (ticker: string) => void;
   canMoveLeft?: boolean;
@@ -47,6 +61,7 @@ export function CoinCard({
   allVolatileHoldings,
   tacticalConfig,
   targetAllocations,
+  openLimitOrders: openLimitOrdersProp,
   onTargetChange,
   onArchive,
   canMoveLeft = false,
@@ -58,10 +73,37 @@ export function CoinCard({
   onDragOver,
   onDrop,
 }: CoinCardProps) {
-  const isPrivate = usePortfolioStore((s) => s.isPrivate);
+  const {
+    isPrivate,
+    openLimitOrders: storeOpenLimitOrders,
+    addOpenLimitOrder,
+    removeOpenLimitOrder,
+    addTransactionsBatch,
+  } = usePortfolioStore();
+  const openLimitOrders = openLimitOrdersProp ?? storeOpenLimitOrders;
   const [showTargets, setShowTargets] = useState(false);
   const [buyPct, setBuyPct] = useState(holding.targetBuyPct);
   const [sellPct, setSellPct] = useState(holding.targetSellPct);
+  const [nowMs] = useState(() => Date.now());
+  const [showPlaceLimitForm, setShowPlaceLimitForm] = useState(false);
+  const [draftLimitPrice, setDraftLimitPrice] = useState('');
+  const [draftLimitUsd, setDraftLimitUsd] = useState('');
+  const [fillingOrderId, setFillingOrderId] = useState<string | null>(null);
+  const [fillTokens, setFillTokens] = useState('');
+  const [fillUsd, setFillUsd] = useState('');
+  const [fillSyncBudget, setFillSyncBudget] = useState(true);
+
+  const reservedLimitTotalUsd = useMemo(
+    () => sumReservedLimitUsdt(openLimitOrders),
+    [openLimitOrders],
+  );
+  const myOpenLimitOrders = useMemo(
+    () =>
+      openLimitOrders.filter(
+        (o) => o.ticker.toUpperCase() === holding.ticker.toUpperCase(),
+      ),
+    [openLimitOrders, holding.ticker],
+  );
 
   const recommendation = useMemo(
     () =>
@@ -73,6 +115,8 @@ export function CoinCard({
             allVolatileHoldings,
             tacticalConfig,
             targetAllocations,
+            openLimitOrders,
+            nowMs,
           })
         : null,
     [
@@ -82,8 +126,91 @@ export function CoinCard({
       allVolatileHoldings,
       tacticalConfig,
       targetAllocations,
+      openLimitOrders,
+      nowMs,
     ],
   );
+
+  const openPlaceLimitForm = (defaultPrice: number, defaultUsd: number) => {
+    setDraftLimitPrice(defaultPrice > 0 ? String(defaultPrice) : '');
+    setDraftLimitUsd(defaultUsd > 0 ? defaultUsd.toFixed(2) : '');
+    setShowPlaceLimitForm(true);
+  };
+
+  const handleSaveOpenLimit = (
+    e: React.FormEvent,
+    triggerLabel?: string,
+  ) => {
+    e.preventDefault();
+    const cleanPrice = parseFloat(draftLimitPrice);
+    const cleanUsd = parseFloat(draftLimitUsd);
+    if (!Number.isFinite(cleanPrice) || cleanPrice <= 0) return;
+    if (!Number.isFinite(cleanUsd) || cleanUsd <= 0) return;
+    addOpenLimitOrder({
+      ticker: holding.ticker,
+      limitPrice: cleanPrice,
+      reservedUsd: cleanUsd,
+      targetBuyPriceAtPlacement:
+        holding.targetBuyPrice > 0 ? holding.targetBuyPrice : undefined,
+      unlockTriggerLabel: triggerLabel ?? 'Orden LIMIT manual',
+    });
+    setShowPlaceLimitForm(false);
+    setDraftLimitPrice('');
+    setDraftLimitUsd('');
+  };
+
+  const startFillOrder = (order: OpenLimitOrder) => {
+    const estTokens = order.limitPrice > 0 ? order.reservedUsd / order.limitPrice : 0;
+    setFillingOrderId(order.id);
+    setFillTokens(estTokens > 0 ? formatTokenStr(estTokens) : '');
+    setFillUsd(order.reservedUsd.toFixed(2));
+    setFillSyncBudget(true);
+  };
+
+  const handleConfirmFillOrder = (e: React.FormEvent, order: OpenLimitOrder) => {
+    e.preventDefault();
+    const tokensNum = parseFloat(fillTokens);
+    const usdNum = parseFloat(fillUsd);
+    if (!Number.isFinite(tokensNum) || tokensNum <= 0) return;
+    if (!Number.isFinite(usdNum) || usdNum <= 0) return;
+
+    const now = new Date();
+    const datePart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const dateStr = `${datePart} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+
+    const batch: Transaction[] = [
+      {
+        date: dateStr,
+        type: 'Buy',
+        asset: holding.ticker,
+        tokens: formatTokenStr(tokensNum),
+        usdValue: Number(usdNum.toFixed(2)),
+      },
+      {
+        date: dateStr,
+        type: 'Sell',
+        asset: 'USDT',
+        tokens: formatTokenStr(usdNum),
+        usdValue: Number(usdNum.toFixed(2)),
+      },
+    ];
+    addTransactionsBatch(
+      batch,
+      `LIMIT ejecutada: Buy ${holding.ticker} (${formatTokenStr(tokensNum)})`,
+    );
+
+    if (fillSyncBudget) {
+      useBudgetStore.getState().recordCryptoPortfolioUsdtFlow({
+        date: datePart,
+        direction: 'out',
+        amountUsd: Number(usdNum.toFixed(2)),
+        notes: `LIMIT ejecutada (${holding.ticker}): ${formatTokenStr(tokensNum)} ${holding.ticker}`,
+      });
+    }
+
+    removeOpenLimitOrder(order.id);
+    setFillingOrderId(null);
+  };
 
   const pv = (val: string) => (isPrivate ? '****' : val);
 
@@ -219,6 +346,26 @@ export function CoinCard({
             )}
           </span>
         </div>
+        {holding.isStablecoin &&
+          holding.ticker.toUpperCase() === 'USDT' &&
+          reservedLimitTotalUsd > 0 && (
+            <>
+              <div className="flex justify-between text-xs pt-1 border-t border-white/5">
+                <span className="text-cyan-300">
+                  Reservado LIMIT ({openLimitOrders.length})
+                </span>
+                <span className="font-semibold text-cyan-300">
+                  -{pv(formatUsd(reservedLimitTotalUsd))}
+                </span>
+              </div>
+              <div className="flex justify-between text-xs">
+                <span className="text-text-muted">USDT libre táctico</span>
+                <span className="font-semibold text-accent-green">
+                  {pv(formatUsd(Math.max(0, eligibleCapitalUsd - reservedLimitTotalUsd)))}
+                </span>
+              </div>
+            </>
+          )}
         {!holding.isStablecoin &&
           holding.gasTokens !== undefined &&
           holding.gasTokens > 0 &&
@@ -391,7 +538,226 @@ export function CoinCard({
                 <Clock size={11} className="shrink-0 mt-0.5" />
                 <span>{recommendation.limitOrder.expiryRuleLabel}.</span>
               </p>
+              <button
+                type="button"
+                onClick={() =>
+                  openPlaceLimitForm(
+                    recommendation.limitOrder!.limitPrice,
+                    recommendation.limitOrder!.suggestedUsd,
+                  )
+                }
+                className="w-full mt-1 py-1.5 px-2.5 rounded-lg text-[11px] font-semibold bg-cyan-500/20 border border-cyan-400/50 text-cyan-200 hover:bg-cyan-500/30 flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <BookmarkCheck size={12} /> Marcar LIMIT colocada (reservar USDT)
+              </button>
             </div>
+          )}
+
+          {/* Active Placed Open LIMIT Orders for this coin */}
+          {myOpenLimitOrders.length > 0 && (
+            <div className="mt-3 space-y-2">
+              {myOpenLimitOrders.map((order) => {
+                const createdMs = Date.parse(order.createdAt);
+                const ageHours = Number.isFinite(createdMs)
+                  ? Math.max(0, Math.floor((nowMs - createdMs) / (1000 * 60 * 60)))
+                  : 0;
+                const estTokens = order.limitPrice > 0 ? order.reservedUsd / order.limitPrice : 0;
+                const isHit = holding.livePrice > 0 && holding.livePrice <= order.limitPrice;
+                const reboundedAboveTarget =
+                  !isHit &&
+                  order.targetBuyPriceAtPlacement !== undefined &&
+                  holding.livePrice > order.targetBuyPriceAtPlacement * 1.005;
+                const isFilling = fillingOrderId === order.id;
+
+                return (
+                  <div
+                    key={order.id}
+                    className="p-2.5 rounded-lg border bg-accent-blue/10 border-accent-blue/40 text-[11px] space-y-1.5"
+                  >
+                    <div className="flex items-center justify-between gap-1 font-semibold text-accent-blue">
+                      <span className="flex items-center gap-1">
+                        <BookmarkCheck size={12} /> LIMIT abierta en exchange
+                      </span>
+                      <span
+                        className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                          ageHours >= 72
+                            ? 'bg-accent-red/20 text-accent-red'
+                            : ageHours >= 48
+                              ? 'bg-accent-gold/20 text-accent-gold'
+                              : 'bg-bg-card/80 text-text-muted'
+                        }`}
+                      >
+                        {ageHours >= 72 ? `>72h (${ageHours}h)` : `Hace ${ageHours}h`}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-text-muted">Precio LIMIT:</span>
+                      <strong className="text-text-primary">
+                        {pv(formatUsd(order.limitPrice))}
+                      </strong>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-text-muted">USDT reservado:</span>
+                      <strong className="text-accent-gold">
+                        {pv(formatUsd(order.reservedUsd))}{' '}
+                        <span className="text-[10px] text-text-muted font-normal">
+                          (≈ {pv(formatTokens(estTokens, holding.ticker))})
+                        </span>
+                      </strong>
+                    </div>
+
+                    {isHit && (
+                      <p className="text-[10px] text-accent-green font-medium leading-snug">
+                        ⚡ El precio tocó tu LIMIT ({pv(formatUsd(holding.livePrice))}). Verifica en Binance y márcala como ejecutada.
+                      </p>
+                    )}
+                    {reboundedAboveTarget && !isHit && (
+                      <p className="text-[10px] text-accent-gold leading-snug">
+                        ↩️ Rebotó sobre Target Buy ({pv(formatUsd(order.targetBuyPriceAtPlacement!))}). Evalúa cancelarla para liberar USDT.
+                      </p>
+                    )}
+                    {ageHours >= 72 && !isHit && (
+                      <p className="text-[10px] text-accent-red leading-snug">
+                        ⏰ Superó 72h abierta sin ejecutarse — cancela si quieres liberar tu USDT.
+                      </p>
+                    )}
+
+                    {isFilling ? (
+                      <form
+                        onSubmit={(e) => handleConfirmFillOrder(e, order)}
+                        className="pt-1.5 border-t border-border/60 space-y-2"
+                      >
+                        <div className="grid grid-cols-2 gap-1.5">
+                          <label className="block">
+                            <span className="text-[10px] text-text-muted block mb-0.5">
+                              Tokens ({holding.ticker})
+                            </span>
+                            <input
+                              type="number"
+                              step="0.00000001"
+                              min="0"
+                              required
+                              value={fillTokens}
+                              onChange={(e) => setFillTokens(e.target.value)}
+                              className="w-full px-2 py-1 rounded text-[11px] font-mono bg-bg-input border border-border text-text-primary"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-[10px] text-text-muted block mb-0.5">
+                              USD gastados
+                            </span>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0.01"
+                              required
+                              value={fillUsd}
+                              onChange={(e) => setFillUsd(e.target.value)}
+                              className="w-full px-2 py-1 rounded text-[11px] font-mono bg-bg-input border border-border text-text-primary"
+                            />
+                          </label>
+                        </div>
+                        <label className="flex items-center gap-1.5 text-[10px] text-text-muted cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={fillSyncBudget}
+                            onChange={(e) => setFillSyncBudget(e.target.checked)}
+                            className="accent-accent-blue"
+                          />
+                          <span>Descontar USDT del módulo Presupuesto</span>
+                        </label>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="submit"
+                            className="flex-1 py-1 px-2 rounded text-[11px] font-semibold bg-accent-green/20 border border-accent-green/40 text-accent-green cursor-pointer flex items-center justify-center gap-1"
+                          >
+                            <Check size={12} /> Confirmar compra
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setFillingOrderId(null)}
+                            className="py-1 px-2 rounded text-[11px] bg-bg-input border border-border text-text-muted cursor-pointer"
+                          >
+                            Volver
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <div className="flex items-center gap-1.5 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => startFillOrder(order)}
+                          className="flex-1 py-1 px-2 rounded text-[11px] font-semibold bg-accent-green/15 border border-accent-green/40 text-accent-green hover:bg-accent-green/25 cursor-pointer flex items-center justify-center gap-1"
+                        >
+                          <Check size={12} /> Se ejecutó
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeOpenLimitOrder(order.id)}
+                          className="py-1 px-2.5 rounded text-[11px] font-medium bg-bg-input border border-border text-text-muted hover:text-accent-red hover:border-accent-red/40 cursor-pointer flex items-center gap-1"
+                        >
+                          <X size={12} /> Cancelar
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Inline Form to Log/Adjust Placed LIMIT Order */}
+          {showPlaceLimitForm && (
+            <form
+              onSubmit={(e) =>
+                handleSaveOpenLimit(e, recommendation?.limitOrder?.unlockTriggerLabel)
+              }
+              className="mt-3 p-2.5 rounded-lg border border-cyan-500/40 bg-bg-input/80 space-y-2 text-[11px]"
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-cyan-300">Registrar LIMIT colocada</span>
+                <button
+                  type="button"
+                  onClick={() => setShowPlaceLimitForm(false)}
+                  className="text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <label className="block">
+                  <span className="text-[10px] text-text-muted block mb-0.5">Precio LIMIT ($)</span>
+                  <input
+                    type="number"
+                    step="0.0001"
+                    min="0"
+                    required
+                    value={draftLimitPrice}
+                    onChange={(e) => setDraftLimitPrice(e.target.value)}
+                    className="w-full px-2 py-1 rounded text-xs font-mono bg-bg-card border border-border text-text-primary"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-[10px] text-text-muted block mb-0.5">USDT reservado ($)</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="1"
+                    required
+                    value={draftLimitUsd}
+                    onChange={(e) => setDraftLimitUsd(e.target.value)}
+                    className="w-full px-2 py-1 rounded text-xs font-mono bg-bg-card border border-border text-text-primary"
+                  />
+                </label>
+              </div>
+              <button
+                type="submit"
+                className="w-full py-1.5 rounded text-[11px] font-semibold bg-cyan-500/20 border border-cyan-400/50 text-cyan-200 hover:bg-cyan-500/30 cursor-pointer"
+              >
+                Guardar LIMIT abierta
+              </button>
+            </form>
           )}
 
           {recommendation && holding.tradeSignal === 'SELL' && (
@@ -432,19 +798,42 @@ export function CoinCard({
         </>
       )}
 
-      {/* Target Settings Expander */}
+      {/* Target Settings & Manual LIMIT Expander */}
       {!holding.isStablecoin && (
-        <button
-          onClick={() => setShowTargets(!showTargets)}
-          className="
-            mt-3 w-full flex items-center justify-center gap-1
-            text-xs text-text-muted hover:text-text-primary
-            transition-colors cursor-pointer bg-transparent border-none
-          "
-        >
-          🎯 Set Targets
-          {showTargets ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-        </button>
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={() => setShowTargets(!showTargets)}
+            className="
+              flex items-center gap-1
+              text-xs text-text-muted hover:text-text-primary
+              transition-colors cursor-pointer bg-transparent border-none
+            "
+          >
+            🎯 Set Targets
+            {showTargets ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              openPlaceLimitForm(
+                recommendation?.limitOrder?.limitPrice ??
+                  (holding.targetBuyPrice > 0
+                    ? Number(holding.targetBuyPrice.toFixed(holding.targetBuyPrice < 1 ? 4 : 2))
+                    : Number(holding.livePrice.toFixed(holding.livePrice < 1 ? 4 : 2))),
+                recommendation?.limitOrder?.suggestedUsd ?? tacticalConfig?.tier1Usd ?? 45,
+              )
+            }
+            className="
+              flex items-center gap-1 px-2 py-0.5 rounded
+              text-[11px] text-cyan-300/90 hover:text-cyan-200
+              bg-cyan-500/10 border border-cyan-500/30 hover:border-cyan-400/60
+              transition-colors cursor-pointer
+            "
+          >
+            <Plus size={11} /> LIMIT manual
+          </button>
+        </div>
       )}
 
       {!holding.isStablecoin && showTargets && (

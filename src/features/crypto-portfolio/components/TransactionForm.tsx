@@ -16,6 +16,7 @@ import {
   type Transaction,
   type TransactionType,
 } from '../types';
+import { sumReservedLimitUsdt } from '../utils/calculations';
 
 const ASSET_OPTIONS = [
   'BTC', 'ETH', 'SOL', 'WBETH', 'PAXG', 'BNSOL', 'BNB', '0G', 'BEAM',
@@ -23,7 +24,7 @@ const ASSET_OPTIONS = [
 ];
 
 export function TransactionForm() {
-  const addTransactionsBatch = usePortfolioStore((s) => s.addTransactionsBatch);
+  const { openLimitOrders, addTransactionsBatch } = usePortfolioStore();
   const {
     movements,
     recordCryptoPortfolioUsdtFlow,
@@ -101,6 +102,15 @@ export function TransactionForm() {
       emergencyUsdcUsd,
     };
   }, [movements]);
+
+  const reservedLimitUsdt = useMemo(
+    () => sumReservedLimitUsdt(openLimitOrders),
+    [openLimitOrders],
+  );
+  const uncommittedUsdtUsd = Math.max(
+    0,
+    Number((liquidityStats.eligibleUsdtUsd - reservedLimitUsdt).toFixed(2)),
+  );
 
   const parsedTokens = parseFloat(tokens) || 0;
   const parsedUsd = isZeroCost ? 0 : parseFloat(usdValue) || 0;
@@ -326,6 +336,14 @@ export function TransactionForm() {
                   {formatUsd(liquidityStats.eligibleUsdtUsd)}
                 </strong>
               </div>
+              {reservedLimitUsdt > 0 && (
+                <div className="flex items-center justify-between text-[10px] text-cyan-300">
+                  <span>Reservado en LIMIT ({openLimitOrders.length}):</span>
+                  <span>
+                    -{formatUsd(reservedLimitUsdt)} · Libre: {formatUsd(uncommittedUsdtUsd)}
+                  </span>
+                </div>
+              )}
               {liquidityStats.otherEnvelopesUsdtUsd > 0 && (
                 <div className="flex items-center justify-between text-[10px] text-text-muted">
                   <span>En otros sobres (gastos):</span>

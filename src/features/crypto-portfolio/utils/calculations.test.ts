@@ -3,6 +3,7 @@ import type {
   CoinMappings,
   CoinTargets,
   LivePrices,
+  OpenLimitOrder,
   Transaction,
 } from '../../../shared/types';
 import {
@@ -16,6 +17,7 @@ import {
   evaluateTacticalConfigRisk,
   recommendTacticalTiersFromIncome,
   simulateTacticalConfigImpact,
+  sumReservedLimitUsdt,
 } from './calculations';
 
 describe('crypto-portfolio/utils/calculations', () => {
@@ -1600,5 +1602,150 @@ describe('crypto-portfolio/utils/calculations', () => {
     expect(impact.before.totalSuggestedLimitTodayUsd).toBe(80);
     expect(impact.after.totalSuggestedLimitTodayUsd).toBe(0);
     expect(impact.changedAssets.some((a) => a.ticker === 'PAXG')).toBe(true);
+  });
+
+  it('reserves USDT from open LIMIT orders out of free liquidity and daily cap without blocking DCA reserve, and restores on cancellation', () => {
+    const holdings = computeHoldings(
+      [
+        { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'BTC', tokens: '5', usdValue: 500 },  // @ 83 = $415 -> BUY Tier 2 ($70)
+        { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'ETH', tokens: '5', usdValue: 500 },  // @ 86 = $430 -> WATCH in Zona de Acecho ($70)
+        { date: '2026-04-01 10:00:00', type: 'Buy', asset: 'PAXG', tokens: '4', usdValue: 400 }, // @ 96 = $384 -> WATCH in Zona de Acecho ($45)
+      ],
+      { BTC: 'bitcoin', ETH: 'ethereum', PAXG: 'pax-gold' },
+      { bitcoin: { usd: 83 }, ethereum: { usd: 86 }, 'pax-gold': { usd: 96 } },
+      { BTC: { buy: 15, sell: 30 }, ETH: { buy: 15, sell: 30 }, PAXG: { buy: 5, sell: 15 } },
+      stablecoins,
+    );
+    const totalUsd = holdings.reduce((acc, h) => acc + h.currentValue, 0);
+    const equalTargets = { 'GROUP:BTC': 33.4, 'GROUP:ETH': 33.3, 'GROUP:GOLD': 33.3 };
+    const nowMs = new Date(2026, 10, 20, 18, 0, 0).getTime();
+
+    // User already placed PAXG LIMIT order for $45 out of $300 eligible USDT (net = $250, base dailyCap = $100)
+    // Available eligible = $255, freeTactical = $205, remaining dailyCap = $100 - $45 = $55
+    const placedPaxgOrder: OpenLimitOrder = {
+      id: 'lim-1',
+      ticker: 'PAXG',
+      limitPrice: 95,
+      reservedUsd: 45,
+      createdAt: new Date(2026, 10, 20, 8, 0, 0).toISOString(), // 10h ago
+      targetBuyPriceAtPlacement: 95,
+      unlockTriggerLabel: 'Target Buy',
+    };
+    expect(sumReservedLimitUsdt([placedPaxgOrder])).toBe(45);
+
+    const recBtc = computeSmartTradeRecommendation({
+      holding: holdings[0],
+      eligibleCapitalUsd: 300,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: equalTargets,
+      openLimitOrders: [placedPaxgOrder],
+      nowMs,
+    });
+    const recEth = computeSmartTradeRecommendation({
+      holding: holdings[1],
+      eligibleCapitalUsd: 300,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: equalTargets,
+      openLimitOrders: [placedPaxgOrder],
+      nowMs,
+    });
+    const recPaxg = computeSmartTradeRecommendation({
+      holding: holdings[2],
+      eligibleCapitalUsd: 300,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: equalTargets,
+      openLimitOrders: [placedPaxgOrder],
+      nowMs,
+    });
+
+    // PAXG must NOT get a duplicate LIMIT suggestion
+    expect(recPaxg.activeOpenLimitOrders).toHaveLength(1);
+    expect(recPaxg.limitOrder).toBeUndefined();
+    // BTC gets remaining dailyCap ($55 instead of $70), leaving $0 for ETH LIMIT -> total $45 + $55 = $100 <= baseDailyCap
+    expect(recBtc.reservedLimitUsdtUsd).toBe(45);
+    expect(recBtc.availableEligibleCapitalUsd).toBe(255);
+    expect(recBtc.dailyCapUsd).toBe(55);
+    expect(recBtc.tacticalBuyUsd).toBe(55);
+    expect(recEth.limitOrder).toBeUndefined();
+
+    // If open LIMIT orders consume >= $85 of $100 daily cap (leaving $15 < $20 min), BTC receives clear blockedReason
+    const heavyOrders: OpenLimitOrder[] = [
+      placedPaxgOrder,
+      {
+        id: 'lim-2',
+        ticker: 'ETH',
+        limitPrice: 85,
+        reservedUsd: 40,
+        createdAt: new Date(2026, 10, 20, 12, 0, 0).toISOString(),
+      },
+    ];
+    const recBtcBlocked = computeSmartTradeRecommendation({
+      holding: holdings[0],
+      eligibleCapitalUsd: 300,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: equalTargets,
+      openLimitOrders: heavyOrders,
+      nowMs,
+    });
+    expect(recBtcBlocked.dailyCapUsd).toBe(15);
+    expect(recBtcBlocked.tacticalBuyUsd).toBe(0);
+    expect(recBtcBlocked.blockedReason).toContain('LIMIT abiertas');
+
+    // Cancelling open orders immediately restores BTC's full $70 Tier 2 allocation
+    const recBtcCancelled = computeSmartTradeRecommendation({
+      holding: holdings[0],
+      eligibleCapitalUsd: 300,
+      totalVolatileCryptoUsd: totalUsd,
+      allVolatileHoldings: holdings,
+      targetAllocations: equalTargets,
+      openLimitOrders: [],
+      nowMs,
+    });
+    expect(recBtcCancelled.tacticalBuyUsd).toBe(70);
+
+    // Markdown report and live impact simulation disclose open LIMIT orders & uncommitted liquidity
+    const markdown = buildAiPortfolioReportMarkdown({
+      generatedAt: '2026-11-20',
+      holdings,
+      eligibleCapital: {
+        ahorroEnvelopeUsd: 200,
+        unassignedUsdtUsd: 100,
+        totalEligibleUsd: 300,
+        excludedPhysicalCashUsd: 0,
+      },
+      tacticalConfig: DEFAULT_TACTICAL_DIP_CONFIG,
+      recommendations: { BTC: recBtc, ETH: recEth, PAXG: recPaxg },
+      groupExposure: computePortfolioExposure({
+        holdings,
+        mode: 'group',
+        targetAllocations: equalTargets,
+      }),
+      coinExposure: computePortfolioExposure({
+        holdings,
+        mode: 'coin',
+        targetAllocations: { BTC: 33.4, ETH: 33.3, PAXG: 33.3 },
+      }),
+      openLimitOrders: [placedPaxgOrder],
+      nowMs,
+    });
+    expect(markdown).toContain('USDT reservado en órdenes LIMIT abiertas');
+    expect(markdown).toContain('Órdenes LIMIT Abiertas Actualmente');
+    expect(markdown).toContain('Abierta hace 10h');
+
+    const impactWithLimit = simulateTacticalConfigImpact({
+      holdings,
+      eligibleCapitalUsd: 300,
+      targetAllocations: equalTargets,
+      currentConfig: DEFAULT_TACTICAL_DIP_CONFIG,
+      candidateConfig: DEFAULT_TACTICAL_DIP_CONFIG,
+      openLimitOrders: [placedPaxgOrder],
+      nowMs,
+    });
+    expect(impactWithLimit.before.reservedLimitUsdtUsd).toBe(45);
+    expect(impactWithLimit.before.dailyCapUsd).toBe(55);
   });
 });
