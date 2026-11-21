@@ -715,4 +715,205 @@ describe('budget/store & monthEndEngine invariants', () => {
     expect(current.installments[0].paidTotal).toBeCloseTo(220, 2); // 260 - 40
     expect(current.installments[0].paymentsCount).toBe(3);
   });
+
+  it('backfills historical payments from unlogged prior balance and preserves exact inverses across overflow edits and deletes', () => {
+    const store = useBudgetStore.getState();
+    store.addInstallment({
+      name: 'Deuda Hermano Histórica',
+      direction: 'receivable',
+      installmentAmount: 50,
+      frequency: 'semanal',
+      maxCap: 400,
+      paidTotal: 100, // $100 pre-existing unlogged prior balance across 2 payments
+      paymentsCount: 2,
+      nextDueDate: '2026-11-25',
+    });
+
+    const planId = useBudgetStore.getState().installments[0].id;
+    const fundsBefore = calculateFundSummaries(useBudgetStore.getState().movements);
+
+    // 1. Backfill $40 historical payment from unlogged prior balance
+    useBudgetStore.getState().recordInstallmentPayment(planId, {
+      settlementKind: 'historical',
+      date: '2026-10-05',
+      amountOverride: 40,
+      notes: 'Primer abono en efectivo',
+      allocateFromUnlogged: true,
+    });
+
+    let current = useBudgetStore.getState();
+    let plan = current.installments[0];
+    expect(plan.paidTotal).toBeCloseTo(100, 2); // Did not double-count!
+    expect(plan.paymentsCount).toBe(2);
+    expect(plan.nextDueDate).toBe('2026-11-25');
+    expect(current.movements).toHaveLength(0);
+    expect(calculateFundSummaries(current.movements).totalNetWorth).toBeCloseTo(
+      fundsBefore.totalNetWorth,
+      2,
+    );
+
+    let summary = getInstallmentPaymentHistory(plan, current.movements);
+    expect(summary.historicalTotalUsd).toBeCloseTo(40, 2);
+    expect(summary.unloggedTotalUsd).toBeCloseTo(60, 2);
+    expect(summary.unloggedCount).toBe(1);
+
+    // Deleting the backfilled record restores unloggedTotalUsd without subtracting from paidTotal
+    const histId1 = plan.paymentHistory![0].id;
+    useBudgetStore.getState().removeInstallmentPayment(planId, histId1);
+    current = useBudgetStore.getState();
+    plan = current.installments[0];
+    expect(plan.paidTotal).toBeCloseTo(100, 2);
+    expect(plan.paymentsCount).toBe(2);
+    summary = getInstallmentPaymentHistory(plan, current.movements);
+    expect(summary.unloggedTotalUsd).toBeCloseTo(100, 2);
+    expect(summary.unloggedCount).toBe(2);
+
+    // 2. Overflow backfill: log $150 when only $100 unlogged remains -> absorbs $100 and adds $50
+    useBudgetStore.getState().recordInstallmentPayment(planId, {
+      settlementKind: 'historical',
+      date: '2026-10-12',
+      amountOverride: 150,
+      notes: 'Abono acumulado octubre',
+      allocateFromUnlogged: true,
+    });
+
+    current = useBudgetStore.getState();
+    plan = current.installments[0];
+    expect(plan.paidTotal).toBeCloseTo(150, 2);
+    expect(plan.paymentsCount).toBe(2); // absorbed 1 unlogged count
+    expect(plan.paymentHistory![0].absorbedUnloggedUsd).toBeCloseTo(100, 2);
+    summary = getInstallmentPaymentHistory(plan, current.movements);
+    expect(summary.unloggedTotalUsd).toBeCloseTo(0, 2);
+    expect(summary.unloggedCount).toBe(1);
+
+    // Editing down from $150 -> $80 reduces netAdded first ($50) and returns $20 to unloggedTotalUsd
+    const histId2 = plan.paymentHistory![0].id;
+    useBudgetStore.getState().updateInstallmentPayment(planId, histId2, {
+      date: '2026-10-10',
+      amountUsd: 80,
+      notes: 'Ajustado octubre',
+      settlementKind: 'in_kind',
+    });
+    current = useBudgetStore.getState();
+    plan = current.installments[0];
+    expect(plan.paidTotal).toBeCloseTo(100, 2);
+    expect(plan.lastPaidDate).toBe('2026-10-10');
+    expect(plan.paymentHistory![0]).toMatchObject({
+      date: '2026-10-10',
+      amountUsd: 80,
+      notes: 'Ajustado octubre',
+      settlementKind: 'in_kind',
+      absorbedUnloggedUsd: 80,
+    });
+    expect(getInstallmentPaymentHistory(plan, current.movements).unloggedTotalUsd).toBeCloseTo(20, 2);
+
+    // Removing the edited $80 absorbed record leaves paidTotal at $100 and restores $100 unlogged
+    useBudgetStore.getState().removeInstallmentPayment(planId, histId2);
+    current = useBudgetStore.getState();
+    expect(current.installments[0].paidTotal).toBeCloseTo(100, 2);
+    expect(
+      getInstallmentPaymentHistory(current.installments[0], current.movements).unloggedTotalUsd,
+    ).toBeCloseTo(100, 2);
+  });
+
+  it('edits date, amount, and note on monetary & legacy ledger payments with bidirectional ledger sync and Undo', () => {
+    const store = useBudgetStore.getState();
+    store.addInstallment({
+      name: 'Préstamo Coche',
+      direction: 'receivable',
+      installmentAmount: 50,
+      frequency: 'semanal',
+      maxCap: 500,
+      paidTotal: 0,
+      paymentsCount: 0,
+      nextDueDate: '2026-11-25',
+    });
+
+    const planId = useBudgetStore.getState().installments[0].id;
+
+    // Legacy ledger-only movement
+    store.addMovement({
+      date: '2026-11-05',
+      bucket: 'ahorro_inversion',
+      type: 'Ingreso a Sobre',
+      amountUsd: 40,
+      paymentMethod: 'efectivo_usd',
+      notes: 'Cobro #1: Préstamo Coche',
+      linkedInstallment: {
+        id: planId,
+        amount: 40,
+      },
+    });
+    useBudgetStore.getState().updateInstallment(planId, {
+      paidTotal: 40,
+      paymentsCount: 1,
+      lastPaidDate: '2026-11-05',
+    });
+    const legacyMovId = useBudgetStore.getState().movements[0].id;
+
+    // Newer tracked monetary payment
+    useBudgetStore.getState().recordInstallmentPayment(planId, {
+      amountOverride: 60,
+      settlementKind: 'monetary',
+      date: '2026-11-18',
+      notes: 'Efectivo entregado',
+      envelopeId: 'ahorro_inversion',
+      paymentMethod: 'efectivo_usd',
+    });
+
+    let current = useBudgetStore.getState();
+    const monetaryRecId = current.installments[0].paymentHistory![0].id;
+    const linkedMovId = current.installments[0].paymentHistory![0].linkedMovementId!;
+
+    // Edit date, amount, and note on the tracked monetary payment
+    useBudgetStore.getState().updateInstallmentPayment(planId, monetaryRecId, {
+      date: '2026-11-14',
+      amountUsd: 75,
+      notes: 'Transferencia confirmada',
+    });
+
+    current = useBudgetStore.getState();
+    expect(current.installments[0].paidTotal).toBeCloseTo(115, 2); // 40 + 75
+    expect(current.installments[0].lastPaidDate).toBe('2026-11-14');
+    expect(current.installments[0].paymentHistory![0]).toMatchObject({
+      date: '2026-11-14',
+      amountUsd: 75,
+      notes: 'Transferencia confirmada',
+    });
+
+    const updatedLinkedMov = current.movements.find((m) => m.id === linkedMovId)!;
+    expect(updatedLinkedMov.date).toBe('2026-11-14');
+    expect(updatedLinkedMov.amountUsd).toBeCloseTo(75, 2);
+    expect(updatedLinkedMov.linkedInstallment?.amount).toBeCloseTo(75, 2);
+    expect(updatedLinkedMov.linkedInstallment?.note).toBe('Transferencia confirmada');
+    expect(updatedLinkedMov.notes).toContain('Transferencia confirmada');
+
+    // Envelope reflects updated monetary amount ($40 + $75 = $115)
+    let envs = calculateEnvelopeSummaries(current.movements);
+    expect(envs.find((e) => e.id === 'ahorro_inversion')!.available).toBeCloseTo(115, 2);
+
+    // Undo reverts edit atomically across plan & ledger
+    useBudgetStore.getState().undoLastAction();
+    current = useBudgetStore.getState();
+    expect(current.installments[0].paidTotal).toBeCloseTo(100, 2);
+    expect(current.installments[0].lastPaidDate).toBe('2026-11-18');
+    expect(current.movements.find((m) => m.id === linkedMovId)!.amountUsd).toBeCloseTo(60, 2);
+
+    // Edit legacy ledger-only payment (date, amount, note)
+    useBudgetStore.getState().updateInstallmentPayment(planId, legacyMovId, {
+      date: '2026-11-22',
+      amountUsd: 55,
+      notes: 'Corrección abono inicial',
+    });
+    current = useBudgetStore.getState();
+    expect(current.installments[0].paidTotal).toBeCloseTo(115, 2); // 55 + 60
+    expect(current.installments[0].lastPaidDate).toBe('2026-11-22'); // 11-22 > 11-18
+    const editedLegacy = current.movements.find((m) => m.id === legacyMovId)!;
+    expect(editedLegacy.date).toBe('2026-11-22');
+    expect(editedLegacy.amountUsd).toBeCloseTo(55, 2);
+    expect(editedLegacy.notes).toContain('Corrección abono inicial');
+
+    envs = calculateEnvelopeSummaries(current.movements);
+    expect(envs.find((e) => e.id === 'ahorro_inversion')!.available).toBeCloseTo(115, 2);
+  });
 });

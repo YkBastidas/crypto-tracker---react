@@ -127,7 +127,7 @@ export interface RecurringExpense {
 
 export type InstallmentFrequency = 'semanal' | 'quincenal' | 'mensual' | 'anual';
 export type InstallmentDirection = 'receivable' | 'payable';
-export type InstallmentSettlementKind = 'monetary' | 'in_kind';
+export type InstallmentSettlementKind = 'monetary' | 'in_kind' | 'historical';
 
 export interface InstallmentPaymentRecord {
   id: string;
@@ -142,6 +142,8 @@ export interface InstallmentPaymentRecord {
   linkedMovementId?: string;
   previousDueDate?: string;
   advancedDueDate?: boolean;
+  absorbedUnloggedUsd?: number;
+  absorbedUnloggedCount?: boolean;
 }
 
 export interface InstallmentPlan {

@@ -1076,6 +1076,7 @@ export interface InstallmentHistorySummary {
   unloggedTotalUsd: number;
   unloggedCount: number;
   inKindTotalUsd: number;
+  historicalTotalUsd: number;
   monetaryTotalUsd: number;
 }
 
@@ -1127,12 +1128,17 @@ export function getInstallmentPaymentHistory(
       .filter((r) => r.settlementKind === 'in_kind')
       .reduce((acc, r) => acc + r.amountUsd, 0),
   );
-  const monetaryTotalUsd = roundCurrency(
+  const historicalTotalUsd = roundCurrency(
     records
-      .filter((r) => r.settlementKind !== 'in_kind')
+      .filter((r) => r.settlementKind === 'historical')
       .reduce((acc, r) => acc + r.amountUsd, 0),
   );
-  const loggedTotalUsd = roundCurrency(inKindTotalUsd + monetaryTotalUsd);
+  const monetaryTotalUsd = roundCurrency(
+    records
+      .filter((r) => r.settlementKind !== 'in_kind' && r.settlementKind !== 'historical')
+      .reduce((acc, r) => acc + r.amountUsd, 0),
+  );
+  const loggedTotalUsd = roundCurrency(monetaryTotalUsd + inKindTotalUsd + historicalTotalUsd);
   const unloggedTotalUsd = roundCurrency(Math.max(0, plan.paidTotal - loggedTotalUsd));
   const unloggedCount = Math.max(0, plan.paymentsCount - records.length);
 
@@ -1142,6 +1148,7 @@ export function getInstallmentPaymentHistory(
     unloggedTotalUsd,
     unloggedCount,
     inKindTotalUsd,
+    historicalTotalUsd,
     monetaryTotalUsd,
   };
 }

@@ -56,7 +56,8 @@ export function ExpensesAndPayments() {
     addInstallment,
     updateInstallment,
     removeInstallment,
-    updateInstallmentPaymentNote,
+    recordInstallmentPayment,
+    updateInstallmentPayment,
     removeInstallmentPayment,
   } = useBudgetStore();
 
@@ -73,11 +74,21 @@ export function ExpensesAndPayments() {
   const [payingExpense, setPayingExpense] = useState<RecurringExpense | null>(null);
   const [recordingPlan, setRecordingPlan] = useState<InstallmentPlan | null>(null);
   const [expandedHistoryIds, setExpandedHistoryIds] = useState<Record<string, boolean>>({});
-  const [editingNoteTarget, setEditingNoteTarget] = useState<{
+  const [editingPaymentTarget, setEditingPaymentTarget] = useState<{
     planId: string;
     paymentId: string;
+    isOffLedger: boolean;
   } | null>(null);
-  const [editingNoteDraft, setEditingNoteDraft] = useState('');
+  const [editPayDate, setEditPayDate] = useState('');
+  const [editPayAmount, setEditPayAmount] = useState('');
+  const [editPayNotes, setEditPayNotes] = useState('');
+  const [editPayKind, setEditPayKind] = useState<'historical' | 'in_kind'>('historical');
+  const [addingHistoryPlanId, setAddingHistoryPlanId] = useState<string | null>(null);
+  const [histDate, setHistDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [histAmount, setHistAmount] = useState('');
+  const [histNotes, setHistNotes] = useState('');
+  const [histKind, setHistKind] = useState<'historical' | 'in_kind'>('historical');
+  const [histAllocateUnlogged, setHistAllocateUnlogged] = useState(true);
 
   // New Expense form state
   const [expName, setExpName] = useState('');
@@ -882,198 +893,520 @@ export function ExpensesAndPayments() {
                 </div>
 
                 {isHistoryExpanded && (
-                  <div className="border-t border-border/70 pt-3 space-y-2">
-                    {history.monetaryTotalUsd > 0 && history.inKindTotalUsd > 0 && (
-                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-text-muted">
-                        <span>Desglose registrado:</span>
-                        <span>
-                          Dinero:{' '}
-                          <strong className="text-text-primary">
-                            <PrivacyValue
-                              value={formatUsd(history.monetaryTotalUsd)}
-                              isPrivate={isPrivate}
-                            />
-                          </strong>{' '}
-                          · En especie:{' '}
-                          <strong className="text-purple-300">
-                            <PrivacyValue
-                              value={formatUsd(history.inKindTotalUsd)}
-                              isPrivate={isPrivate}
-                            />
-                          </strong>
-                        </span>
-                      </div>
-                    )}
+                  <div className="border-t border-border/70 pt-3 space-y-2.5">
+                    {(() => {
+                      const activeKindCount =
+                        (history.monetaryTotalUsd > 0 ? 1 : 0) +
+                        (history.historicalTotalUsd > 0 ? 1 : 0) +
+                        (history.inKindTotalUsd > 0 ? 1 : 0);
+                      const hasUnlogged =
+                        history.unloggedTotalUsd > 0.01 || history.unloggedCount > 0;
+                      const isAddingHistory = addingHistoryPlanId === plan.id;
 
-                    {history.records.length === 0 ? (
-                      <p className="text-[11px] text-text-muted italic">
-                        Aún no hay abonos individuales registrados con fecha.
-                      </p>
-                    ) : (
-                      <div className="space-y-1.5">
-                        {history.records.map((rec) => {
-                          const isEditingNote =
-                            editingNoteTarget?.planId === plan.id &&
-                            editingNoteTarget?.paymentId === rec.id;
-
-                          const custodyLabel = rec.paymentMethod
-                            ? getPaymentMethodLabel(
-                                rec.paymentMethod,
-                                customAccounts,
-                                nativeAccountOverrides,
-                              )
-                            : 'Sin custodia';
-                          const envLabel = rec.envelopeId
-                            ? (ENVELOPE_META[rec.envelopeId]?.shortName ?? rec.envelopeId)
-                            : null;
-
-                          return (
-                            <div
-                              key={rec.id}
-                              className="bg-bg-card/70 border border-border/80 rounded-lg px-2.5 py-2 space-y-1.5"
-                            >
-                              <div className="flex items-start justify-between gap-2">
-                                <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-                                  <span className="text-[11px] font-mono text-text-muted">
-                                    {rec.date}
-                                  </span>
-                                  <span className="text-xs font-bold text-text-primary">
-                                    <PrivacyValue
-                                      value={formatUsd(rec.amountUsd)}
-                                      isPrivate={isPrivate}
-                                    />
-                                  </span>
-                                  {typeof rec.amountBs === 'number' && rec.amountBs > 0 && (
-                                    <span className="text-[10px] text-cyan-300">
-                                      (
+                      return (
+                        <>
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-text-muted">
+                            {activeKindCount >= 2 ? (
+                              <span className="flex flex-wrap items-center gap-1.5">
+                                {history.monetaryTotalUsd > 0 && (
+                                  <span>
+                                    Dinero:{' '}
+                                    <strong className="text-text-primary">
                                       <PrivacyValue
-                                        value={formatBs(rec.amountBs)}
+                                        value={formatUsd(history.monetaryTotalUsd)}
                                         isPrivate={isPrivate}
                                       />
-                                      )
-                                    </span>
-                                  )}
-                                  {rec.settlementKind === 'in_kind' ? (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/30 text-purple-300">
-                                      <Package size={10} /> En especie · Sin cuentas
-                                    </span>
-                                  ) : (
-                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-input border border-border text-text-muted">
-                                      {custodyLabel}
-                                      {envLabel ? ` · ${envLabel}` : ''}
-                                    </span>
-                                  )}
-                                </div>
+                                    </strong>
+                                  </span>
+                                )}
+                                {history.historicalTotalUsd > 0 && (
+                                  <span>
+                                    {history.monetaryTotalUsd > 0 ? '· ' : ''}Histórico:{' '}
+                                    <strong className="text-amber-300">
+                                      <PrivacyValue
+                                        value={formatUsd(history.historicalTotalUsd)}
+                                        isPrivate={isPrivate}
+                                      />
+                                    </strong>
+                                  </span>
+                                )}
+                                {history.inKindTotalUsd > 0 && (
+                                  <span>
+                                    · En especie:{' '}
+                                    <strong className="text-purple-300">
+                                      <PrivacyValue
+                                        value={formatUsd(history.inKindTotalUsd)}
+                                        isPrivate={isPrivate}
+                                      />
+                                    </strong>
+                                  </span>
+                                )}
+                              </span>
+                            ) : (
+                              <span>Historial de pagos y abonos</span>
+                            )}
 
-                                <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (isAddingHistory) {
+                                  setAddingHistoryPlanId(null);
+                                  return;
+                                }
+                                const suggestedAmt =
+                                  history.unloggedTotalUsd > 0.01
+                                    ? Math.min(plan.installmentAmount, history.unloggedTotalUsd)
+                                    : plan.installmentAmount;
+                                setAddingHistoryPlanId(plan.id);
+                                setHistAmount(String(Number(suggestedAmt.toFixed(2))));
+                                setHistNotes('');
+                                setHistKind('historical');
+                                setHistAllocateUnlogged(hasUnlogged);
+                              }}
+                              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold border cursor-pointer transition-colors ${
+                                isAddingHistory
+                                  ? 'bg-amber-500/20 border-amber-400/50 text-amber-200'
+                                  : 'bg-bg-input border-border text-text-primary hover:border-amber-400/50 hover:text-amber-200'
+                              }`}
+                            >
+                              <Plus size={12} /> Pago histórico
+                            </button>
+                          </div>
+
+                          {isAddingHistory && (
+                            <form
+                              onSubmit={(e) => {
+                                e.preventDefault();
+                                const parsed = parseFloat(histAmount);
+                                if (!Number.isFinite(parsed) || parsed <= 0 || !histDate) return;
+                                const useAllocate = histAllocateUnlogged && hasUnlogged;
+                                recordInstallmentPayment(plan.id, {
+                                  settlementKind: histKind,
+                                  date: histDate,
+                                  amountOverride: Number(parsed.toFixed(2)),
+                                  notes: histNotes,
+                                  allocateFromUnlogged: useAllocate,
+                                  advanceDueDate: false,
+                                });
+                                setHistNotes('');
+                                if (useAllocate) {
+                                  const nextUnlogged = Math.max(
+                                    0,
+                                    Number((history.unloggedTotalUsd - parsed).toFixed(2)),
+                                  );
+                                  if (nextUnlogged <= 0.01 && history.unloggedCount <= 1) {
+                                    setHistAllocateUnlogged(false);
+                                    setAddingHistoryPlanId(null);
+                                  } else if (nextUnlogged > 0.01) {
+                                    setHistAmount(
+                                      String(
+                                        Number(
+                                          Math.min(plan.installmentAmount, nextUnlogged).toFixed(2),
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                }
+                              }}
+                              className="bg-amber-500/5 border border-amber-400/30 rounded-xl p-3 space-y-2.5"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-[11px] font-semibold text-amber-200">
+                                  Registrar pago anterior (sin tocar sobres ni cuentas)
+                                </span>
+                                <div className="flex rounded-lg overflow-hidden border border-border text-[10px]">
                                   <button
                                     type="button"
-                                    title={rec.notes ? 'Editar nota' : 'Agregar nota'}
-                                    onClick={() => {
-                                      setEditingNoteTarget({
-                                        planId: plan.id,
-                                        paymentId: rec.id,
-                                      });
-                                      setEditingNoteDraft(rec.notes ?? '');
-                                    }}
-                                    className="p-1 rounded text-text-muted hover:text-accent-blue bg-transparent border-none cursor-pointer"
+                                    onClick={() => setHistKind('historical')}
+                                    className={`px-2 py-1 font-semibold border-none cursor-pointer ${
+                                      histKind === 'historical'
+                                        ? 'bg-amber-500/25 text-amber-200'
+                                        : 'bg-bg-input text-text-muted hover:text-text-primary'
+                                    }`}
                                   >
-                                    {rec.notes ? <Pencil size={12} /> : <StickyNote size={12} />}
+                                    Histórico (previo)
                                   </button>
                                   <button
                                     type="button"
-                                    title="Eliminar este abono"
-                                    onClick={() => {
-                                      if (
-                                        editingNoteTarget?.planId === plan.id &&
-                                        editingNoteTarget?.paymentId === rec.id
-                                      ) {
-                                        setEditingNoteTarget(null);
-                                      }
-                                      removeInstallmentPayment(plan.id, rec.id);
-                                    }}
-                                    className="p-1 rounded text-text-muted hover:text-accent-red bg-transparent border-none cursor-pointer"
+                                    onClick={() => setHistKind('in_kind')}
+                                    className={`px-2 py-1 font-semibold border-none cursor-pointer ${
+                                      histKind === 'in_kind'
+                                        ? 'bg-purple-500/25 text-purple-200'
+                                        : 'bg-bg-input text-text-muted hover:text-text-primary'
+                                    }`}
                                   >
-                                    <Trash2 size={12} />
+                                    En especie
                                   </button>
                                 </div>
                               </div>
 
-                              {isEditingNote ? (
-                                <div className="flex items-center gap-1.5">
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                <div>
+                                  <label className="text-[10px] text-text-muted block mb-1">
+                                    Fecha
+                                  </label>
+                                  <input
+                                    type="date"
+                                    required
+                                    value={histDate}
+                                    onChange={(e) => setHistDate(e.target.value)}
+                                    className="w-full px-2 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-amber-400/60"
+                                  />
+                                </div>
+                                <div>
+                                  <div className="flex items-center justify-between gap-1 mb-1">
+                                    <label className="text-[10px] text-text-muted">Monto ($)</label>
+                                    {history.unloggedTotalUsd > 0.01 && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setHistAmount(String(history.unloggedTotalUsd))
+                                        }
+                                        className="text-[10px] text-amber-300 underline bg-transparent border-none cursor-pointer"
+                                      >
+                                        Previo: {formatUsd(history.unloggedTotalUsd)}
+                                      </button>
+                                    )}
+                                  </div>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min="0.01"
+                                    inputMode="decimal"
+                                    required
+                                    value={histAmount}
+                                    onChange={(e) => setHistAmount(e.target.value)}
+                                    className="w-full px-2 py-1.5 rounded-lg text-xs font-bold bg-bg-input border border-border text-text-primary focus:outline-none focus:border-amber-400/60"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[10px] text-text-muted block mb-1">
+                                    Nota (opc.)
+                                  </label>
                                   <input
                                     type="text"
-                                    value={editingNoteDraft}
-                                    onChange={(e) => setEditingNoteDraft(e.target.value)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter') {
-                                        e.preventDefault();
-                                        updateInstallmentPaymentNote(
-                                          plan.id,
-                                          rec.id,
-                                          editingNoteDraft,
-                                        );
-                                        setEditingNoteTarget(null);
-                                      } else if (e.key === 'Escape') {
-                                        setEditingNoteTarget(null);
-                                      }
-                                    }}
-                                    placeholder="Ej. Trueque reloj"
-                                    className="flex-1 px-2 py-1 rounded text-[11px] bg-bg-input border border-accent-blue/50 text-text-primary focus:outline-none"
+                                    value={histNotes}
+                                    onChange={(e) => setHistNotes(e.target.value)}
+                                    placeholder="Ej. Efectivo, Trueque reloj..."
+                                    className="w-full px-2 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-amber-400/60"
                                   />
-                                  <button
-                                    type="button"
-                                    title="Guardar nota"
-                                    onClick={() => {
-                                      updateInstallmentPaymentNote(
-                                        plan.id,
-                                        rec.id,
-                                        editingNoteDraft,
-                                      );
-                                      setEditingNoteTarget(null);
-                                    }}
-                                    className="p-1 rounded bg-accent-green/20 text-accent-green border border-accent-green/40 cursor-pointer"
-                                  >
-                                    <Check size={12} />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    title="Cancelar"
-                                    onClick={() => setEditingNoteTarget(null)}
-                                    className="p-1 rounded bg-bg-input text-text-muted border border-border cursor-pointer"
-                                  >
-                                    <X size={12} />
-                                  </button>
                                 </div>
-                              ) : (
-                                rec.notes && (
-                                  <p className="text-[11px] text-text-muted flex items-center gap-1.5">
-                                    <StickyNote
-                                      size={11}
-                                      className="shrink-0 text-accent-gold"
-                                    />
-                                    <span>{rec.notes}</span>
-                                  </p>
-                                )
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
+                              </div>
 
-                    {history.unloggedTotalUsd > 0.01 && (
-                      <p className="text-[11px] text-text-muted/90 bg-bg-input/60 rounded-lg px-2.5 py-1.5">
-                        Saldo previo sin desglose individual:{' '}
-                        <strong className="text-text-primary">
-                          <PrivacyValue
-                            value={formatUsd(history.unloggedTotalUsd)}
-                            isPrivate={isPrivate}
-                          />
-                        </strong>{' '}
-                        ({history.unloggedCount} abono(s)).
-                      </p>
-                    )}
+                              {hasUnlogged && (
+                                <label className="flex items-start gap-2 text-[11px] text-text-muted cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={histAllocateUnlogged}
+                                    onChange={(e) => setHistAllocateUnlogged(e.target.checked)}
+                                    className="w-3.5 h-3.5 mt-0.5 accent-amber-400 cursor-pointer shrink-0"
+                                  />
+                                  <span>
+                                    Desglosar del saldo previo ya acumulado (sin sumar al total ni
+                                    duplicar cuotas).
+                                  </span>
+                                </label>
+                              )}
+
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setAddingHistoryPlanId(null)}
+                                  className="px-2.5 py-1 rounded-lg text-[11px] bg-bg-input border border-border text-text-muted hover:text-text-primary cursor-pointer"
+                                >
+                                  Cerrar
+                                </button>
+                                <button
+                                  type="submit"
+                                  className="inline-flex items-center gap-1 px-3 py-1 rounded-lg text-[11px] font-bold bg-amber-500/20 border border-amber-400/50 text-amber-200 hover:bg-amber-500/30 cursor-pointer"
+                                >
+                                  <Check size={12} /> Agregar al historial
+                                </button>
+                              </div>
+                            </form>
+                          )}
+
+                          {history.records.length === 0 ? (
+                            <p className="text-[11px] text-text-muted italic">
+                              Aún no hay abonos individuales registrados con fecha.
+                            </p>
+                          ) : (
+                            <div className="space-y-1.5">
+                              {history.records.map((rec) => {
+                                const isEditingThis =
+                                  editingPaymentTarget?.planId === plan.id &&
+                                  editingPaymentTarget?.paymentId === rec.id;
+                                const isOffLedgerRec =
+                                  rec.settlementKind === 'in_kind' ||
+                                  rec.settlementKind === 'historical';
+
+                                const custodyLabel = rec.paymentMethod
+                                  ? getPaymentMethodLabel(
+                                      rec.paymentMethod,
+                                      customAccounts,
+                                      nativeAccountOverrides,
+                                    )
+                                  : 'Sin custodia';
+                                const envLabel = rec.envelopeId
+                                  ? (ENVELOPE_META[rec.envelopeId]?.shortName ?? rec.envelopeId)
+                                  : null;
+
+                                const startEditRecord = () => {
+                                  setEditingPaymentTarget({
+                                    planId: plan.id,
+                                    paymentId: rec.id,
+                                    isOffLedger: isOffLedgerRec,
+                                  });
+                                  setEditPayDate(rec.date);
+                                  setEditPayAmount(String(rec.amountUsd));
+                                  setEditPayNotes(rec.notes ?? '');
+                                  if (
+                                    rec.settlementKind === 'in_kind' ||
+                                    rec.settlementKind === 'historical'
+                                  ) {
+                                    setEditPayKind(rec.settlementKind);
+                                  }
+                                };
+
+                                const saveEditRecord = () => {
+                                  const parsed = parseFloat(editPayAmount);
+                                  if (!Number.isFinite(parsed) || parsed <= 0 || !editPayDate) {
+                                    return;
+                                  }
+                                  updateInstallmentPayment(plan.id, rec.id, {
+                                    date: editPayDate,
+                                    amountUsd: Number(parsed.toFixed(2)),
+                                    notes: editPayNotes,
+                                    ...(isOffLedgerRec ? { settlementKind: editPayKind } : {}),
+                                  });
+                                  setEditingPaymentTarget(null);
+                                };
+
+                                return (
+                                  <div
+                                    key={rec.id}
+                                    className="bg-bg-card/70 border border-border/80 rounded-lg px-2.5 py-2 space-y-1.5"
+                                  >
+                                    {isEditingThis ? (
+                                      <div className="space-y-2">
+                                        <div
+                                          className={`grid gap-2 ${
+                                            isOffLedgerRec
+                                              ? 'grid-cols-2 sm:grid-cols-4'
+                                              : 'grid-cols-2 sm:grid-cols-3'
+                                          }`}
+                                        >
+                                          <div>
+                                            <label className="text-[10px] text-text-muted block mb-0.5">
+                                              Fecha
+                                            </label>
+                                            <input
+                                              type="date"
+                                              value={editPayDate}
+                                              onChange={(e) => setEditPayDate(e.target.value)}
+                                              onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                  e.preventDefault();
+                                                  saveEditRecord();
+                                                } else if (e.key === 'Escape') {
+                                                  setEditingPaymentTarget(null);
+                                                }
+                                              }}
+                                              className="w-full px-2 py-1 rounded text-[11px] bg-bg-input border border-accent-blue/50 text-text-primary focus:outline-none"
+                                            />
+                                          </div>
+                                          <div>
+                                            <label className="text-[10px] text-text-muted block mb-0.5">
+                                              Monto ($)
+                                            </label>
+                                            <input
+                                              type="number"
+                                              step="0.01"
+                                              min="0.01"
+                                              inputMode="decimal"
+                                              value={editPayAmount}
+                                              onChange={(e) => setEditPayAmount(e.target.value)}
+                                              onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                  e.preventDefault();
+                                                  saveEditRecord();
+                                                } else if (e.key === 'Escape') {
+                                                  setEditingPaymentTarget(null);
+                                                }
+                                              }}
+                                              className="w-full px-2 py-1 rounded text-[11px] font-bold bg-bg-input border border-accent-blue/50 text-text-primary focus:outline-none"
+                                            />
+                                          </div>
+                                          {isOffLedgerRec && (
+                                            <div>
+                                              <label className="text-[10px] text-text-muted block mb-0.5">
+                                                Tipo
+                                              </label>
+                                              <select
+                                                value={editPayKind}
+                                                onChange={(e) =>
+                                                  setEditPayKind(
+                                                    e.target.value as 'historical' | 'in_kind',
+                                                  )
+                                                }
+                                                className="w-full px-2 py-1 rounded text-[11px] bg-bg-input border border-accent-blue/50 text-text-primary focus:outline-none"
+                                              >
+                                                <option value="historical">Histórico</option>
+                                                <option value="in_kind">En especie</option>
+                                              </select>
+                                            </div>
+                                          )}
+                                          <div
+                                            className={
+                                              isOffLedgerRec ? 'col-span-2 sm:col-span-1' : 'col-span-2 sm:col-span-1'
+                                            }
+                                          >
+                                            <label className="text-[10px] text-text-muted block mb-0.5">
+                                              Nota
+                                            </label>
+                                            <input
+                                              type="text"
+                                              value={editPayNotes}
+                                              onChange={(e) => setEditPayNotes(e.target.value)}
+                                              onKeyDown={(e) => {
+                                                if (e.key === 'Enter') {
+                                                  e.preventDefault();
+                                                  saveEditRecord();
+                                                } else if (e.key === 'Escape') {
+                                                  setEditingPaymentTarget(null);
+                                                }
+                                              }}
+                                              placeholder="Ej. Trueque reloj"
+                                              className="w-full px-2 py-1 rounded text-[11px] bg-bg-input border border-accent-blue/50 text-text-primary focus:outline-none"
+                                            />
+                                          </div>
+                                        </div>
+
+                                        <div className="flex flex-wrap items-center justify-between gap-2">
+                                          {!isOffLedgerRec ? (
+                                            <span className="text-[10px] text-cyan-300/90">
+                                              También actualiza fecha, monto y nota en el ledger.
+                                            </span>
+                                          ) : (
+                                            <span />
+                                          )}
+                                          <div className="flex items-center gap-1.5">
+                                            <button
+                                              type="button"
+                                              onClick={() => setEditingPaymentTarget(null)}
+                                              className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-bg-input text-text-muted border border-border cursor-pointer"
+                                            >
+                                              <X size={11} /> Cancelar
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={saveEditRecord}
+                                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-semibold bg-accent-green/20 text-accent-green border border-accent-green/40 cursor-pointer"
+                                            >
+                                              <Check size={11} /> Guardar
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <>
+                                        <div className="flex items-start justify-between gap-2">
+                                          <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                                            <span className="text-[11px] font-mono text-text-muted">
+                                              {rec.date}
+                                            </span>
+                                            <span className="text-xs font-bold text-text-primary">
+                                              <PrivacyValue
+                                                value={formatUsd(rec.amountUsd)}
+                                                isPrivate={isPrivate}
+                                              />
+                                            </span>
+                                            {typeof rec.amountBs === 'number' && rec.amountBs > 0 && (
+                                              <span className="text-[10px] text-cyan-300">
+                                                (
+                                                <PrivacyValue
+                                                  value={formatBs(rec.amountBs)}
+                                                  isPrivate={isPrivate}
+                                                />
+                                                )
+                                              </span>
+                                            )}
+                                            {rec.settlementKind === 'in_kind' ? (
+                                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/30 text-purple-300">
+                                                <Package size={10} /> En especie · Sin cuentas
+                                              </span>
+                                            ) : rec.settlementKind === 'historical' ? (
+                                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-400/30 text-amber-200">
+                                                <History size={10} /> Histórico · Sin cuentas
+                                              </span>
+                                            ) : (
+                                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-input border border-border text-text-muted">
+                                                {custodyLabel}
+                                                {envLabel ? ` · ${envLabel}` : ''}
+                                              </span>
+                                            )}
+                                          </div>
+
+                                          <div className="flex items-center gap-1 shrink-0">
+                                            <button
+                                              type="button"
+                                              title="Editar pago (fecha, monto, nota)"
+                                              onClick={startEditRecord}
+                                              className="p-1 rounded text-text-muted hover:text-accent-blue bg-transparent border-none cursor-pointer"
+                                            >
+                                              <Pencil size={12} />
+                                            </button>
+                                            <button
+                                              type="button"
+                                              title="Eliminar este abono"
+                                              onClick={() => {
+                                                if (
+                                                  editingPaymentTarget?.planId === plan.id &&
+                                                  editingPaymentTarget?.paymentId === rec.id
+                                                ) {
+                                                  setEditingPaymentTarget(null);
+                                                }
+                                                removeInstallmentPayment(plan.id, rec.id);
+                                              }}
+                                              className="p-1 rounded text-text-muted hover:text-accent-red bg-transparent border-none cursor-pointer"
+                                            >
+                                              <Trash2 size={12} />
+                                            </button>
+                                          </div>
+                                        </div>
+
+                                        {rec.notes && (
+                                          <p className="text-[11px] text-text-muted flex items-center gap-1.5">
+                                            <StickyNote
+                                              size={11}
+                                              className="shrink-0 text-accent-gold"
+                                            />
+                                            <span>{rec.notes}</span>
+                                          </p>
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          {hasUnlogged && (
+                            <p className="text-[11px] text-text-muted/90 bg-bg-input/60 rounded-lg px-2.5 py-1.5">
+                              Saldo previo sin desglose individual:{' '}
+                              <strong className="text-text-primary">
+                                <PrivacyValue
+                                  value={formatUsd(history.unloggedTotalUsd)}
+                                  isPrivate={isPrivate}
+                                />
+                              </strong>{' '}
+                              ({history.unloggedCount} abono(s)).
+                            </p>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 )}
               </div>

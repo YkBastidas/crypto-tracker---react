@@ -2,12 +2,7 @@ import { useMemo, useState } from 'react';
 import { Banknote, CheckCircle2, Coins, Landmark, Package, Smartphone, Wallet, X } from 'lucide-react';
 import { ENVELOPE_META } from '../data/defaultSeed';
 import { useBudgetStore } from '../store/budgetStore';
-import type {
-  EnvelopeId,
-  InstallmentPlan,
-  InstallmentSettlementKind,
-  PaymentMethod,
-} from '../types';
+import type { EnvelopeId, InstallmentPlan, PaymentMethod } from '../types';
 import {
   advanceDueDate,
   formatBs,
@@ -44,7 +39,7 @@ export function RecordInstallmentModal({ plan, onClose }: RecordInstallmentModal
     [customAccounts, nativeAccountOverrides],
   );
 
-  const [settlementKind, setSettlementKind] = useState<InstallmentSettlementKind>('monetary');
+  const [settlementKind, setSettlementKind] = useState<'monetary' | 'in_kind'>('monetary');
   const [amount, setAmount] = useState(String(plan.installmentAmount));
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
     () => custodyOptions[0]?.id ?? 'efectivo_usd',
@@ -69,7 +64,7 @@ export function RecordInstallmentModal({ plan, onClose }: RecordInstallmentModal
   const remainingCap =
     plan.maxCap !== null ? Math.max(0, Number((plan.maxCap - plan.paidTotal).toFixed(2))) : null;
 
-  const handleSelectSettlementKind = (next: InstallmentSettlementKind) => {
+  const handleSelectSettlementKind = (next: 'monetary' | 'in_kind') => {
     setSettlementKind(next);
     setAdvanceDue(next === 'monetary');
     if (next === 'in_kind' && inputInBs) {
