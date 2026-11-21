@@ -5,6 +5,8 @@ import { useBudgetStore } from '../store/budgetStore';
 import type { EnvelopeId, PaymentMethod, RecurringExpense } from '../types';
 import {
   calculateEnvelopeSummaries,
+  computeDualRateGap,
+  computeExpenseExtrasBreakdown,
   formatBs,
   formatUsd,
   getActiveCustodyOptions,
@@ -31,7 +33,9 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
     markExpensePaid,
     customAccounts,
     nativeAccountOverrides,
+    regionalProfile,
     bcvRate,
+    parallelRate,
     movements,
     freeBsPoolMode,
     setFreeBsPoolMode,
@@ -49,6 +53,9 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
     expense.frequency === 'anual' ? 'provisiones_anuales' : expense.envelopeId,
   );
   const [logToLedger, setLogToLedger] = useState(true);
+  const [applyIva, setApplyIva] = useState(false);
+  const [applyService, setApplyService] = useState(false);
+  const [applyIgtf, setApplyIgtf] = useState(false);
 
   const custodyOptions = useMemo(
     () =>
@@ -59,12 +66,35 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
     [customAccounts, nativeAccountOverrides, initialMethod],
   );
 
+  const isVeProfile = regionalProfile === 'VE';
   const hasValidRate = Boolean(bcvRate && bcvRate > 0);
   const effectiveRate = bcvRate ?? 0;
   const parsedVal = parseFloat(amount) || 0;
-  const computedUsd = inputInBs && hasValidRate ? parsedVal / effectiveRate : parsedVal;
-  const computedBs = inputInBs ? parsedVal : hasValidRate ? parsedVal * effectiveRate : 0;
+  const activeApplyIva = logToLedger && isVeProfile && applyIva;
+  const activeApplyService = logToLedger && applyService;
+  const activeApplyIgtf = logToLedger && isVeProfile && applyIgtf;
+  const inputExtras = computeExpenseExtrasBreakdown(parsedVal, {
+    applyIva: activeApplyIva,
+    applyService: activeApplyService,
+    applyIgtf: activeApplyIgtf,
+  });
+  const computedUsd =
+    inputInBs && hasValidRate ? inputExtras.total / effectiveRate : inputExtras.total;
+  const computedBs = inputInBs
+    ? inputExtras.total
+    : hasValidRate
+      ? inputExtras.total * effectiveRate
+      : 0;
+  const baseUsd = inputInBs && hasValidRate ? parsedVal / effectiveRate : parsedVal;
   const isSelectedBs = isBsPaymentMethod(paymentMethod, customAccounts);
+  const dualGap =
+    logToLedger && isVeProfile
+      ? computeDualRateGap({
+          amountUsdAtBcv: computedUsd,
+          bcvRate,
+          parallelRate,
+        })
+      : null;
 
   const envBsAvail = useMemo(
     () =>
@@ -93,6 +123,17 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
     e.preventDefault();
     if (logToLedger && (!Number.isFinite(parsedVal) || parsedVal <= 0)) return;
 
+    const extrasSuffix = inputExtras.hasExtras
+      ? [
+          `Base ${formatUsd(baseUsd)}`,
+          activeApplyIva ? 'IVA 16%' : null,
+          activeApplyService ? 'Serv 10%' : null,
+          activeApplyIgtf ? 'IGTF 3%' : null,
+        ]
+          .filter(Boolean)
+          .join(' + ')
+      : null;
+
     markExpensePaid(expense.id, {
       logToLedger,
       paymentMethod,
@@ -100,6 +141,24 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
       amountBs:
         isSelectedBs && hasValidRate ? Number(computedBs.toFixed(2)) : undefined,
       bcvRateUsed: hasValidRate ? effectiveRate : undefined,
+      parallelRateUsed:
+        logToLedger && isSelectedBs && dualGap && dualGap.savingsUsd > 0.01 && parallelRate
+          ? parallelRate
+          : undefined,
+      fxGapSavingsUsd:
+        logToLedger && isSelectedBs && dualGap && dualGap.savingsUsd > 0.01
+          ? dualGap.savingsUsd
+          : undefined,
+      appliedExtras:
+        logToLedger && inputExtras.hasExtras
+          ? {
+              baseUsd: Number(baseUsd.toFixed(2)),
+              ivaPct: activeApplyIva ? 16 : undefined,
+              servicePct: activeApplyService ? 10 : undefined,
+              igtfPct: activeApplyIgtf ? 3 : undefined,
+            }
+          : undefined,
+      notes: extrasSuffix ? `Pago: ${expense.name} · ${extrasSuffix}` : undefined,
       envelopeId,
     });
     onClose();
@@ -107,7 +166,7 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 p-0 sm:p-4">
-      <div className="w-full sm:max-w-md bg-bg-card border border-border rounded-t-2xl sm:rounded-2xl p-5 shadow-2xl space-y-4">
+      <div className="w-full sm:max-w-md max-h-[90vh] overflow-y-auto bg-bg-card border border-border rounded-t-2xl sm:rounded-2xl p-5 shadow-2xl space-y-4">
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-base font-bold text-text-primary flex items-center gap-2">
@@ -213,6 +272,78 @@ export function PayExpenseModal({ expense, onClose }: PayExpenseModalProps) {
               </select>
             </div>
           </div>
+
+          {logToLedger && (
+            <div className="space-y-2">
+              <div className="flex flex-wrap gap-1.5">
+                {isVeProfile && (
+                  <button
+                    type="button"
+                    onClick={() => setApplyIva((v) => !v)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border cursor-pointer transition-colors ${
+                      applyIva
+                        ? 'bg-accent-blue/20 border-accent-blue/50 text-accent-blue'
+                        : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                    }`}
+                  >
+                    +16% IVA
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setApplyService((v) => !v)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border cursor-pointer transition-colors ${
+                    applyService
+                      ? 'bg-accent-gold/20 border-accent-gold/50 text-accent-gold'
+                      : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                  }`}
+                >
+                  +10% Servicio / Propina
+                </button>
+                {isVeProfile && (
+                  <button
+                    type="button"
+                    onClick={() => setApplyIgtf((v) => !v)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border cursor-pointer transition-colors ${
+                      applyIgtf
+                        ? 'bg-purple-500/20 border-purple-400/50 text-purple-200'
+                        : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                    }`}
+                  >
+                    +3% IGTF
+                  </button>
+                )}
+              </div>
+
+              {parsedVal > 0 &&
+                (inputExtras.hasExtras || (dualGap !== null && dualGap.savingsUsd > 0.01)) && (
+                  <div className="bg-bg-input/50 border border-border rounded-xl p-2.5 space-y-1.5 text-[11px]">
+                    {inputExtras.hasExtras && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-text-muted">
+                        <span>
+                          Base {inputInBs ? formatBs(inputExtras.base) : formatUsd(inputExtras.base)}
+                          {activeApplyIva ? ` + IVA ${formatUsd(inputExtras.ivaAmount)}` : ''}
+                          {activeApplyService
+                            ? ` + Serv ${formatUsd(inputExtras.serviceAmount)}`
+                            : ''}
+                          {activeApplyIgtf ? ` + IGTF ${formatUsd(inputExtras.igtfAmount)}` : ''}
+                        </span>
+                        <strong className="text-text-primary">
+                          Total: {formatUsd(computedUsd)}
+                        </strong>
+                      </div>
+                    )}
+                    {dualGap && dualGap.savingsUsd > 0.01 && (
+                      <p className="text-emerald-300 leading-snug">
+                        {isSelectedBs
+                          ? `Costo real en Paralelo/USDT (Bs. ${parallelRate?.toFixed(2)}): ${formatUsd(dualGap.realParallelUsd)} · Ahorro brecha: +${formatUsd(dualGap.savingsUsd)} (-${dualGap.effectiveDiscountPct.toFixed(1)}%)`
+                          : `Ref. si pagas en Bs (Paralelo Bs. ${parallelRate?.toFixed(2)}): ${formatUsd(dualGap.realParallelUsd)} (ahorras ${formatUsd(dualGap.savingsUsd)})`}
+                      </p>
+                    )}
+                  </div>
+                )}
+            </div>
+          )}
 
           {bsExceedsEnvelope && (
             <div

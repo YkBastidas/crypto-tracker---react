@@ -43,6 +43,7 @@ import {
   calculateDaysLeft,
   calculateEmergencyGoalTarget,
   calculateFundSummaries,
+  calculateFxGapSummary,
   calculateReadyToAssignAndRunway,
   extractLiveCryptoBalances,
   formatBs,
@@ -119,6 +120,7 @@ export function BudgetDashboard({
     customAccounts,
     nativeAccountOverrides,
     emergencyGoal,
+    regionalProfile,
     syncCryptoDca,
     setSyncCryptoDca,
     freeBsPoolMode,
@@ -263,6 +265,8 @@ export function BudgetDashboard({
     return map;
   }, [customAccounts, nativeAccountOverrides]);
 
+  const fxGapSummary = useMemo(() => calculateFxGapSummary(movements), [movements]);
+
   const customAccountMap = useMemo(
     () => new Map(customAccounts.map((a) => [a.id, a])),
     [customAccounts],
@@ -331,34 +335,66 @@ export function BudgetDashboard({
             <p className="text-xs text-text-muted mt-1">
               Distribuido en {funds.length} fondos y cuentas activas
             </p>
-            {holdings.length > 0 && (
+            {(holdings.length > 0 ||
+              (regionalProfile === 'VE' && fxGapSummary.operationsCount > 0)) && (
               <div className="flex flex-wrap items-center gap-2 mt-2">
-                <button
-                  type="button"
-                  onClick={() => setSyncCryptoDca(!syncCryptoDca)}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border cursor-pointer transition-colors ${
-                    syncCryptoDca && hasLiveCryptoMatch
-                      ? 'bg-accent-green/15 border-accent-green/40 text-accent-green'
-                      : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
-                  }`}
-                >
+                {holdings.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setSyncCryptoDca(!syncCryptoDca)}
+                      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border cursor-pointer transition-colors ${
+                        syncCryptoDca && hasLiveCryptoMatch
+                          ? 'bg-accent-green/15 border-accent-green/40 text-accent-green'
+                          : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                      }`}
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full ${
+                          syncCryptoDca && hasLiveCryptoMatch ? 'bg-accent-green' : 'bg-text-muted'
+                        }`}
+                      />
+                      {syncCryptoDca ? 'DCA en vivo activo' : 'Solo Ledger manual'}
+                    </button>
+                    {syncCryptoDca && (
+                      <button
+                        type="button"
+                        onClick={refreshPrices}
+                        disabled={dcaLoading}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] bg-bg-input border border-border text-text-muted hover:text-accent-blue hover:border-accent-blue disabled:opacity-40 cursor-pointer"
+                      >
+                        <RefreshCw size={11} className={dcaLoading ? 'animate-spin' : ''} />
+                        {dcaLoading ? 'Actualizando...' : 'CoinGecko'}
+                      </button>
+                    )}
+                  </>
+                )}
+
+                {regionalProfile === 'VE' && fxGapSummary.operationsCount > 0 && (
                   <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      syncCryptoDca && hasLiveCryptoMatch ? 'bg-accent-green' : 'bg-text-muted'
-                    }`}
-                  />
-                  {syncCryptoDca ? 'DCA en vivo activo' : 'Solo Ledger manual'}
-                </button>
-                {syncCryptoDca && (
-                  <button
-                    type="button"
-                    onClick={refreshPrices}
-                    disabled={dcaLoading}
-                    className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] bg-bg-input border border-border text-text-muted hover:text-accent-blue hover:border-accent-blue disabled:opacity-40 cursor-pointer"
+                    title="Ganancia realizada en conversiones a Bs y ahorro implícito en gastos Bs frente a tasa Paralelo"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-500/15 border border-emerald-400/35 text-emerald-300"
                   >
-                    <RefreshCw size={11} className={dcaLoading ? 'animate-spin' : ''} />
-                    {dcaLoading ? 'Actualizando...' : 'CoinGecko'}
-                  </button>
+                    <span>Brecha FX:</span>
+                    {fxGapSummary.realizedExchangeGainUsd > 0 && (
+                      <strong>
+                        +<PrivacyValue value={formatUsd(fxGapSummary.realizedExchangeGainUsd)} isPrivate={isPrivate} />
+                      </strong>
+                    )}
+                    {fxGapSummary.realizedExchangeGainUsd > 0 &&
+                      fxGapSummary.implicitExpenseSavingsUsd > 0 && <span>·</span>}
+                    {fxGapSummary.implicitExpenseSavingsUsd > 0 && (
+                      <span>
+                        Ahorro Bs{' '}
+                        <strong>
+                          <PrivacyValue
+                            value={formatUsd(fxGapSummary.implicitExpenseSavingsUsd)}
+                            isPrivate={isPrivate}
+                          />
+                        </strong>
+                      </span>
+                    )}
+                  </span>
                 )}
               </div>
             )}
@@ -1155,9 +1191,33 @@ export function BudgetDashboard({
                       {isOutflow ? <ArrowDownRight size={14} /> : <ArrowUpRight size={14} />}
                     </div>
                     <div className="min-w-0">
-                      <p className="font-semibold text-text-primary truncate">
-                        {m.notes || m.type}
-                      </p>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <p className="font-semibold text-text-primary truncate">
+                          {m.notes || m.type}
+                        </p>
+                        {m.appliedExtras && (
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-bg-input border border-border text-text-muted">
+                            {[
+                              m.appliedExtras.ivaPct ? `+IVA ${m.appliedExtras.ivaPct}%` : null,
+                              m.appliedExtras.servicePct
+                                ? `+Serv ${m.appliedExtras.servicePct}%`
+                                : null,
+                              m.appliedExtras.igtfPct ? `+IGTF ${m.appliedExtras.igtfPct}%` : null,
+                            ]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </span>
+                        )}
+                        {typeof m.fxGapSavingsUsd === 'number' && m.fxGapSavingsUsd > 0.01 && (
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/15 border border-emerald-400/30 text-emerald-300 font-medium">
+                            {m.type === 'Transferencia (Entrada)' ? 'Brecha +' : 'Ahorro brecha '}
+                            <PrivacyValue
+                              value={formatUsd(m.fxGapSavingsUsd)}
+                              isPrivate={isPrivate}
+                            />
+                          </span>
+                        )}
+                      </div>
                       <p className="text-[11px] text-text-muted">
                         {m.date} · {bucketLabelMap[m.bucket] ?? m.bucket}
                         {m.paymentMethod

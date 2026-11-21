@@ -7,6 +7,7 @@ import type { EnvelopeSummary, RecurringExpense } from '../types';
 import {
   calculateEnvelopeSummaries,
   calculateFundSummaries,
+  calculateFxGapSummary,
   calculateReadyToAssignAndRunway,
   computeSharedSubscriptionSummary,
   getInstallmentPaymentHistory,
@@ -1071,5 +1072,84 @@ describe('budget/store & monthEndEngine invariants', () => {
     current = useBudgetStore.getState();
     expect(current.sharedSubscriptions[0].payments).toHaveLength(3);
     expect(current.movements.some((m) => m.id === anaPay.linkedMovementId)).toBe(true);
+  });
+
+  it('stores regionalProfile, parallelRate, appliedExtras, and avoids double-counting fxGapSavingsUsd on split Bs outflows', () => {
+    const store = useBudgetStore.getState();
+    store.setRegionalProfile('VE');
+    store.setManualBcvRate(100);
+    store.setManualParallelRate(130);
+    expect(useBudgetStore.getState().parallelIsManual).toBe(true);
+
+    // Seed $20 Bs in Disfrute + $80 Bs in free banco_bolivares
+    store.addMovement({
+      date: '2026-11-18',
+      bucket: 'disfrute',
+      type: 'Ingreso a Sobre',
+      amountUsd: 20,
+      amountBs: 2000,
+      bcvRateUsed: 100,
+      paymentMethod: 'bolivares_pago_movil',
+    });
+    store.addMovement({
+      date: '2026-11-18',
+      bucket: 'banco_bolivares',
+      type: 'Transferencia (Entrada)',
+      amountUsd: 80,
+      amountBs: 8000,
+      bcvRateUsed: 100,
+      parallelRateUsed: 130,
+      fxGapSavingsUsd: 18.46,
+      paymentMethod: 'bolivares_pago_movil',
+    });
+
+    store.addExpense({
+      name: 'Cena Restaurante',
+      amountUsd: 50,
+      frequency: 'mensual',
+      nextDueDate: '2026-11-25',
+      envelopeId: 'disfrute',
+      preferredPaymentMethod: 'bolivares_pago_movil',
+      active: true,
+    });
+    const exp = useBudgetStore.getState().expenses[0];
+
+    // Pay $63 ($50 + 16% IVA + 10% Serv) in Bs -> splits across disfrute ($20) and banco_bolivares ($43)
+    useBudgetStore.getState().markExpensePaid(exp.id, {
+      logToLedger: true,
+      paymentMethod: 'bolivares_pago_movil',
+      amountUsd: 63,
+      amountBs: 6300,
+      bcvRateUsed: 100,
+      parallelRateUsed: 130,
+      fxGapSavingsUsd: 14.54,
+      appliedExtras: { baseUsd: 50, ivaPct: 16, servicePct: 10 },
+      notes: 'Pago: Cena Restaurante · Base $50.00 + IVA 16% + Serv 10%',
+      envelopeId: 'disfrute',
+    });
+
+    const current = useBudgetStore.getState();
+    const expenseMovs = current.movements.filter((m) => m.type === 'Cambio a Bolívares');
+    expect(expenseMovs).toHaveLength(2);
+    // fxGapSavingsUsd & appliedExtras attached ONLY to idx === 0 so summary never double-counts!
+    expect(expenseMovs.filter((m) => typeof m.fxGapSavingsUsd === 'number')).toHaveLength(1);
+    expect(expenseMovs.filter((m) => Boolean(m.appliedExtras))).toHaveLength(1);
+
+    const summary = calculateFxGapSummary(current.movements);
+    expect(summary.realizedExchangeGainUsd).toBeCloseTo(18.46, 2);
+    expect(summary.implicitExpenseSavingsUsd).toBeCloseTo(14.54, 2);
+    expect(summary.operationsCount).toBe(2);
+
+    // Toggle regional profile + snapshot roundtrip
+    useBudgetStore.getState().setRegionalProfile('GLOBAL');
+    const snap = useBudgetStore.getState().exportSnapshot();
+    expect(snap.regionalProfile).toBe('GLOBAL');
+    expect(snap.parallelRate).toBeCloseTo(130, 2);
+
+    useBudgetStore.getState().clearAllData();
+    expect(useBudgetStore.getState().regionalProfile).toBe('VE');
+    expect(useBudgetStore.getState().importSnapshot(snap)).toBe(true);
+    expect(useBudgetStore.getState().regionalProfile).toBe('GLOBAL');
+    expect(useBudgetStore.getState().parallelRate).toBeCloseTo(130, 2);
   });
 });

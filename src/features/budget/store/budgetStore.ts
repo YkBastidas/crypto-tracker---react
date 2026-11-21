@@ -11,6 +11,7 @@ import type {
   EmergencyGoalConfig,
   EnvelopeId,
   EnvelopeSummary,
+  ExpenseExtrasMetadata,
   InstallmentPaymentRecord,
   InstallmentPlan,
   InstallmentSettlementKind,
@@ -21,6 +22,7 @@ import type {
   PaymentMethod,
   QuincenaConfig,
   RecurringExpense,
+  RegionalProfile,
   SharedSubscription,
   SharedSubscriptionPayment,
 } from '../types';
@@ -33,7 +35,7 @@ import {
   isNegativeAdjustmentMovement,
   type QuincenaPreview,
 } from '../utils/calculations';
-import { fetchBcvUsdRate } from '../services/bcvApi';
+import { fetchDualUsdRates } from '../services/bcvApi';
 import { buildLedgerMovementsFromSimulation } from '../services/monthEndEngine';
 
 export interface UndoEntry {
@@ -53,6 +55,10 @@ export interface PayExpenseOptions {
   amountUsd?: number;
   amountBs?: number;
   bcvRateUsed?: number;
+  parallelRateUsed?: number;
+  fxGapSavingsUsd?: number;
+  appliedExtras?: ExpenseExtrasMetadata;
+  notes?: string;
   envelopeId?: EnvelopeId;
   bucketOverride?: AssetBucketId;
 }
@@ -119,6 +125,10 @@ interface BudgetState {
   // Shared free Bs float mode
   setFreeBsPoolMode: (enabled: boolean) => void;
 
+  // Regional profile (VE / GLOBAL)
+  regionalProfile: RegionalProfile;
+  setRegionalProfile: (profile: RegionalProfile) => void;
+
   // Emergency goal
   updateEmergencyGoal: (patch: Partial<EmergencyGoalConfig>) => void;
 
@@ -137,13 +147,17 @@ interface BudgetState {
   ) => void;
   removeCustomAccount: (id: CustomAccountId) => void;
 
-  // BCV rate state
+  // BCV & Parallel rate state
   bcvRate: number | null;
   bcvUpdatedAt: string | null;
   bcvLoading: boolean;
   bcvError: string | null;
-  refreshBcvRate: () => Promise<void>;
+  parallelRate: number | null;
+  parallelUpdatedAt: string | null;
+  parallelIsManual: boolean;
+  refreshBcvRate: (options?: { forceParallel?: boolean }) => Promise<void>;
   setManualBcvRate: (rate: number) => void;
+  setManualParallelRate: (rate: number | null) => void;
 
   // Ledger actions
   addMovement: (movement: Omit<LedgerMovement, 'id'>) => void;
@@ -171,6 +185,8 @@ interface BudgetState {
     amountBsFrom?: number;
     amountBsTo?: number;
     bcvRateUsed?: number;
+    parallelRateUsed?: number;
+    fxGapSavingsUsd?: number;
     notes?: string;
   }) => void;
   multiEnvelopeCustodyExchange: (params: {
@@ -185,6 +201,8 @@ interface BudgetState {
       amountBsTo?: number;
     }>;
     bcvRateUsed?: number;
+    parallelRateUsed?: number;
+    fxGapSavingsUsd?: number;
     notes?: string;
   }) => void;
   removeMovement: (id: string) => void;
@@ -401,6 +419,8 @@ function routeBsOutflowMovements(
         sliceBs !== undefined ? (isNegativeAdjustment ? -sliceBs : sliceBs) : undefined,
       notes: sliceNote,
       splitGroupId,
+      fxGapSavingsUsd: idx === 0 ? baseMovement.fxGapSavingsUsd : undefined,
+      appliedExtras: idx === 0 ? baseMovement.appliedExtras : undefined,
       linkedExpense: idx === 0 ? baseMovement.linkedExpense : undefined,
       linkedInstallment: idx === 0 ? baseMovement.linkedInstallment : undefined,
     };
@@ -660,15 +680,21 @@ export const useBudgetStore = create<BudgetState>()(
       emergencyGoal: DEFAULT_EMERGENCY_GOAL,
       syncCryptoDca: true,
       freeBsPoolMode: true,
+      regionalProfile: 'VE',
       undoEntry: null,
       bcvRate: null,
       bcvUpdatedAt: null,
       bcvLoading: false,
       bcvError: null,
+      parallelRate: null,
+      parallelUpdatedAt: null,
+      parallelIsManual: false,
 
       setSyncCryptoDca: (enabled) => set({ syncCryptoDca: enabled }),
 
       setFreeBsPoolMode: (enabled) => set({ freeBsPoolMode: enabled }),
+
+      setRegionalProfile: (profile) => set({ regionalProfile: profile }),
 
       updateEmergencyGoal: (patch) =>
         set((state) => ({
@@ -820,15 +846,25 @@ export const useBudgetStore = create<BudgetState>()(
           };
         }),
 
-      refreshBcvRate: async () => {
+      refreshBcvRate: async (options) => {
         set({ bcvLoading: true, bcvError: null });
         try {
-          const res = await fetchBcvUsdRate();
-          set({
-            bcvRate: res.rate,
-            bcvUpdatedAt: res.updatedAt,
-            bcvLoading: false,
-            bcvError: null,
+          const res = await fetchDualUsdRates();
+          set((state) => {
+            const shouldUpdateParallel =
+              res.parallelRate !== null &&
+              (Boolean(options?.forceParallel) || !state.parallelIsManual);
+            return {
+              bcvRate: res.bcvRate,
+              bcvUpdatedAt: res.bcvUpdatedAt,
+              bcvLoading: false,
+              bcvError: null,
+              parallelRate: shouldUpdateParallel ? res.parallelRate : state.parallelRate,
+              parallelUpdatedAt: shouldUpdateParallel
+                ? res.parallelUpdatedAt
+                : state.parallelUpdatedAt,
+              parallelIsManual: options?.forceParallel ? false : state.parallelIsManual,
+            };
           });
         } catch (err) {
           set({
@@ -844,6 +880,19 @@ export const useBudgetStore = create<BudgetState>()(
           bcvRate: Number(rate.toFixed(4)),
           bcvUpdatedAt: new Date().toISOString(),
           bcvError: null,
+        });
+      },
+
+      setManualParallelRate: (rate) => {
+        if (rate === null) {
+          set({ parallelRate: null, parallelUpdatedAt: null, parallelIsManual: false });
+          return;
+        }
+        if (!Number.isFinite(rate) || rate <= 0) return;
+        set({
+          parallelRate: Number(rate.toFixed(4)),
+          parallelUpdatedAt: new Date().toISOString(),
+          parallelIsManual: true,
         });
       },
 
@@ -1006,6 +1055,8 @@ export const useBudgetStore = create<BudgetState>()(
         amountBsFrom,
         amountBsTo,
         bcvRateUsed,
+        parallelRateUsed,
+        fxGapSavingsUsd,
         notes,
       }) => {
         const cleanFrom = Number(Math.abs(amountFrom).toFixed(2));
@@ -1034,6 +1085,8 @@ export const useBudgetStore = create<BudgetState>()(
           amountUsd: cleanTo,
           amountBs: amountBsTo,
           bcvRateUsed,
+          parallelRateUsed,
+          fxGapSavingsUsd,
           paymentMethod: toPaymentMethod,
           notes: `Cambio / Transferencia entrada${label}`,
         };
@@ -1049,6 +1102,8 @@ export const useBudgetStore = create<BudgetState>()(
         toPaymentMethod,
         allocations,
         bcvRateUsed,
+        parallelRateUsed,
+        fxGapSavingsUsd,
         notes,
       }) => {
         if (fromPaymentMethod === toPaymentMethod) return;
@@ -1066,7 +1121,7 @@ export const useBudgetStore = create<BudgetState>()(
         const created: LedgerMovement[] = [];
         let totalFrom = 0;
 
-        for (const item of valid) {
+        valid.forEach((item, idx) => {
           const cleanFrom = Number(Math.abs(item.amountFrom).toFixed(2));
           const cleanTo = Number(Math.abs(item.amountTo).toFixed(2));
           totalFrom += cleanFrom;
@@ -1079,6 +1134,8 @@ export const useBudgetStore = create<BudgetState>()(
             amountUsd: cleanTo,
             amountBs: item.amountBsTo,
             bcvRateUsed,
+            parallelRateUsed,
+            fxGapSavingsUsd: idx === 0 ? fxGapSavingsUsd : undefined,
             paymentMethod: toPaymentMethod,
             notes: `Cambio multi-sobre entrada${label}`,
           });
@@ -1093,7 +1150,7 @@ export const useBudgetStore = create<BudgetState>()(
             paymentMethod: fromPaymentMethod,
             notes: `Cambio multi-sobre salida${label}`,
           });
-        }
+        });
 
         set((state) => ({
           undoEntry: createUndoSnapshot(
@@ -1371,8 +1428,11 @@ export const useBudgetStore = create<BudgetState>()(
               amountUsd: Number(Math.abs(amountUsd).toFixed(2)),
               amountBs,
               bcvRateUsed: rate,
+              parallelRateUsed: options?.parallelRateUsed,
+              fxGapSavingsUsd: options?.fxGapSavingsUsd,
+              appliedExtras: options?.appliedExtras,
               paymentMethod,
-              notes: `Pago: ${target.name}`,
+              notes: options?.notes?.trim() || `Pago: ${target.name}`,
               linkedExpense: {
                 id: target.id,
                 previousDueDate,
@@ -2125,6 +2185,8 @@ export const useBudgetStore = create<BudgetState>()(
           quincenaConfig,
           emergencyGoal,
           freeBsPoolMode,
+          regionalProfile,
+          parallelRate,
         } = get();
         return {
           version: 1,
@@ -2138,6 +2200,8 @@ export const useBudgetStore = create<BudgetState>()(
           quincenaConfig,
           emergencyGoal,
           freeBsPoolMode,
+          regionalProfile,
+          parallelRate,
         };
       },
 
@@ -2163,6 +2227,11 @@ export const useBudgetStore = create<BudgetState>()(
           quincenaConfig: snapshot.quincenaConfig,
           emergencyGoal: snapshot.emergencyGoal ?? DEFAULT_EMERGENCY_GOAL,
           freeBsPoolMode: snapshot.freeBsPoolMode ?? true,
+          regionalProfile: snapshot.regionalProfile ?? 'VE',
+          parallelRate:
+            typeof snapshot.parallelRate === 'number' && snapshot.parallelRate > 0
+              ? snapshot.parallelRate
+              : null,
           undoEntry: null,
         });
         return true;
@@ -2177,6 +2246,10 @@ export const useBudgetStore = create<BudgetState>()(
           nativeAccountOverrides: {},
           emergencyGoal: DEFAULT_EMERGENCY_GOAL,
           freeBsPoolMode: true,
+          regionalProfile: 'VE',
+          parallelRate: null,
+          parallelUpdatedAt: null,
+          parallelIsManual: false,
           undoEntry: null,
         });
       },
@@ -2191,6 +2264,11 @@ export const useBudgetStore = create<BudgetState>()(
           nativeAccountOverrides: {},
           quincenaConfig: initialSeed.quincenaConfig,
           emergencyGoal: DEFAULT_EMERGENCY_GOAL,
+          freeBsPoolMode: true,
+          regionalProfile: 'VE',
+          parallelRate: null,
+          parallelUpdatedAt: null,
+          parallelIsManual: false,
           undoEntry: null,
         });
       },
@@ -2208,8 +2286,12 @@ export const useBudgetStore = create<BudgetState>()(
         emergencyGoal: state.emergencyGoal,
         syncCryptoDca: state.syncCryptoDca,
         freeBsPoolMode: state.freeBsPoolMode,
+        regionalProfile: state.regionalProfile,
         bcvRate: state.bcvRate,
         bcvUpdatedAt: state.bcvUpdatedAt,
+        parallelRate: state.parallelRate,
+        parallelUpdatedAt: state.parallelUpdatedAt,
+        parallelIsManual: state.parallelIsManual,
       }),
     },
   ),

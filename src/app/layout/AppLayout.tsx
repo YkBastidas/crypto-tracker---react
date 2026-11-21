@@ -6,6 +6,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  Globe,
   HelpCircle,
   LayoutDashboard,
   Menu,
@@ -85,12 +86,18 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
     undoEntry,
     undoLastAction,
     dismissUndo,
+    regionalProfile,
+    setRegionalProfile,
     bcvRate,
     bcvUpdatedAt,
     bcvLoading,
     bcvError,
+    parallelRate,
+    parallelUpdatedAt,
+    parallelIsManual,
     refreshBcvRate,
     setManualBcvRate,
+    setManualParallelRate,
   } = useBudgetStore();
   const { holdings } = useInvestmentEngine();
   const [alertsPopoverOpen, setAlertsPopoverOpen] = useState(false);
@@ -162,10 +169,13 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
   const [helpOpen, setHelpOpen] = useState(false);
   const [bcvPopoverOpen, setBcvPopoverOpen] = useState(false);
   const [manualRateInput, setManualRateInput] = useState('');
+  const [manualParallelInput, setManualParallelInput] = useState('');
 
   useEffect(() => {
-    void refreshBcvRate();
-  }, [refreshBcvRate]);
+    if (regionalProfile === 'VE') {
+      void refreshBcvRate();
+    }
+  }, [regionalProfile, refreshBcvRate]);
 
   // beforeunload warning for unsaved crypto CSV changes
   useEffect(() => {
@@ -526,37 +536,69 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
               </span>
             </button>
 
-            {/* BCV Rate Pill (to the right of Ocultar Montos) */}
+            {/* Regional Profile + Dual-Rate Pill */}
             <div className="relative">
-              <div className="flex items-center rounded-lg bg-bg-card border border-border overflow-hidden">
+              {regionalProfile === 'VE' ? (
+                <div className="flex items-center rounded-lg bg-bg-card border border-border overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAlertsPopoverOpen(false);
+                      setManualRateInput(bcvRate ? String(bcvRate) : '');
+                      setManualParallelInput(parallelRate ? String(parallelRate) : '');
+                      setBcvPopoverOpen((v) => !v);
+                    }}
+                    className="px-2.5 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-bg-input transition-colors cursor-pointer bg-transparent border-none flex items-center gap-1"
+                    title="Tasas de cambio (BCV y Paralelo) / Perfil Regional"
+                  >
+                    <span>
+                      <span className="text-text-muted font-normal mr-1">BCV:</span>
+                      {bcvRate ? `Bs. ${bcvRate.toFixed(2)}` : bcvLoading ? '...' : '--'}
+                    </span>
+                    {parallelRate && parallelRate > 0 && (
+                      <span className="hidden sm:inline text-emerald-300 ml-1">
+                        · Par: Bs. {parallelRate.toFixed(2)}
+                        {bcvRate && parallelRate > bcvRate && (
+                          <span className="hidden md:inline text-[10px] text-emerald-300/80 ml-1">
+                            (+{(((parallelRate - bcvRate) / bcvRate) * 100).toFixed(1)}%)
+                          </span>
+                        )}
+                      </span>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void refreshBcvRate({ forceParallel: true })}
+                    disabled={bcvLoading}
+                    title="Actualizar tasas BCV y Paralelo"
+                    className="px-2 py-1.5 text-text-muted hover:text-text-primary border-l border-border bg-transparent border-t-0 border-r-0 border-b-0 cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw size={12} className={bcvLoading ? 'animate-spin' : ''} />
+                  </button>
+                </div>
+              ) : (
                 <button
                   type="button"
                   onClick={() => {
                     setAlertsPopoverOpen(false);
                     setManualRateInput(bcvRate ? String(bcvRate) : '');
+                    setManualParallelInput(parallelRate ? String(parallelRate) : '');
                     setBcvPopoverOpen((v) => !v);
                   }}
-                  className="px-2.5 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-bg-input transition-colors cursor-pointer bg-transparent border-none"
-                  title="Tasa Oficial BCV (DolarApi)"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-bg-card border border-border text-text-primary hover:border-accent-blue transition-colors cursor-pointer"
+                  title="Perfil Regional Global (USD)"
                 >
-                  <span className="text-text-muted font-normal mr-1">BCV:</span>
-                  {bcvRate ? `Bs. ${bcvRate.toFixed(2)}` : bcvLoading ? '...' : '--'}
+                  <Globe size={13} className="text-accent-blue" />
+                  <span className="hidden sm:inline">Global (USD)</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void refreshBcvRate()}
-                  disabled={bcvLoading}
-                  title="Actualizar tasa BCV"
-                  className="px-2 py-1.5 text-text-muted hover:text-text-primary border-l border-border bg-transparent border-t-0 border-r-0 border-b-0 cursor-pointer disabled:opacity-50"
-                >
-                  <RefreshCw size={12} className={bcvLoading ? 'animate-spin' : ''} />
-                </button>
-              </div>
+              )}
 
               {bcvPopoverOpen && (
-                <div className="absolute right-0 mt-2 w-64 bg-bg-card border border-border rounded-xl p-3.5 shadow-2xl z-50 space-y-2.5">
+                <div className="absolute right-0 mt-2 w-72 sm:w-80 bg-bg-card border border-border rounded-xl p-3.5 shadow-2xl z-50 space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-text-primary">Tasa BCV del día</span>
+                    <span className="text-xs font-bold text-text-primary flex items-center gap-1.5">
+                      <Globe size={13} className="text-accent-blue" /> Perfil Regional y Tasas
+                    </span>
                     <button
                       type="button"
                       onClick={() => setBcvPopoverOpen(false)}
@@ -565,43 +607,180 @@ export function AppLayout({ activeView, onChangeView, children }: AppLayoutProps
                       <X size={14} />
                     </button>
                   </div>
-                  <p className="text-[11px] text-text-muted">
-                    {bcvUpdatedAt
-                      ? `Actualizado: ${new Date(bcvUpdatedAt).toLocaleString('es-VE', {
-                          dateStyle: 'short',
-                          timeStyle: 'short',
-                        })}`
-                      : 'Fuente: ve.dolarapi.com'}
-                  </p>
-                  {bcvError && <p className="text-[11px] text-accent-red">{bcvError}</p>}
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      const val = parseFloat(manualRateInput);
-                      if (Number.isFinite(val) && val > 0) {
-                        setManualBcvRate(val);
-                        setBcvPopoverOpen(false);
-                      }
-                    }}
-                    className="flex gap-1.5 pt-1"
-                  >
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0.01"
-                      inputMode="decimal"
-                      value={manualRateInput}
-                      onChange={(e) => setManualRateInput(e.target.value)}
-                      placeholder="Tasa manual Bs/$"
-                      className="flex-1 px-2.5 py-1.5 rounded-lg text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
-                    />
+
+                  {/* Regional Switcher */}
+                  <div className="grid grid-cols-2 gap-1.5 p-1 rounded-lg bg-bg-input border border-border text-[11px]">
                     <button
-                      type="submit"
-                      className="px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-accent-blue/20 border border-accent-blue/40 text-accent-blue cursor-pointer"
+                      type="button"
+                      onClick={() => {
+                        setRegionalProfile('VE');
+                        if (!bcvRate) void refreshBcvRate();
+                      }}
+                      className={`py-1.5 rounded-md font-semibold border-none cursor-pointer transition-colors ${
+                        regionalProfile === 'VE'
+                          ? 'bg-cyan-500/20 text-cyan-200'
+                          : 'bg-transparent text-text-muted hover:text-text-primary'
+                      }`}
                     >
-                      Fijar
+                      Venezuela (VE)
                     </button>
-                  </form>
+                    <button
+                      type="button"
+                      onClick={() => setRegionalProfile('GLOBAL')}
+                      className={`py-1.5 rounded-md font-semibold border-none cursor-pointer transition-colors ${
+                        regionalProfile === 'GLOBAL'
+                          ? 'bg-accent-blue/25 text-accent-blue'
+                          : 'bg-transparent text-text-muted hover:text-text-primary'
+                      }`}
+                    >
+                      Global (USD)
+                    </button>
+                  </div>
+
+                  {regionalProfile === 'VE' ? (
+                    <div className="space-y-3">
+                      {/* BCV Official Rate */}
+                      <div className="bg-bg-input/40 border border-border rounded-lg p-2.5 space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-bold text-cyan-300">
+                            Tasa Oficial BCV
+                          </span>
+                          <span className="text-[11px] font-bold text-text-primary">
+                            {bcvRate ? `Bs. ${bcvRate.toFixed(2)}/$` : '--'}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-text-muted">
+                          {bcvUpdatedAt
+                            ? `Actualizado: ${new Date(bcvUpdatedAt).toLocaleString('es-VE', {
+                                dateStyle: 'short',
+                                timeStyle: 'short',
+                              })}`
+                            : 'Fuente: ve.dolarapi.com'}
+                        </p>
+                        {bcvError && <p className="text-[10px] text-accent-red">{bcvError}</p>}
+                        <form
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            const val = parseFloat(manualRateInput);
+                            if (Number.isFinite(val) && val > 0) {
+                              setManualBcvRate(val);
+                            }
+                          }}
+                          className="flex gap-1.5 pt-0.5"
+                        >
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0.01"
+                            inputMode="decimal"
+                            value={manualRateInput}
+                            onChange={(e) => setManualRateInput(e.target.value)}
+                            placeholder="BCV manual Bs/$"
+                            className="flex-1 px-2 py-1 rounded-md text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
+                          />
+                          <button
+                            type="submit"
+                            className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-accent-blue/20 border border-accent-blue/40 text-accent-blue cursor-pointer"
+                          >
+                            Fijar
+                          </button>
+                        </form>
+                      </div>
+
+                      {/* Parallel / USDT Rate */}
+                      <div className="bg-bg-input/40 border border-border rounded-lg p-2.5 space-y-1.5">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-[11px] font-bold text-emerald-300">
+                            Tasa Paralelo / USDT
+                            {parallelIsManual && (
+                              <span className="ml-1 text-[9px] font-normal px-1 py-0.2 rounded bg-accent-gold/15 text-accent-gold">
+                                Manual
+                              </span>
+                            )}
+                          </span>
+                          <span className="text-[11px] font-bold text-text-primary">
+                            {parallelRate ? `Bs. ${parallelRate.toFixed(2)}/$` : '--'}
+                          </span>
+                        </div>
+
+                        {bcvRate && bcvRate > 0 && parallelRate && parallelRate > 0 && (
+                          <div className="text-[10px] font-medium px-2 py-1 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">
+                            Brecha:{' '}
+                            <strong>
+                              {(((parallelRate - bcvRate) / bcvRate) * 100) >= 0 ? '+' : ''}
+                              {(((parallelRate - bcvRate) / bcvRate) * 100).toFixed(1)}%
+                            </strong>{' '}
+                            · Ahorro implícito en Bs:{' '}
+                            <strong>
+                              -
+                              {(
+                                ((1 - bcvRate / parallelRate) * 100) > 0
+                                  ? (1 - bcvRate / parallelRate) * 100
+                                  : 0
+                              ).toFixed(1)}
+                              %
+                            </strong>
+                          </div>
+                        )}
+
+                        <p className="text-[10px] text-text-muted">
+                          {parallelUpdatedAt
+                            ? `Actualizado: ${new Date(parallelUpdatedAt).toLocaleString('es-VE', {
+                                dateStyle: 'short',
+                                timeStyle: 'short',
+                              })}`
+                            : 'Para calcular ahorro/ganancia al gastar en Bs'}
+                        </p>
+
+                        <form
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            const val = parseFloat(manualParallelInput);
+                            if (Number.isFinite(val) && val > 0) {
+                              setManualParallelRate(val);
+                            }
+                          }}
+                          className="flex gap-1.5 pt-0.5"
+                        >
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0.01"
+                            inputMode="decimal"
+                            value={manualParallelInput}
+                            onChange={(e) => setManualParallelInput(e.target.value)}
+                            placeholder="Paralelo manual Bs/$"
+                            className="flex-1 px-2 py-1 rounded-md text-xs bg-bg-input border border-border text-text-primary focus:outline-none focus:border-emerald-400"
+                          />
+                          <button
+                            type="submit"
+                            className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 cursor-pointer"
+                          >
+                            Fijar
+                          </button>
+                          {parallelIsManual && (
+                            <button
+                              type="button"
+                              title="Volver a tasa automática"
+                              onClick={() => {
+                                setManualParallelRate(null);
+                                void refreshBcvRate({ forceParallel: true });
+                              }}
+                              className="px-2 py-1 rounded-md text-[10px] bg-bg-input border border-border text-text-muted hover:text-text-primary cursor-pointer"
+                            >
+                              Auto
+                            </button>
+                          )}
+                        </form>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-text-muted leading-relaxed bg-bg-input/50 border border-border rounded-lg p-2.5">
+                      Modo Global activo: oculta controles locales de tasas BCV/Paralelo, IVA 16% e
+                      IGTF 3%, manteniendo cálculos en USD y el modificador{' '}
+                      <strong className="text-text-primary">+10% Servicio / Propina</strong>.
+                    </p>
+                  )}
                 </div>
               )}
             </div>

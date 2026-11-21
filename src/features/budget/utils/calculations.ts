@@ -1289,3 +1289,134 @@ export function suggestNextCycleLabel(
   }
   return `${label} (sig.)`;
 }
+
+export interface ExpenseExtrasBreakdown {
+  base: number;
+  ivaPct: number;
+  servicePct: number;
+  igtfPct: number;
+  ivaAmount: number;
+  serviceAmount: number;
+  igtfAmount: number;
+  subtotalBeforeIgtf: number;
+  extrasTotal: number;
+  total: number;
+  hasExtras: boolean;
+}
+
+export function computeExpenseExtrasBreakdown(
+  baseAmount: number,
+  options: {
+    applyIva?: boolean;
+    applyService?: boolean;
+    applyIgtf?: boolean;
+    ivaPct?: number;
+    servicePct?: number;
+    igtfPct?: number;
+  } = {},
+): ExpenseExtrasBreakdown {
+  const ivaPct = options.ivaPct ?? 16;
+  const servicePct = options.servicePct ?? 10;
+  const igtfPct = options.igtfPct ?? 3;
+
+  const base = Number.isFinite(baseAmount) ? roundCurrency(Math.max(0, baseAmount)) : 0;
+  const ivaAmount = options.applyIva ? roundCurrency(base * (ivaPct / 100)) : 0;
+  const serviceAmount = options.applyService ? roundCurrency(base * (servicePct / 100)) : 0;
+  const subtotalBeforeIgtf = roundCurrency(base + ivaAmount + serviceAmount);
+  const igtfAmount = options.applyIgtf
+    ? roundCurrency(subtotalBeforeIgtf * (igtfPct / 100))
+    : 0;
+  const total = roundCurrency(subtotalBeforeIgtf + igtfAmount);
+  const extrasTotal = roundCurrency(total - base);
+
+  return {
+    base,
+    ivaPct,
+    servicePct,
+    igtfPct,
+    ivaAmount,
+    serviceAmount,
+    igtfAmount,
+    subtotalBeforeIgtf,
+    extrasTotal,
+    total,
+    hasExtras: extrasTotal > 0,
+  };
+}
+
+export interface DualRateGapResult {
+  amountBs: number;
+  gapPct: number;
+  realParallelUsd: number;
+  savingsUsd: number;
+  effectiveDiscountPct: number;
+}
+
+export function computeDualRateGap(params: {
+  amountUsdAtBcv: number;
+  bcvRate: number | null;
+  parallelRate: number | null;
+}): DualRateGapResult | null {
+  const { amountUsdAtBcv, bcvRate, parallelRate } = params;
+  if (
+    !Number.isFinite(amountUsdAtBcv) ||
+    amountUsdAtBcv <= 0 ||
+    !bcvRate ||
+    bcvRate <= 0 ||
+    !parallelRate ||
+    parallelRate <= 0
+  ) {
+    return null;
+  }
+
+  const amountBs = roundCurrency(amountUsdAtBcv * bcvRate);
+  const gapPct = Number((((parallelRate - bcvRate) / bcvRate) * 100).toFixed(2));
+  const realParallelUsd = roundCurrency(amountBs / parallelRate);
+  const savingsUsd = roundCurrency(amountUsdAtBcv - realParallelUsd);
+  const effectiveDiscountPct =
+    amountUsdAtBcv > 0 ? Number(((savingsUsd / amountUsdAtBcv) * 100).toFixed(2)) : 0;
+
+  return {
+    amountBs,
+    gapPct,
+    realParallelUsd,
+    savingsUsd,
+    effectiveDiscountPct,
+  };
+}
+
+export interface FxGapSummary {
+  realizedExchangeGainUsd: number;
+  implicitExpenseSavingsUsd: number;
+  operationsCount: number;
+}
+
+const EXPENSE_GAP_TYPES = new Set([
+  'Gasto en Efectivo',
+  'Cambio a Bolívares',
+  'Pago de Cuota',
+]);
+
+export function calculateFxGapSummary(movements: LedgerMovement[]): FxGapSummary {
+  let realized = 0;
+  let implicit = 0;
+  let operationsCount = 0;
+
+  for (const m of movements) {
+    const val = m.fxGapSavingsUsd;
+    if (typeof val !== 'number' || !Number.isFinite(val) || val <= 0.005) continue;
+    if (m.type === 'Transferencia (Entrada)') {
+      realized += val;
+      operationsCount += 1;
+    } else if (EXPENSE_GAP_TYPES.has(m.type)) {
+      implicit += val;
+      operationsCount += 1;
+    }
+  }
+
+  return {
+    realizedExchangeGainUsd: roundCurrency(realized),
+    implicitExpenseSavingsUsd: roundCurrency(implicit),
+    operationsCount,
+  };
+}

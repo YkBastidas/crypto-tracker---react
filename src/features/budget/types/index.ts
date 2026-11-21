@@ -72,6 +72,15 @@ export type RolloverRuleType =
 
 export type InternalTransactionType = 'SWEEP' | 'ROLLOVER';
 
+export type RegionalProfile = 'VE' | 'GLOBAL';
+
+export interface ExpenseExtrasMetadata {
+  baseUsd: number;
+  ivaPct?: number;
+  servicePct?: number;
+  igtfPct?: number;
+}
+
 export interface LedgerMovement {
   id: string;
   date: string; // YYYY-MM-DD
@@ -81,6 +90,9 @@ export interface LedgerMovement {
   amountUsd: number;
   amountBs?: number;
   bcvRateUsed?: number;
+  parallelRateUsed?: number;
+  fxGapSavingsUsd?: number;
+  appliedExtras?: ExpenseExtrasMetadata;
   paymentMethod?: PaymentMethod;
   notes?: string;
   quincenaId?: string;
@@ -228,6 +240,8 @@ export interface BudgetSnapshot {
   nativeAccountOverrides?: NativeAccountOverrides;
   emergencyGoal?: EmergencyGoalConfig;
   freeBsPoolMode?: boolean;
+  regionalProfile?: RegionalProfile;
+  parallelRate?: number | null;
 }
 
 export interface FundSummary {

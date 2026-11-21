@@ -22,6 +22,8 @@ import type {
 import {
   calculateEnvelopeSummaries,
   calculateFundSummaries,
+  computeDualRateGap,
+  computeExpenseExtrasBreakdown,
   formatBs,
   formatUsd,
   getActiveCustodyOptions,
@@ -201,7 +203,9 @@ export function QuickMovementModal({
     addMovement,
     transferBetweenBuckets,
     multiEnvelopeCustodyExchange,
+    regionalProfile,
     bcvRate,
+    parallelRate,
   } = useBudgetStore();
 
   const defaultUsdCustody = useMemo(() => {
@@ -218,6 +222,9 @@ export function QuickMovementModal({
     isBsBucketOrAccount(initialBucket, customAccounts) && bcvRate ? 'BS' : 'USD',
   );
   const [amount, setAmount] = useState('');
+  const [applyIva, setApplyIva] = useState(false);
+  const [applyService, setApplyService] = useState(false);
+  const [applyIgtf, setApplyIgtf] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(() =>
     inferDefaultMethod(initialBucket, customAccounts, defaultUsdCustody),
   );
@@ -348,6 +355,11 @@ export function QuickMovementModal({
 
   const hasValidRate = Boolean(bcvRate && bcvRate > 0);
   const effectiveRate = bcvRate ?? 0;
+  const isVeProfile = regionalProfile === 'VE';
+  const showBsCurrencyToggle =
+    isVeProfile ||
+    isBsBucketOrAccount(bucket, customAccounts) ||
+    isBsPaymentMethod(paymentMethod, customAccounts);
 
   const parsedInput = parseFloat(amount);
   const safeParsed = Number.isFinite(parsedInput) ? parsedInput : 0;
@@ -359,6 +371,39 @@ export function QuickMovementModal({
       : hasValidRate
         ? safeParsed * effectiveRate
         : 0;
+
+  const activeApplyIva = direction === 'out' && isVeProfile && applyIva;
+  const activeApplyService = direction === 'out' && applyService;
+  const activeApplyIgtf = direction === 'out' && isVeProfile && applyIgtf;
+  const inputExtras = computeExpenseExtrasBreakdown(safeParsed, {
+    applyIva: activeApplyIva,
+    applyService: activeApplyService,
+    applyIgtf: activeApplyIgtf,
+  });
+  const finalUsdFromInput =
+    direction === 'out'
+      ? inputCurrency === 'BS' && hasValidRate
+        ? inputExtras.total / effectiveRate
+        : inputExtras.total
+      : computedUsdFromInput;
+  const finalBsFromInput =
+    direction === 'out'
+      ? inputCurrency === 'BS'
+        ? inputExtras.total
+        : hasValidRate
+          ? inputExtras.total * effectiveRate
+          : 0
+      : computedBsFromInput;
+  const baseUsdFromInput =
+    inputCurrency === 'BS' && hasValidRate ? safeParsed / effectiveRate : safeParsed;
+  const dualGap =
+    isVeProfile && direction === 'out'
+      ? computeDualRateGap({
+          amountUsdAtBcv: finalUsdFromInput,
+          bcvRate,
+          parallelRate,
+        })
+      : null;
 
   // Delta calculation for set_balance mode (normalize -0 to 0)
   const setBalanceDeltaUsd =
@@ -455,7 +500,7 @@ export function QuickMovementModal({
 
     if (!Number.isFinite(parsedInput) || parsedInput <= 0) return;
 
-    const amountUsd = Number(computedUsdFromInput.toFixed(2));
+    const amountUsd = Number(finalUsdFromInput.toFixed(2));
     const finalType: MovementType =
       direction === 'in'
         ? INVESTMENT_BUCKETS.has(bucket)
@@ -463,21 +508,58 @@ export function QuickMovementModal({
           : 'Ingreso a Sobre'
         : outflowType;
 
+    const extrasSummary =
+      direction === 'out' && inputExtras.hasExtras
+        ? [
+            `Base ${formatUsd(baseUsdFromInput)}`,
+            activeApplyIva ? 'IVA 16%' : null,
+            activeApplyService ? 'Serv 10%' : null,
+            activeApplyIgtf ? 'IGTF 3%' : null,
+          ]
+            .filter(Boolean)
+            .join(' + ')
+        : null;
+    const trimmedNotes = notes.trim();
+    const resolvedNotes = extrasSummary
+      ? trimmedNotes
+        ? `${trimmedNotes} · ${extrasSummary}`
+        : extrasSummary
+      : trimmedNotes || (direction === 'in' ? 'Ingreso / Saldo inicial' : undefined);
+
+    const recordFxGap =
+      direction === 'out' &&
+      isBsMovement &&
+      dualGap !== null &&
+      dualGap.savingsUsd > 0.01 &&
+      Boolean(parallelRate && parallelRate > 0);
+
     addMovement({
       date,
       bucket,
       type: finalType,
       amountUsd,
       amountBs:
-        isBsMovement && hasValidRate ? Number(computedBsFromInput.toFixed(2)) : undefined,
+        isBsMovement && hasValidRate ? Number(finalBsFromInput.toFixed(2)) : undefined,
       bcvRateUsed: isBsMovement && hasValidRate ? effectiveRate : undefined,
+      parallelRateUsed: recordFxGap ? parallelRate ?? undefined : undefined,
+      fxGapSavingsUsd: recordFxGap ? dualGap!.savingsUsd : undefined,
+      appliedExtras:
+        direction === 'out' && inputExtras.hasExtras
+          ? {
+              baseUsd: Number(baseUsdFromInput.toFixed(2)),
+              ivaPct: activeApplyIva ? 16 : undefined,
+              servicePct: activeApplyService ? 10 : undefined,
+              igtfPct: activeApplyIgtf ? 3 : undefined,
+            }
+          : undefined,
       paymentMethod,
-      notes:
-        notes.trim() ||
-        (direction === 'in' ? 'Ingreso / Saldo inicial' : undefined),
+      notes: resolvedNotes,
     });
     setAmount('');
     setNotes('');
+    setApplyIva(false);
+    setApplyService(false);
+    setApplyIgtf(false);
     onClose();
   };
 
@@ -515,6 +597,11 @@ export function QuickMovementModal({
       ? toMethod
       : inferDefaultMethod(toBucket, customAccounts, defaultUsdCustody);
 
+    const conversionGainUsd =
+      isVeProfile && isDestinationBs && transferToInBs && finalUsdTo > numFrom + 0.01
+        ? Number((finalUsdTo - numFrom).toFixed(2))
+        : undefined;
+
     transferBetweenBuckets({
       date,
       fromBucket,
@@ -526,6 +613,9 @@ export function QuickMovementModal({
       amountBsFrom: finalBsFrom,
       amountBsTo: finalBsTo,
       bcvRateUsed: (isOriginBs || isDestinationBs) && hasValidRate ? effectiveRate : undefined,
+      parallelRateUsed:
+        conversionGainUsd && parallelRate && parallelRate > 0 ? parallelRate : undefined,
+      fxGapSavingsUsd: conversionGainUsd,
       notes: notes.trim() || undefined,
     });
 
@@ -703,12 +793,20 @@ export function QuickMovementModal({
 
     if (allocations.length === 0) return;
 
+    const multiGapGainUsd =
+      isVeProfile && toIsBs && totalUsdIn > totalOut + 0.01
+        ? Number((totalUsdIn - totalOut).toFixed(2))
+        : undefined;
+
     multiEnvelopeCustodyExchange({
       date,
       fromPaymentMethod: multiFromMethod,
       toPaymentMethod: multiToMethod,
       allocations,
       bcvRateUsed: (fromIsBs || toIsBs) && hasValidRate ? effectiveRate : undefined,
+      parallelRateUsed:
+        multiGapGainUsd && parallelRate && parallelRate > 0 ? parallelRate : undefined,
+      fxGapSavingsUsd: multiGapGainUsd,
       notes: notes.trim() || undefined,
     });
 
@@ -812,7 +910,12 @@ export function QuickMovementModal({
               </button>
               <button
                 type="button"
-                onClick={() => setDirection('in')}
+                onClick={() => {
+                  setDirection('in');
+                  setApplyIva(false);
+                  setApplyService(false);
+                  setApplyIgtf(false);
+                }}
                 className={`flex items-center justify-center gap-1 py-2 px-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
                   direction === 'in'
                     ? 'bg-accent-green/15 border-accent-green/50 text-accent-green'
@@ -823,7 +926,12 @@ export function QuickMovementModal({
               </button>
               <button
                 type="button"
-                onClick={() => setDirection('set_balance')}
+                onClick={() => {
+                  setDirection('set_balance');
+                  setApplyIva(false);
+                  setApplyService(false);
+                  setApplyIgtf(false);
+                }}
                 className={`flex items-center justify-center gap-1 py-2 px-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
                   direction === 'set_balance'
                     ? 'bg-accent-blue/20 border-accent-blue/50 text-accent-blue'
@@ -886,19 +994,21 @@ export function QuickMovementModal({
                   >
                     USD ($)
                   </button>
-                  <button
-                    type="button"
-                    disabled={!hasValidRate}
-                    onClick={() => setInputCurrency('BS')}
-                    title={hasValidRate ? `Tasa BCV: Bs. ${effectiveRate}` : 'Tasa BCV no disponible'}
-                    className={`px-2.5 py-0.5 font-semibold border-none cursor-pointer disabled:opacity-40 ${
-                      inputCurrency === 'BS'
-                        ? 'bg-cyan-500 text-black'
-                        : 'bg-bg-input text-text-muted'
-                    }`}
-                  >
-                    Bs (BCV)
-                  </button>
+                  {showBsCurrencyToggle && (
+                    <button
+                      type="button"
+                      disabled={!hasValidRate}
+                      onClick={() => setInputCurrency('BS')}
+                      title={hasValidRate ? `Tasa BCV: Bs. ${effectiveRate}` : 'Tasa BCV no disponible'}
+                      className={`px-2.5 py-0.5 font-semibold border-none cursor-pointer disabled:opacity-40 ${
+                        inputCurrency === 'BS'
+                          ? 'bg-cyan-500 text-black'
+                          : 'bg-bg-input text-text-muted'
+                      }`}
+                    >
+                      Bs (BCV)
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -922,7 +1032,7 @@ export function QuickMovementModal({
 
               {inputCurrency === 'BS' && hasValidRate && (
                 <p className="text-[11px] text-cyan-300 mt-1">
-                  ≈ {formatUsd(computedUsdFromInput)} USD según tasa BCV (Bs.{' '}
+                  ≈ {formatUsd(finalUsdFromInput)} USD según tasa BCV (Bs.{' '}
                   {effectiveRate.toFixed(2)}/$)
                 </p>
               )}
@@ -930,7 +1040,7 @@ export function QuickMovementModal({
                 hasValidRate &&
                 isBsPaymentMethod(paymentMethod, customAccounts) && (
                 <p className="text-[11px] text-cyan-300 mt-1">
-                  ≈ {formatBs(computedBsFromInput)} según tasa BCV
+                  ≈ {formatBs(finalBsFromInput)} según tasa BCV
                 </p>
               )}
               {direction === 'set_balance' && amount.trim() !== '' && (
@@ -958,6 +1068,93 @@ export function QuickMovementModal({
                       </button>
                     ),
                   )}
+                </div>
+              )}
+
+              {direction === 'out' && (
+                <div className="mt-2.5 space-y-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    {isVeProfile && (
+                      <button
+                        type="button"
+                        onClick={() => setApplyIva((v) => !v)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border cursor-pointer transition-colors ${
+                          applyIva
+                            ? 'bg-accent-blue/20 border-accent-blue/50 text-accent-blue'
+                            : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                        }`}
+                      >
+                        +16% IVA
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setApplyService((v) => !v)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border cursor-pointer transition-colors ${
+                        applyService
+                          ? 'bg-accent-gold/20 border-accent-gold/50 text-accent-gold'
+                          : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                      }`}
+                    >
+                      +10% Servicio / Propina
+                    </button>
+                    {isVeProfile && (
+                      <button
+                        type="button"
+                        onClick={() => setApplyIgtf((v) => !v)}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border cursor-pointer transition-colors ${
+                          applyIgtf
+                            ? 'bg-purple-500/20 border-purple-400/50 text-purple-200'
+                            : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                        }`}
+                      >
+                        +3% IGTF
+                      </button>
+                    )}
+                  </div>
+
+                  {safeParsed > 0 &&
+                    (inputExtras.hasExtras || (dualGap !== null && dualGap.savingsUsd > 0.01)) && (
+                      <div className="bg-bg-input/50 border border-border rounded-xl p-2.5 space-y-1.5 text-[11px]">
+                        {inputExtras.hasExtras && (
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-text-muted">
+                              <span>
+                                Base{' '}
+                                {inputCurrency === 'BS'
+                                  ? formatBs(inputExtras.base)
+                                  : formatUsd(inputExtras.base)}
+                                {activeApplyIva ? ` + IVA 16%` : ''}
+                                {activeApplyService ? ` + Serv 10%` : ''}
+                                {activeApplyIgtf ? ` + IGTF 3%` : ''}
+                              </span>
+                              <strong className="text-text-primary">
+                                Total: {formatUsd(finalUsdFromInput)}
+                                {isVeProfile && hasValidRate
+                                  ? ` · ${formatBs(finalBsFromInput)}`
+                                  : ''}
+                              </strong>
+                            </div>
+                            {activeApplyIgtf &&
+                              isBsPaymentMethod(paymentMethod, customAccounts) && (
+                                <p className="text-[10px] text-accent-gold">
+                                  El IGTF (+3%) normalmente aplica a pagos en divisas, no a
+                                  Bolívares.
+                                </p>
+                              )}
+                          </div>
+                        )}
+
+                        {dualGap && dualGap.savingsUsd > 0.01 && (
+                          <p className="text-emerald-300 leading-snug">
+                            {isBsPaymentMethod(paymentMethod, customAccounts) ||
+                            inputCurrency === 'BS'
+                              ? `Costo real cubriendo con USDT/Paralelo (Bs. ${parallelRate?.toFixed(2)}): ${formatUsd(dualGap.realParallelUsd)} · Ahorro brecha: +${formatUsd(dualGap.savingsUsd)} (-${dualGap.effectiveDiscountPct.toFixed(1)}%)`
+                              : `Ref. si pagaras en Bs con USDT (Bs. ${parallelRate?.toFixed(2)}): ${formatUsd(dualGap.realParallelUsd)} (ahorrarías ${formatUsd(dualGap.savingsUsd)} vs BCV${activeApplyIgtf ? ' y evitarías IGTF' : ''})`}
+                          </p>
+                        )}
+                      </div>
+                    )}
                 </div>
               )}
             </div>
@@ -1020,7 +1217,7 @@ export function QuickMovementModal({
                   0,
                   envelopeSummaries.find((e) => e.id === bucket)?.byMethod.bolivares ?? 0,
                 );
-                if (computedUsdFromInput <= envBsAvail + 0.01) return null;
+                if (finalUsdFromInput <= envBsAvail + 0.01) return null;
                 return (
                   <div
                     className={`rounded-xl p-2.5 border text-[11px] flex items-center justify-between gap-2 ${
@@ -1103,7 +1300,9 @@ export function QuickMovementModal({
                 ? 'Guardar Ingreso / Saldo'
                 : direction === 'set_balance'
                   ? 'Aplicar Ajuste de Saldo'
-                  : 'Guardar Gasto'}
+                  : safeParsed > 0
+                    ? `Guardar Gasto (${formatUsd(finalUsdFromInput)})`
+                    : 'Guardar Gasto'}
             </button>
           </form>
         ) : (
@@ -1275,11 +1474,32 @@ export function QuickMovementModal({
                     />
                   </div>
                   <div>
-                    <label className="text-[11px] text-text-muted block mb-1">
-                      {isBsPaymentMethod(multiToMethod, customAccounts)
-                        ? 'Recibido (Bs opcional)'
-                        : 'Recibido ($ opcional)'}
-                    </label>
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <label className="text-[11px] text-text-muted">
+                        {isBsPaymentMethod(multiToMethod, customAccounts)
+                          ? 'Recibido (Bs opcional)'
+                          : 'Recibido ($ opcional)'}
+                      </label>
+                      {isVeProfile &&
+                        isBsPaymentMethod(multiToMethod, customAccounts) &&
+                        parallelRate &&
+                        parallelRate > 0 &&
+                        hasValidRate && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const baseOut =
+                                parseFloat(multiTotalUsd) || multiAllocatedTotal || 0;
+                              if (baseOut > 0) {
+                                setMultiReceived((baseOut * parallelRate).toFixed(2));
+                              }
+                            }}
+                            className="text-[10px] text-emerald-300 underline bg-transparent border-none cursor-pointer"
+                          >
+                            Tasa Par.
+                          </button>
+                        )}
+                    </div>
                     <input
                       type="number"
                       step="0.01"
@@ -1294,6 +1514,23 @@ export function QuickMovementModal({
                       }
                       className="w-full px-3 py-2 rounded-xl text-sm font-bold bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
                     />
+                    {isVeProfile &&
+                      isBsPaymentMethod(multiToMethod, customAccounts) &&
+                      hasValidRate &&
+                      multiReceived.trim() &&
+                      (() => {
+                        const outUsd = parseFloat(multiTotalUsd) || multiAllocatedTotal || 0;
+                        const recBs = parseFloat(multiReceived) || 0;
+                        const equivUsd = recBs / effectiveRate;
+                        const gain = equivUsd - outUsd;
+                        if (outUsd <= 0 || gain <= 0.01) return null;
+                        const gapPct = (gain / outUsd) * 100;
+                        return (
+                          <p className="text-[10px] text-emerald-300 mt-1">
+                            Brecha cambiaria: +{formatUsd(gain)} (+{gapPct.toFixed(1)}%) BCV
+                          </p>
+                        );
+                      })()}
                   </div>
                 </div>
 
@@ -1664,22 +1901,43 @@ export function QuickMovementModal({
                   )}
               </div>
               <div>
-                <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center justify-between gap-1.5 mb-1.5">
                   <label className="text-xs text-text-muted">
                     {transferToInBs ? 'Recibido (Bs)' : 'Recibido ($)'}
                   </label>
-                  {isDestinationBs && hasValidRate && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setTransferToInBs((v) => !v);
-                        setAmountTo('');
-                      }}
-                      className="text-[10px] text-cyan-300 underline bg-transparent border-none cursor-pointer"
-                    >
-                      {transferToInBs ? 'En $' : 'En Bs'}
-                    </button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {isVeProfile &&
+                      isDestinationBs &&
+                      parallelRate &&
+                      parallelRate > 0 &&
+                      hasValidRate && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTransferToInBs(true);
+                            const out = parseFloat(amountFrom) || 0;
+                            if (out > 0) {
+                              setAmountTo((out * parallelRate).toFixed(2));
+                            }
+                          }}
+                          className="text-[10px] text-emerald-300 underline bg-transparent border-none cursor-pointer"
+                        >
+                          Tasa Par.
+                        </button>
+                      )}
+                    {isDestinationBs && hasValidRate && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTransferToInBs((v) => !v);
+                          setAmountTo('');
+                        }}
+                        className="text-[10px] text-cyan-300 underline bg-transparent border-none cursor-pointer"
+                      >
+                        {transferToInBs ? 'En $' : 'En Bs'}
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <input
                   type="number"
@@ -1695,11 +1953,25 @@ export function QuickMovementModal({
                   }
                   className="w-full px-3 py-2.5 rounded-xl text-base font-bold bg-bg-input border border-border text-text-primary focus:outline-none focus:border-accent-blue"
                 />
-                {transferToInBs && hasValidRate && amountTo.trim() && (
-                  <p className="text-[10px] text-cyan-300 mt-1">
-                    ≈ {formatUsd((parseFloat(amountTo) || 0) / effectiveRate)} (BCV)
-                  </p>
-                )}
+                {transferToInBs && hasValidRate && amountTo.trim() && (() => {
+                  const out = parseFloat(amountFrom) || 0;
+                  const bsVal = parseFloat(amountTo) || 0;
+                  const equivBcv = bsVal / effectiveRate;
+                  const gain = equivBcv - out;
+                  return (
+                    <div className="mt-1 space-y-0.5">
+                      <p className="text-[10px] text-cyan-300">
+                        ≈ {formatUsd(equivBcv)} (BCV)
+                      </p>
+                      {isVeProfile && out > 0 && gain > 0.01 && (
+                        <p className="text-[10px] text-emerald-300">
+                          Brecha cambiaria: +{formatUsd(gain)} (+{((gain / out) * 100).toFixed(1)}%)
+                          BCV
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 

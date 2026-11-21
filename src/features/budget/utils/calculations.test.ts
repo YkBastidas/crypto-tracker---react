@@ -13,7 +13,10 @@ import {
   calculateEligibleInvestmentCapital,
   calculateEnvelopeSummaries,
   calculateFundSummaries,
+  calculateFxGapSummary,
   calculateReadyToAssignAndRunway,
+  computeDualRateGap,
+  computeExpenseExtrasBreakdown,
   computeQuincenaPreview,
   extractLiveCryptoBalances,
   formatBs,
@@ -1038,5 +1041,77 @@ describe('budget/utils/calculations', () => {
     expect(activeCustodies.map((c) => c.id)).toEqual(['binance_usdt', 'acct_chase', 'otro']);
     expect(getPaymentMethodLabel('binance_usdt', customAccounts, overrides)).toBe('Brokerage USD');
     expect(getPaymentMethodLabel('acct_chase', customAccounts, overrides)).toBe('Chase Checking (USD)');
+  });
+
+  it('computes cascaded expense extras (IVA 16%, Service 10%, IGTF 3%) and dual-rate FX gap summary without double-counting', () => {
+    // 1. Restaurant bill $50 base + 16% IVA ($8) + 10% Service ($5) = $63.00
+    const bsBill = computeExpenseExtrasBreakdown(50, {
+      applyIva: true,
+      applyService: true,
+      applyIgtf: false,
+    });
+    expect(bsBill.base).toBeCloseTo(50, 2);
+    expect(bsBill.ivaAmount).toBeCloseTo(8, 2);
+    expect(bsBill.serviceAmount).toBeCloseTo(5, 2);
+    expect(bsBill.igtfAmount).toBe(0);
+    expect(bsBill.subtotalBeforeIgtf).toBeCloseTo(63, 2);
+    expect(bsBill.total).toBeCloseTo(63, 2);
+    expect(bsBill.hasExtras).toBe(true);
+
+    // 2. Adding +3% IGTF compounds on post-IVA/service invoice ($63.00 * 1.03 = $64.89)
+    const fxBill = computeExpenseExtrasBreakdown(50, {
+      applyIva: true,
+      applyService: true,
+      applyIgtf: true,
+    });
+    expect(fxBill.igtfAmount).toBeCloseTo(1.89, 2);
+    expect(fxBill.total).toBeCloseTo(64.89, 2);
+
+    // 3. Standalone +3% IGTF on $100
+    const igtfOnly = computeExpenseExtrasBreakdown(100, { applyIgtf: true });
+    expect(igtfOnly.total).toBeCloseTo(103, 2);
+
+    // 4. Dual-rate gap: $63.00 at BCV 100 vs Parallel 130
+    const gap = computeDualRateGap({
+      amountUsdAtBcv: 63,
+      bcvRate: 100,
+      parallelRate: 130,
+    })!;
+    expect(gap).not.toBeNull();
+    expect(gap.amountBs).toBeCloseTo(6300, 2);
+    expect(gap.gapPct).toBeCloseTo(30, 2);
+    expect(gap.realParallelUsd).toBeCloseTo(48.46, 2);
+    expect(gap.savingsUsd).toBeCloseTo(14.54, 2);
+    expect(gap.effectiveDiscountPct).toBeCloseTo(23.08, 2);
+
+    expect(
+      computeDualRateGap({ amountUsdAtBcv: 63, bcvRate: 100, parallelRate: null }),
+    ).toBeNull();
+
+    // 5. FxGapSummary segregates realized conversion gains from implicit Bs expense savings
+    const movements: LedgerMovement[] = [
+      {
+        id: 't-in',
+        date: '2026-11-20',
+        bucket: 'banco_bolivares',
+        type: 'Transferencia (Entrada)',
+        amountUsd: 130,
+        fxGapSavingsUsd: 30,
+        paymentMethod: 'bolivares_pago_movil',
+      },
+      {
+        id: 'g-bs',
+        date: '2026-11-20',
+        bucket: 'disfrute',
+        type: 'Cambio a Bolívares',
+        amountUsd: 63,
+        fxGapSavingsUsd: 14.54,
+        paymentMethod: 'bolivares_pago_movil',
+      },
+    ];
+    const summary = calculateFxGapSummary(movements);
+    expect(summary.realizedExchangeGainUsd).toBeCloseTo(30, 2);
+    expect(summary.implicitExpenseSavingsUsd).toBeCloseTo(14.54, 2);
+    expect(summary.operationsCount).toBe(2);
   });
 });
