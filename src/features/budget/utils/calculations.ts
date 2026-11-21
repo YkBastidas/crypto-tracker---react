@@ -20,6 +20,8 @@ import type {
   ReadyToAssignAndRunwaySummary,
   ReadyToAssignItem,
   RecurringExpense,
+  SharedSubscription,
+  SharedSubscriptionFrequency,
 } from '../types';
 
 export const DEFAULT_NATIVE_FUND_META: Record<
@@ -1151,4 +1153,139 @@ export function getInstallmentPaymentHistory(
     historicalTotalUsd,
     monetaryTotalUsd,
   };
+}
+
+export interface SharedSubscriptionMemberSummary {
+  id: string;
+  name: string;
+  shareUsd: number;
+  isCustomShare: boolean;
+  paidInCycleUsd: number;
+  remainingInCycleUsd: number;
+  status: 'paid' | 'partial' | 'pending' | 'covered';
+  lastPaidDateInCycle?: string;
+  notes?: string;
+}
+
+export interface SharedSubscriptionSummary {
+  participantCount: number;
+  defaultShareUsd: number;
+  totalReceivableUsd: number;
+  myShareUsd: number;
+  overAllocatedUsd: number;
+  collectedInCycleUsd: number;
+  remainingInCycleUsd: number;
+  billableMembersCount: number;
+  paidMembersCount: number;
+  progressPct: number;
+  members: SharedSubscriptionMemberSummary[];
+}
+
+export function computeSharedSubscriptionSummary(
+  sub: SharedSubscription,
+): SharedSubscriptionSummary {
+  const participantCount = Math.max(1, sub.members.length + (sub.includesMe ? 1 : 0));
+  const defaultShareUsd = roundCurrency(Math.max(0, sub.totalAmountUsd) / participantCount);
+
+  const members: SharedSubscriptionMemberSummary[] = sub.members.map((m) => {
+    const isCustomShare =
+      typeof m.customShareUsd === 'number' && Number.isFinite(m.customShareUsd);
+    const shareUsd = isCustomShare
+      ? roundCurrency(Math.max(0, m.customShareUsd as number))
+      : defaultShareUsd;
+
+    const cyclePayments = sub.payments.filter(
+      (p) => p.memberId === m.id && p.cycleLabel === sub.currentCycleLabel,
+    );
+    const paidInCycleUsd = roundCurrency(
+      cyclePayments.reduce((acc, p) => acc + p.amountUsd, 0),
+    );
+    const remainingInCycleUsd = roundCurrency(Math.max(0, shareUsd - paidInCycleUsd));
+
+    let status: SharedSubscriptionMemberSummary['status'] = 'pending';
+    if (shareUsd <= 0.005) {
+      status = 'covered';
+    } else if (paidInCycleUsd >= shareUsd - 0.009) {
+      status = 'paid';
+    } else if (paidInCycleUsd > 0.005) {
+      status = 'partial';
+    }
+
+    const dates = cyclePayments.map((p) => p.date).filter(Boolean).sort((a, b) => b.localeCompare(a));
+
+    return {
+      id: m.id,
+      name: m.name,
+      shareUsd,
+      isCustomShare,
+      paidInCycleUsd,
+      remainingInCycleUsd,
+      status,
+      lastPaidDateInCycle: dates[0],
+      notes: m.notes,
+    };
+  });
+
+  const totalReceivableUsd = roundCurrency(
+    members.reduce((acc, m) => acc + m.shareUsd, 0),
+  );
+  const myShareUsd = sub.includesMe
+    ? roundCurrency(Math.max(0, sub.totalAmountUsd - totalReceivableUsd))
+    : 0;
+  const overAllocatedUsd = roundCurrency(
+    Math.max(0, totalReceivableUsd - sub.totalAmountUsd),
+  );
+  const collectedInCycleUsd = roundCurrency(
+    sub.payments
+      .filter((p) => p.cycleLabel === sub.currentCycleLabel)
+      .reduce((acc, p) => acc + p.amountUsd, 0),
+  );
+  const remainingInCycleUsd = roundCurrency(
+    members.reduce((acc, m) => acc + m.remainingInCycleUsd, 0),
+  );
+  const billableMembersCount = members.filter((m) => m.shareUsd > 0.005).length;
+  const paidMembersCount = members.filter((m) => m.status === 'paid').length;
+  const cappedCollectedUsd = roundCurrency(
+    members.reduce((acc, m) => acc + Math.min(m.shareUsd, m.paidInCycleUsd), 0),
+  );
+  const progressPct =
+    totalReceivableUsd > 0 ? Math.min(100, (cappedCollectedUsd / totalReceivableUsd) * 100) : 100;
+
+  return {
+    participantCount,
+    defaultShareUsd,
+    totalReceivableUsd,
+    myShareUsd,
+    overAllocatedUsd,
+    collectedInCycleUsd,
+    remainingInCycleUsd,
+    billableMembersCount,
+    paidMembersCount,
+    progressPct,
+    members,
+  };
+}
+
+export function suggestNextCycleLabel(
+  currentCycleLabel: string,
+  frequency: SharedSubscriptionFrequency,
+): string {
+  const label = currentCycleLabel.trim();
+  if (frequency === 'anual' && /^\d{4}$/.test(label)) {
+    return String(Number(label) + 1);
+  }
+  const ymMatch = /^(\d{4})-(\d{2})$/.exec(label);
+  if (ymMatch) {
+    const year = Number(ymMatch[1]);
+    const month = Number(ymMatch[2]);
+    if (month >= 1 && month <= 12) {
+      const nextYear = month === 12 ? year + 1 : year;
+      const nextMonth = month === 12 ? 1 : month + 1;
+      return `${nextYear}-${String(nextMonth).padStart(2, '0')}`;
+    }
+  }
+  if (frequency === 'anual') {
+    return String(new Date().getFullYear() + 1);
+  }
+  return `${label} (sig.)`;
 }

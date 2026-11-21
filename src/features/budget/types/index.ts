@@ -96,6 +96,12 @@ export interface LedgerMovement {
     previousDueDate?: string;
     note?: string;
   };
+  linkedSharedSubscription?: {
+    subscriptionId: string;
+    paymentId: string;
+    memberId: string;
+    note?: string;
+  };
 }
 
 export type AllocationMode = 'percentage' | 'fixed';
@@ -162,6 +168,46 @@ export interface InstallmentPlan {
   paymentHistory?: InstallmentPaymentRecord[];
 }
 
+export type SharedSubscriptionFrequency = 'mensual' | 'anual' | 'quincenal';
+
+export interface SharedSubscriptionPayment {
+  id: string;
+  memberId: string;
+  memberName?: string;
+  cycleLabel: string; // e.g. '2026' or '2026-11'
+  date: string; // YYYY-MM-DD
+  amountUsd: number;
+  settlementKind: InstallmentSettlementKind;
+  notes?: string;
+  envelopeId?: EnvelopeId;
+  paymentMethod?: PaymentMethod;
+  amountBs?: number;
+  bcvRateUsed?: number;
+  linkedMovementId?: string;
+}
+
+export interface SharedSubscriptionMember {
+  id: string;
+  name: string;
+  customShareUsd?: number | null;
+  notes?: string;
+}
+
+export interface SharedSubscription {
+  id: string;
+  name: string;
+  totalAmountUsd: number;
+  frequency: SharedSubscriptionFrequency;
+  includesMe: boolean;
+  currentCycleLabel: string;
+  nextRenewalDate?: string;
+  linkedExpenseId?: string;
+  defaultEnvelopeId?: EnvelopeId;
+  members: SharedSubscriptionMember[];
+  payments: SharedSubscriptionPayment[];
+  notes?: string;
+}
+
 export type EmergencyGoalMode = 'months_of_essentials' | 'custom';
 
 export interface EmergencyGoalConfig {
@@ -176,6 +222,7 @@ export interface BudgetSnapshot {
   movements: LedgerMovement[];
   expenses: RecurringExpense[];
   installments: InstallmentPlan[];
+  sharedSubscriptions?: SharedSubscription[];
   quincenaConfig: QuincenaConfig;
   customAccounts?: CustomAccount[];
   nativeAccountOverrides?: NativeAccountOverrides;

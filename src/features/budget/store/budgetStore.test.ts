@@ -8,6 +8,7 @@ import {
   calculateEnvelopeSummaries,
   calculateFundSummaries,
   calculateReadyToAssignAndRunway,
+  computeSharedSubscriptionSummary,
   getInstallmentPaymentHistory,
 } from '../utils/calculations';
 import { useBudgetStore } from './budgetStore';
@@ -915,5 +916,160 @@ describe('budget/store & monthEndEngine invariants', () => {
 
     envs = calculateEnvelopeSummaries(current.movements);
     expect(envs.find((e) => e.id === 'ahorro_inversion')!.available).toBeCloseTo(115, 2);
+  });
+
+  it('computes equal Total / N shared subscription splits with custom overrides and dynamic total recalculation', () => {
+    const baseSub = {
+      id: 'sub-spotify',
+      name: 'Spotify Familiar',
+      totalAmountUsd: 139.2,
+      frequency: 'anual' as const,
+      includesMe: true,
+      currentCycleLabel: '2026',
+      members: [
+        { id: 'm1', name: 'Persona 1' },
+        { id: 'm2', name: 'Persona 2' },
+        { id: 'm3', name: 'Persona 3' },
+        { id: 'm4', name: 'Persona 4' },
+        { id: 'm5', name: 'Persona 5' },
+      ],
+      payments: [],
+    };
+
+    const summary = computeSharedSubscriptionSummary(baseSub);
+    expect(summary.participantCount).toBe(6);
+    expect(summary.defaultShareUsd).toBeCloseTo(23.2, 2);
+    expect(summary.totalReceivableUsd).toBeCloseTo(116.0, 2);
+    expect(summary.myShareUsd).toBeCloseTo(23.2, 2);
+    expect(summary.members.every((m) => m.shareUsd === 23.2 && !m.isCustomShare)).toBe(true);
+
+    // Override Persona 5 to $0 (user covers their share), then raise total to $150 -> auto members recalculate to $25
+    const overriddenSub = {
+      ...baseSub,
+      totalAmountUsd: 150,
+      members: baseSub.members.map((m) =>
+        m.id === 'm5' ? { ...m, customShareUsd: 0 } : m,
+      ),
+    };
+    const updatedSummary = computeSharedSubscriptionSummary(overriddenSub);
+    expect(updatedSummary.defaultShareUsd).toBeCloseTo(25.0, 2);
+    expect(updatedSummary.members.find((m) => m.id === 'm1')!.shareUsd).toBeCloseTo(25.0, 2);
+    const m5 = updatedSummary.members.find((m) => m.id === 'm5')!;
+    expect(m5.shareUsd).toBeCloseTo(0, 2);
+    expect(m5.isCustomShare).toBe(true);
+    expect(m5.status).toBe('covered');
+    expect(updatedSummary.totalReceivableUsd).toBeCloseTo(100.0, 2);
+    expect(updatedSummary.myShareUsd).toBeCloseTo(50.0, 2);
+    expect(updatedSummary.billableMembersCount).toBe(4);
+  });
+
+  it('records monetary & off-ledger shared subscription collections, syncs edits/deletes bidirectionally with ledger, advances cycles, and roundtrips snapshots', () => {
+    const store = useBudgetStore.getState();
+    const subId = store.addSharedSubscription({
+      name: 'Spotify Familiar',
+      totalAmountUsd: 139.2,
+      frequency: 'anual',
+      includesMe: true,
+      currentCycleLabel: '2026',
+      nextRenewalDate: '2026-12-31',
+      defaultEnvelopeId: 'provisiones_anuales',
+      members: [
+        { id: 'm1', name: 'Ana' },
+        { id: 'm2', name: 'Luis' },
+        { id: 'm3', name: 'Sofía' },
+        { id: 'm4', name: 'Diego' },
+        { id: 'm5', name: 'Marta' },
+      ],
+      payments: [],
+    });
+
+    // 1. Monetary collection for Ana ($23.20) -> creates ledger movement in provisiones_anuales
+    useBudgetStore.getState().recordSharedSubscriptionPayment(subId, {
+      memberId: 'm1',
+      amountUsd: 23.2,
+      settlementKind: 'monetary',
+      date: '2026-02-01',
+      notes: 'Pago móvil Ana',
+      envelopeId: 'provisiones_anuales',
+      paymentMethod: 'efectivo_usd',
+    });
+
+    // 2. Partial collection ($10) + off-ledger in_kind remainder ($13.20) for Luis
+    useBudgetStore.getState().recordSharedSubscriptionPayment(subId, {
+      memberId: 'm2',
+      amountUsd: 10,
+      settlementKind: 'monetary',
+      date: '2026-02-05',
+      envelopeId: 'provisiones_anuales',
+      paymentMethod: 'efectivo_usd',
+    });
+    let current = useBudgetStore.getState();
+    let sum = computeSharedSubscriptionSummary(current.sharedSubscriptions[0]);
+    expect(sum.members.find((m) => m.id === 'm1')!.status).toBe('paid');
+    expect(sum.members.find((m) => m.id === 'm2')!.status).toBe('partial');
+    expect(sum.members.find((m) => m.id === 'm2')!.remainingInCycleUsd).toBeCloseTo(13.2, 2);
+
+    const fundsBeforeInKind = calculateFundSummaries(current.movements);
+    useBudgetStore.getState().recordSharedSubscriptionPayment(subId, {
+      memberId: 'm2',
+      amountUsd: 13.2,
+      settlementKind: 'in_kind',
+      date: '2026-02-10',
+      notes: 'Compensación cena',
+    });
+
+    current = useBudgetStore.getState();
+    expect(calculateFundSummaries(current.movements).totalNetWorth).toBeCloseTo(
+      fundsBeforeInKind.totalNetWorth,
+      2,
+    );
+    sum = computeSharedSubscriptionSummary(current.sharedSubscriptions[0]);
+    expect(sum.members.find((m) => m.id === 'm2')!.status).toBe('paid');
+    expect(sum.collectedInCycleUsd).toBeCloseTo(46.4, 2);
+
+    // 3. Edit Ana's monetary payment amount/date/note -> syncs to linked LedgerMovement
+    const anaPay = current.sharedSubscriptions[0].payments.find((p) => p.memberId === 'm1')!;
+    useBudgetStore.getState().updateSharedSubscriptionPayment(subId, anaPay.id, {
+      date: '2026-02-03',
+      amountUsd: 25,
+      notes: 'Ana verificada',
+    });
+    current = useBudgetStore.getState();
+    const anaMov = current.movements.find((m) => m.id === anaPay.linkedMovementId)!;
+    expect(anaMov.date).toBe('2026-02-03');
+    expect(anaMov.amountUsd).toBeCloseTo(25, 2);
+    expect(anaMov.notes).toContain('Ana verificada');
+    expect(
+      calculateEnvelopeSummaries(current.movements).find((e) => e.id === 'provisiones_anuales')!
+        .available,
+    ).toBeCloseTo(35, 2); // 25 + 10
+
+    // 4. Advance cycle to 2027 -> resets cycle statuses while keeping 2026 payment history
+    useBudgetStore.getState().advanceSharedSubscriptionCycle(subId, '2027', true);
+    current = useBudgetStore.getState();
+    expect(current.sharedSubscriptions[0].currentCycleLabel).toBe('2027');
+    expect(current.sharedSubscriptions[0].nextRenewalDate).toBe('2027-12-31');
+    expect(current.sharedSubscriptions[0].payments).toHaveLength(3);
+    const cycle2027 = computeSharedSubscriptionSummary(current.sharedSubscriptions[0]);
+    expect(cycle2027.collectedInCycleUsd).toBeCloseTo(0, 2);
+    expect(cycle2027.members.every((m) => m.status === 'pending')).toBe(true);
+
+    // 5. Export & import snapshot preserves sharedSubscriptions
+    const snap = useBudgetStore.getState().exportSnapshot();
+    useBudgetStore.getState().clearAllData();
+    expect(useBudgetStore.getState().importSnapshot(snap)).toBe(true);
+    expect(useBudgetStore.getState().sharedSubscriptions).toHaveLength(1);
+    expect(useBudgetStore.getState().sharedSubscriptions[0].payments).toHaveLength(3);
+
+    // 6. Delete Ana's payment via removeMovement -> removes payment from subscription too; Undo restores both
+    useBudgetStore.getState().removeMovement(anaPay.linkedMovementId!);
+    current = useBudgetStore.getState();
+    expect(current.sharedSubscriptions[0].payments).toHaveLength(2);
+    expect(current.movements.some((m) => m.id === anaPay.linkedMovementId)).toBe(false);
+
+    useBudgetStore.getState().undoLastAction();
+    current = useBudgetStore.getState();
+    expect(current.sharedSubscriptions[0].payments).toHaveLength(3);
+    expect(current.movements.some((m) => m.id === anaPay.linkedMovementId)).toBe(true);
   });
 });

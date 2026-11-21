@@ -21,6 +21,8 @@ import type {
   PaymentMethod,
   QuincenaConfig,
   RecurringExpense,
+  SharedSubscription,
+  SharedSubscriptionPayment,
 } from '../types';
 import {
   advanceDueDate,
@@ -40,6 +42,7 @@ export interface UndoEntry {
   movements: LedgerMovement[];
   expenses: RecurringExpense[];
   installments: InstallmentPlan[];
+  sharedSubscriptions: SharedSubscription[];
   customAccounts: CustomAccount[];
   nativeAccountOverrides: NativeAccountOverrides;
 }
@@ -75,10 +78,33 @@ export interface UpdateInstallmentPaymentPatch {
   settlementKind?: 'in_kind' | 'historical';
 }
 
+export interface RecordSharedPaymentOptions {
+  memberId: string;
+  amountUsd: number;
+  settlementKind?: InstallmentSettlementKind;
+  date?: string;
+  notes?: string;
+  cycleLabel?: string;
+  envelopeId?: EnvelopeId;
+  bucketOverride?: AssetBucketId;
+  paymentMethod?: PaymentMethod;
+  amountBs?: number;
+  bcvRateUsed?: number;
+}
+
+export interface UpdateSharedPaymentPatch {
+  date?: string;
+  amountUsd?: number;
+  notes?: string;
+  cycleLabel?: string;
+  settlementKind?: 'in_kind' | 'historical';
+}
+
 interface BudgetState {
   movements: LedgerMovement[];
   expenses: RecurringExpense[];
   installments: InstallmentPlan[];
+  sharedSubscriptions: SharedSubscription[];
   customAccounts: CustomAccount[];
   nativeAccountOverrides: NativeAccountOverrides;
   quincenaConfig: QuincenaConfig;
@@ -198,6 +224,26 @@ interface BudgetState {
   ) => void;
   updateInstallmentPaymentNote: (planId: string, paymentId: string, notes: string) => void;
   removeInstallmentPayment: (planId: string, paymentId: string) => void;
+
+  // Shared subscriptions actions
+  addSharedSubscription: (sub: Omit<SharedSubscription, 'id'>) => string;
+  updateSharedSubscription: (id: string, patch: Partial<SharedSubscription>) => void;
+  removeSharedSubscription: (id: string) => void;
+  advanceSharedSubscriptionCycle: (
+    id: string,
+    nextCycleLabel: string,
+    advanceRenewalDate?: boolean,
+  ) => void;
+  recordSharedSubscriptionPayment: (
+    subscriptionId: string,
+    options: RecordSharedPaymentOptions,
+  ) => void;
+  updateSharedSubscriptionPayment: (
+    subscriptionId: string,
+    paymentId: string,
+    patch: UpdateSharedPaymentPatch,
+  ) => void;
+  removeSharedSubscriptionPayment: (subscriptionId: string, paymentId: string) => void;
 
   // Backup & reset
   exportSnapshot: () => BudgetSnapshot;
@@ -365,7 +411,12 @@ function createUndoSnapshot(
   label: string,
   state: Pick<
     BudgetState,
-    'movements' | 'expenses' | 'installments' | 'customAccounts' | 'nativeAccountOverrides'
+    | 'movements'
+    | 'expenses'
+    | 'installments'
+    | 'sharedSubscriptions'
+    | 'customAccounts'
+    | 'nativeAccountOverrides'
   >,
 ): UndoEntry {
   return {
@@ -374,6 +425,7 @@ function createUndoSnapshot(
     movements: state.movements,
     expenses: state.expenses,
     installments: state.installments,
+    sharedSubscriptions: state.sharedSubscriptions,
     customAccounts: state.customAccounts,
     nativeAccountOverrides: state.nativeAccountOverrides,
   };
@@ -402,14 +454,15 @@ function computeNextLastPaidDate(
   return remainingCount > 0 ? fallbackLastPaidDate : undefined;
 }
 
-function applyNoteToLinkedMovement(
-  movement: LedgerMovement,
+function replaceLinkedNoteSuffix(
+  rawNotes: string | undefined,
+  prevNote: string | undefined,
   nextNote: string | undefined,
-): LedgerMovement {
-  const prevNote = movement.linkedInstallment?.note?.trim();
-  let updatedMovNotes = movement.notes ?? '';
-  if (prevNote) {
-    const token = ` · ${prevNote}`;
+): string | undefined {
+  const trimmedPrev = prevNote?.trim();
+  let updatedMovNotes = rawNotes ?? '';
+  if (trimmedPrev) {
+    const token = ` · ${trimmedPrev}`;
     const idx = updatedMovNotes.lastIndexOf(token);
     if (idx !== -1) {
       updatedMovNotes = updatedMovNotes.slice(0, idx) + updatedMovNotes.slice(idx + token.length);
@@ -418,9 +471,31 @@ function applyNoteToLinkedMovement(
   if (nextNote) {
     updatedMovNotes = updatedMovNotes ? `${updatedMovNotes} · ${nextNote}` : nextNote;
   }
+  return updatedMovNotes || undefined;
+}
+
+function applyNoteToLinkedMovement(
+  movement: LedgerMovement,
+  nextNote: string | undefined,
+): LedgerMovement {
+  if (movement.linkedSharedSubscription) {
+    return {
+      ...movement,
+      notes: replaceLinkedNoteSuffix(
+        movement.notes,
+        movement.linkedSharedSubscription.note,
+        nextNote,
+      ),
+      linkedSharedSubscription: { ...movement.linkedSharedSubscription, note: nextNote },
+    };
+  }
   return {
     ...movement,
-    notes: updatedMovNotes || undefined,
+    notes: replaceLinkedNoteSuffix(
+      movement.notes,
+      movement.linkedInstallment?.note,
+      nextNote,
+    ),
     linkedInstallment: movement.linkedInstallment
       ? { ...movement.linkedInstallment, note: nextNote }
       : movement.linkedInstallment,
@@ -578,6 +653,7 @@ export const useBudgetStore = create<BudgetState>()(
       movements: initialSeed.movements,
       expenses: initialSeed.expenses,
       installments: initialSeed.installments,
+      sharedSubscriptions: [],
       customAccounts: [],
       nativeAccountOverrides: {},
       quincenaConfig: initialSeed.quincenaConfig,
@@ -722,6 +798,17 @@ export const useBudgetStore = create<BudgetState>()(
                 }
               : e,
           );
+          const nextSharedSubscriptions = state.sharedSubscriptions.map((sub) => ({
+            ...sub,
+            payments: sub.payments.map((p) =>
+              p.paymentMethod === id
+                ? {
+                    ...p,
+                    paymentMethod: 'otro' as PaymentMethod,
+                  }
+                : p,
+            ),
+          }));
           return {
             undoEntry: target
               ? createUndoSnapshot(`Cuenta eliminada: ${target.name}`, state)
@@ -729,6 +816,7 @@ export const useBudgetStore = create<BudgetState>()(
             customAccounts: state.customAccounts.filter((a) => a.id !== id),
             movements: nextMovements,
             expenses: nextExpenses,
+            sharedSubscriptions: nextSharedSubscriptions,
           };
         }),
 
@@ -1071,6 +1159,26 @@ export const useBudgetStore = create<BudgetState>()(
           });
         }
 
+        const sharedLinks = targetGroup
+          .map((m) => m.linkedSharedSubscription)
+          .filter((x): x is NonNullable<LedgerMovement['linkedSharedSubscription']> => Boolean(x));
+        const nextSharedSubscriptions =
+          sharedLinks.length > 0
+            ? state.sharedSubscriptions.map((sub) => {
+                const subLinks = sharedLinks.filter((l) => l.subscriptionId === sub.id);
+                if (subLinks.length === 0) return sub;
+                const linkedPayIds = new Set(subLinks.map((l) => l.paymentId));
+                return {
+                  ...sub,
+                  payments: sub.payments.filter(
+                    (p) =>
+                      !linkedPayIds.has(p.id) &&
+                      !(p.linkedMovementId && removedIds.has(p.linkedMovementId)),
+                  ),
+                };
+              })
+            : state.sharedSubscriptions;
+
         set({
           undoEntry: createUndoSnapshot(
             `Eliminado: ${target.notes || target.type}`,
@@ -1079,6 +1187,7 @@ export const useBudgetStore = create<BudgetState>()(
           movements: nextMovements,
           expenses: nextExpenses,
           installments: nextInstallments,
+          sharedSubscriptions: nextSharedSubscriptions,
         });
       },
 
@@ -1089,6 +1198,7 @@ export const useBudgetStore = create<BudgetState>()(
           movements: entry.movements,
           expenses: entry.expenses,
           installments: entry.installments,
+          sharedSubscriptions: entry.sharedSubscriptions ?? [],
           customAccounts: entry.customAccounts,
           nativeAccountOverrides: entry.nativeAccountOverrides,
           undoEntry: null,
@@ -1225,6 +1335,9 @@ export const useBudgetStore = create<BudgetState>()(
               ? createUndoSnapshot(`Gasto eliminado: ${target.name}`, state)
               : state.undoEntry,
             expenses: state.expenses.filter((e) => e.id !== id),
+            sharedSubscriptions: state.sharedSubscriptions.map((s) =>
+              s.linkedExpenseId === id ? { ...s, linkedExpenseId: undefined } : s,
+            ),
           };
         }),
 
@@ -1702,11 +1815,311 @@ export const useBudgetStore = create<BudgetState>()(
         });
       },
 
+      addSharedSubscription: (sub) => {
+        const state = get();
+        const id = makeId('sub');
+        const created: SharedSubscription = {
+          ...sub,
+          id,
+          totalAmountUsd: Number(Math.max(0, sub.totalAmountUsd).toFixed(2)),
+          members: sub.members.map((m) => ({
+            ...m,
+            id: m.id || makeId('subm'),
+          })),
+          payments: sub.payments ?? [],
+        };
+        set({
+          undoEntry: createUndoSnapshot(`Suscripción creada: ${created.name}`, state),
+          sharedSubscriptions: [...state.sharedSubscriptions, created],
+        });
+        return id;
+      },
+
+      updateSharedSubscription: (id, patch) =>
+        set((state) => {
+          const target = state.sharedSubscriptions.find((s) => s.id === id);
+          if (!target) return state;
+          return {
+            undoEntry: createUndoSnapshot(`Suscripción editada: ${patch.name ?? target.name}`, state),
+            sharedSubscriptions: state.sharedSubscriptions.map((s) =>
+              s.id === id
+                ? {
+                    ...s,
+                    ...patch,
+                    totalAmountUsd:
+                      patch.totalAmountUsd !== undefined
+                        ? Number(Math.max(0, patch.totalAmountUsd).toFixed(2))
+                        : s.totalAmountUsd,
+                    members: patch.members
+                      ? patch.members.map((m) => ({
+                          ...m,
+                          id: m.id || makeId('subm'),
+                        }))
+                      : s.members,
+                  }
+                : s,
+            ),
+          };
+        }),
+
+      removeSharedSubscription: (id) =>
+        set((state) => {
+          const target = state.sharedSubscriptions.find((s) => s.id === id);
+          if (!target) return state;
+          return {
+            undoEntry: createUndoSnapshot(`Suscripción eliminada: ${target.name}`, state),
+            sharedSubscriptions: state.sharedSubscriptions.filter((s) => s.id !== id),
+          };
+        }),
+
+      advanceSharedSubscriptionCycle: (id, nextCycleLabel, advanceRenewalDate = true) =>
+        set((state) => {
+          const cleanLabel = nextCycleLabel.trim();
+          const target = state.sharedSubscriptions.find((s) => s.id === id);
+          if (!target || !cleanLabel) return state;
+
+          const nextRenewal =
+            advanceRenewalDate && target.nextRenewalDate
+              ? advanceDueDate(target.nextRenewalDate, target.frequency)
+              : target.nextRenewalDate;
+
+          return {
+            undoEntry: createUndoSnapshot(
+              `Nuevo ciclo ${cleanLabel}: ${target.name}`,
+              state,
+            ),
+            sharedSubscriptions: state.sharedSubscriptions.map((s) =>
+              s.id === id
+                ? {
+                    ...s,
+                    currentCycleLabel: cleanLabel,
+                    nextRenewalDate: nextRenewal,
+                  }
+                : s,
+            ),
+          };
+        }),
+
+      recordSharedSubscriptionPayment: (subscriptionId, options) => {
+        const state = get();
+        const sub = state.sharedSubscriptions.find((s) => s.id === subscriptionId);
+        if (!sub) return;
+        const cleanAmount = Number(Math.abs(options.amountUsd).toFixed(2));
+        if (!Number.isFinite(cleanAmount) || cleanAmount <= 0) return;
+
+        const member = sub.members.find((m) => m.id === options.memberId);
+        const memberName = member?.name ?? 'Miembro';
+        const cycleLabel = options.cycleLabel?.trim() || sub.currentCycleLabel;
+        const settlementKind: InstallmentSettlementKind = options.settlementKind ?? 'monetary';
+        const isOffLedger = settlementKind === 'in_kind' || settlementKind === 'historical';
+        const paymentDate = options.date?.trim() || new Date().toISOString().slice(0, 10);
+        const cleanNotes = options.notes?.trim() || undefined;
+        const paymentId = makeId('subpay');
+
+        if (isOffLedger) {
+          const newPayment: SharedSubscriptionPayment = {
+            id: paymentId,
+            memberId: options.memberId,
+            memberName,
+            cycleLabel,
+            date: paymentDate,
+            amountUsd: cleanAmount,
+            settlementKind,
+            notes: cleanNotes,
+          };
+
+          const prefix =
+            settlementKind === 'historical' ? 'Cobro histórico' : 'Cobro en especie';
+          set({
+            undoEntry: createUndoSnapshot(`${prefix}: ${sub.name} (${memberName})`, state),
+            sharedSubscriptions: state.sharedSubscriptions.map((s) =>
+              s.id === subscriptionId
+                ? { ...s, payments: [newPayment, ...s.payments] }
+                : s,
+            ),
+          });
+          return;
+        }
+
+        const targetBucket: AssetBucketId =
+          options.bucketOverride ??
+          options.envelopeId ??
+          sub.defaultEnvelopeId ??
+          'ahorro_inversion';
+        const paymentMethod = options.paymentMethod ?? 'efectivo_usd';
+        const movementType =
+          targetBucket === 'binance_usdt' ||
+          targetBucket === 'binance_crypto' ||
+          targetBucket === 'binance_paxg' ||
+          targetBucket === 'binance_usdc' ||
+          targetBucket === 'wallet_btc'
+            ? 'Barrido a Inversión'
+            : 'Ingreso a Sobre';
+
+        const rate = options.bcvRateUsed ?? state.bcvRate ?? undefined;
+        const isBs = isBsPaymentMethod(paymentMethod, state.customAccounts);
+        const amountBs =
+          options.amountBs ??
+          (isBs && rate ? Number((cleanAmount * rate).toFixed(2)) : undefined);
+
+        const baseLabel = `Cobro ${sub.name} (${memberName} · ${cycleLabel})`;
+        const movementNotes = cleanNotes ? `${baseLabel} · ${cleanNotes}` : baseLabel;
+
+        const newMov: LedgerMovement = {
+          id: makeId('mov'),
+          date: paymentDate,
+          bucket: targetBucket,
+          type: movementType,
+          amountUsd: cleanAmount,
+          amountBs,
+          bcvRateUsed: rate,
+          paymentMethod,
+          notes: movementNotes,
+          linkedSharedSubscription: {
+            subscriptionId: sub.id,
+            paymentId,
+            memberId: options.memberId,
+            note: cleanNotes,
+          },
+        };
+
+        const newPayment: SharedSubscriptionPayment = {
+          id: paymentId,
+          memberId: options.memberId,
+          memberName,
+          cycleLabel,
+          date: paymentDate,
+          amountUsd: cleanAmount,
+          settlementKind: 'monetary',
+          notes: cleanNotes,
+          envelopeId: ENVELOPE_BUCKET_SET.has(targetBucket)
+            ? (targetBucket as EnvelopeId)
+            : undefined,
+          paymentMethod,
+          amountBs,
+          bcvRateUsed: rate,
+          linkedMovementId: newMov.id,
+        };
+
+        set({
+          undoEntry: createUndoSnapshot(`Cobro ${sub.name} (${memberName})`, state),
+          sharedSubscriptions: state.sharedSubscriptions.map((s) =>
+            s.id === subscriptionId
+              ? { ...s, payments: [newPayment, ...s.payments] }
+              : s,
+          ),
+          movements: [newMov, ...state.movements],
+        });
+      },
+
+      updateSharedSubscriptionPayment: (subscriptionId, paymentId, patch) => {
+        const state = get();
+        const sub = state.sharedSubscriptions.find((s) => s.id === subscriptionId);
+        if (!sub) return;
+        const target = sub.payments.find((p) => p.id === paymentId);
+        if (!target) return;
+
+        const nextDatePatch = patch.date !== undefined ? patch.date.trim() : undefined;
+        const nextAmount =
+          patch.amountUsd !== undefined ? Number(Math.abs(patch.amountUsd).toFixed(2)) : undefined;
+        if (
+          patch.amountUsd !== undefined &&
+          (!Number.isFinite(nextAmount) || (nextAmount ?? 0) <= 0)
+        ) {
+          return;
+        }
+        const hasNotesPatch = patch.notes !== undefined;
+        const cleanNotes = hasNotesPatch ? patch.notes!.trim() || undefined : undefined;
+        const nextCycle = patch.cycleLabel?.trim() || target.cycleLabel;
+
+        const oldAmount = target.amountUsd;
+        const finalAmount = nextAmount ?? oldAmount;
+        const finalDate = nextDatePatch || target.date;
+        const finalNotes = hasNotesPatch ? cleanNotes : target.notes;
+        const finalKind: InstallmentSettlementKind =
+          target.settlementKind !== 'monetary' && patch.settlementKind
+            ? patch.settlementKind
+            : target.settlementKind;
+        const amountChanged = Math.abs(finalAmount - oldAmount) > 0.001;
+
+        const nextPaymentBs =
+          amountChanged && typeof target.amountBs === 'number'
+            ? target.bcvRateUsed && target.bcvRateUsed > 0
+              ? Number((finalAmount * target.bcvRateUsed).toFixed(2))
+              : oldAmount > 0
+                ? Number((target.amountBs * (finalAmount / oldAmount)).toFixed(2))
+                : target.amountBs
+            : target.amountBs;
+
+        const nextMovements = target.linkedMovementId
+          ? updateLinkedInstallmentMovements({
+              movements: state.movements,
+              primaryMovementId: target.linkedMovementId,
+              oldTotalAmount: oldAmount,
+              nextDate: finalDate,
+              nextAmountUsd: finalAmount,
+              hasNotesPatch,
+              cleanNotes,
+            })
+          : state.movements;
+
+        set({
+          undoEntry: createUndoSnapshot(`Cobro editado: ${sub.name}`, state),
+          sharedSubscriptions: state.sharedSubscriptions.map((s) =>
+            s.id !== subscriptionId
+              ? s
+              : {
+                  ...s,
+                  payments: s.payments.map((p) =>
+                    p.id !== paymentId
+                      ? p
+                      : {
+                          ...p,
+                          date: finalDate,
+                          amountUsd: finalAmount,
+                          cycleLabel: nextCycle,
+                          notes: finalNotes,
+                          settlementKind: finalKind,
+                          amountBs: nextPaymentBs,
+                        },
+                  ),
+                },
+          ),
+          movements: nextMovements,
+        });
+      },
+
+      removeSharedSubscriptionPayment: (subscriptionId, paymentId) => {
+        const state = get();
+        const sub = state.sharedSubscriptions.find((s) => s.id === subscriptionId);
+        if (!sub) return;
+        const target = sub.payments.find((p) => p.id === paymentId);
+        if (!target) return;
+
+        const nextMovements = target.linkedMovementId
+          ? state.movements.filter((m) => m.id !== target.linkedMovementId)
+          : state.movements;
+
+        set({
+          undoEntry: createUndoSnapshot(`Eliminado cobro: ${sub.name}`, state),
+          sharedSubscriptions: state.sharedSubscriptions.map((s) =>
+            s.id !== subscriptionId
+              ? s
+              : {
+                  ...s,
+                  payments: s.payments.filter((p) => p.id !== paymentId),
+                },
+          ),
+          movements: nextMovements,
+        });
+      },
+
       exportSnapshot: () => {
         const {
           movements,
           expenses,
           installments,
+          sharedSubscriptions,
           customAccounts,
           nativeAccountOverrides,
           quincenaConfig,
@@ -1719,6 +2132,7 @@ export const useBudgetStore = create<BudgetState>()(
           movements,
           expenses,
           installments,
+          sharedSubscriptions,
           customAccounts,
           nativeAccountOverrides,
           quincenaConfig,
@@ -1741,6 +2155,9 @@ export const useBudgetStore = create<BudgetState>()(
           movements: snapshot.movements,
           expenses: snapshot.expenses,
           installments: snapshot.installments,
+          sharedSubscriptions: Array.isArray(snapshot.sharedSubscriptions)
+            ? snapshot.sharedSubscriptions
+            : [],
           customAccounts: Array.isArray(snapshot.customAccounts) ? snapshot.customAccounts : [],
           nativeAccountOverrides: snapshot.nativeAccountOverrides ?? {},
           quincenaConfig: snapshot.quincenaConfig,
@@ -1755,6 +2172,7 @@ export const useBudgetStore = create<BudgetState>()(
         const seed = createDefaultSeed();
         set({
           ...seed,
+          sharedSubscriptions: [],
           customAccounts: [],
           nativeAccountOverrides: {},
           emergencyGoal: DEFAULT_EMERGENCY_GOAL,
@@ -1768,6 +2186,7 @@ export const useBudgetStore = create<BudgetState>()(
           movements: [],
           expenses: [],
           installments: [],
+          sharedSubscriptions: [],
           customAccounts: [],
           nativeAccountOverrides: {},
           quincenaConfig: initialSeed.quincenaConfig,
@@ -1782,6 +2201,7 @@ export const useBudgetStore = create<BudgetState>()(
         movements: state.movements,
         expenses: state.expenses,
         installments: state.installments,
+        sharedSubscriptions: state.sharedSubscriptions,
         customAccounts: state.customAccounts,
         nativeAccountOverrides: state.nativeAccountOverrides,
         quincenaConfig: state.quincenaConfig,
