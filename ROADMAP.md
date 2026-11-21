@@ -53,7 +53,18 @@
 
 ---
 
-## 🔜 Fase 5 — Integración Binance API (Read-Only) + DCA Automático
+## 🔜 Fase 5 — Onboarding Guiado, Perfiles Regionales y Beta Privada
+
+- [ ] **Asistente de Bienvenida (*Onboarding Wizard* al registrarse):** Flujo inicial paso a paso para evitar abrumar a usuarios nuevos con toda la complejidad de la app desde el primer día:
+  - **Selección de país y perfil regional:** Presets listos para **Estados Unidos (`USD`)**, **República Dominicana (`DOP` / `USD`)**, **Venezuela (`USD` / `VES`)** o perfil global personalizado, precargando cuentas base acordes al país y ocultando automáticamente conceptos locales que no apliquen (ej. Bolívares o tasa BCV fuera de Venezuela).
+  - **Carga guiada de finanzas base:** Preguntas simples para definir salario/ingreso y frecuencia de cobro (semanal, quincenal o mensual), saldos iniciales por cuenta, gastos fijos principales y meta inicial de fondo de emergencia, dejando el sistema poblado y listo para usar en minutos.
+  - **Divulgación progresiva de módulos (*Modo Esencial vs. Completo*):** Permitir elegir qué módulos mostrar al inicio (ej. empezar solo con Presupuesto, Sobres y Gastos, y activar después Portafolio Crypto, Motor Táctico o Suscripciones Compartidas conforme el usuario quiera explorar más).
+- [ ] **Motor Multi-Moneda Regional (`USD`, `DOP`, `VES` y extensible):** Formato de moneda base por usuario (`Intl.NumberFormat`), soporte tanto para modo monomoneda limpio (ej. USA en `USD`) como bimoneda opcional con tasa cambiaria (ej. `DOP ↔ USD` en República Dominicana, `VES ↔ USD` en Venezuela).
+- [ ] **Acceso Beta Privada:** Flujo simple de registro/invitación para compartir la app en USA y República Dominicana, con opción para reabrir el asistente o ajustar país/moneda en cualquier momento desde configuración.
+
+---
+
+## 🔜 Fase 6 — Integración Binance API (Read-Only) + DCA Automático
 
 - [ ] Proxy Serverless (`/api/binance-sync`) con firma HMAC-SHA256 segura en servidor.
 - [ ] Lectura de balances Spot, Simple Earn y trades históricos (`myTrades`).
@@ -62,7 +73,7 @@
 ---
 
 
-## 🔜 Fase 6 — Evolución a SuperApp (Life OS): Rutinas Sociales, Hábitos y Biblioteca
+## 🔜 Fase 7 — Evolución a SuperApp (Life OS): Rutinas Sociales, Hábitos y Biblioteca
 
 - [ ] **Rutinas Sociales y Gamificación (_Estilo Routinery + Strava_)**: Motor de ejecución de hábitos paso a paso integrado con mecánicas competitivas y validación social entre amigos:
   - **Temporizador secuencial + bloques financieros**: Ejecución cronometrada (mañana, entrenamiento, estudio, cierre) con bloques conectables directamente al módulo de finanzas (ej. _"Registrar gastos del día - 5 min"_, _"Revisar presupuesto semanal - 15 min"_), además de registro de tiempo real vs. planeado y estadísticas de adherencia.
@@ -72,16 +83,16 @@
 
   | Subfase                              | Alcance                                                                                                           | Objetivo                                                                   |
   | :----------------------------------- | :---------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------- |
-  | **6.1 MVP**                          | Temporizador de rutinas, grupos cerrados, privacidad básica ("Puntos Fantasma") y ranking semanal.                | Validar retención diaria y fricción de uso con un grupo pequeño de prueba. |
-  | **6.2 Social y Retención**           | Fotos de verificación opcionales (_BeReal_), ajuste flexible de cierre, rachas grupales y notificaciones en vivo. | Aumentar la presión social positiva y el compromiso semanal.               |
-  | **6.3 Sinergia Finanzas & AI Coach** | Bloques financieros nativos, rutinas generadas por IA y alertas cruzadas con presupuesto.                         | Consolidar la transición de app de finanzas a SuperApp de vida.            |
+  | **7.1 MVP**                          | Temporizador de rutinas, grupos cerrados, privacidad básica ("Puntos Fantasma") y ranking semanal.                | Validar retención diaria y fricción de uso con un grupo pequeño de prueba. |
+  | **7.2 Social y Retención**           | Fotos de verificación opcionales (_BeReal_), ajuste flexible de cierre, rachas grupales y notificaciones en vivo. | Aumentar la presión social positiva y el compromiso semanal.               |
+  | **7.3 Sinergia Finanzas & AI Coach** | Bloques financieros nativos, rutinas generadas por IA y alertas cruzadas con presupuesto.                         | Consolidar la transición de app de finanzas a SuperApp de vida.            |
 
 - [ ] **Habit Tracker & Consistencia (_Estilo Streaks / Loop_)**: Seguimiento de hábitos diarios y semanales con rachas (_streaks_), mapa de calor (_heatmap_) y conexión opcional con metas de ahorro/sobres.
 - [ ] **Biblioteca y Seguimiento de Lectura (_Estilo Readwise_)**: Gestión de libros (_Por leer_, _Leyendo_, _Terminado_), progreso en páginas/tiempo conectado al bloque de lectura de la rutina y al sobre `Crecimiento Personal`.
 
 ---
 
-## 🔜 Fase 7 — Smart Command Bar & AI Life/Wealth Coach
+## 🔜 Fase 8 — Smart Command Bar & AI Life/Wealth Coach
 
 - [ ] **Smart Command Bar Unificada (Lenguaje Natural)**: Parser local determinístico (offline) + integración opcional con LLM (_Structured Outputs_) y vista previa editable antes de confirmar para registrar tanto operaciones financieras encadenadas como avances de rutinas, hábitos o lectura.
 - [ ] **Optimizador de Rutinas y Hábitos por IA (Cruce Finanzas ↔ Adherencia)**: Análisis de fricción real (pasos omitidos, horarios de mayor cumplimiento, exceso de duración), generación de rutinas según metas del usuario y correlación cruzada con datos financieros (ej. detectar si abandonar la rutina de mañana correlaciona con más gastos impulsivos o entregas de comida) para proponer ajustes realistas.
@@ -90,9 +101,8 @@
 
 ---
 
-## 🔜 Fase 8 — Empaquetado Móvil (Play Store), Perfiles Globales y Sostenibilidad
+## 🔜 Fase 9 — Empaquetado Móvil (Play Store) y Sostenibilidad
 
 - [ ] Evaluación técnica y de costos: **Capacitor** vs **TWA (Trusted Web Activity)**.
-- [ ] Configuración de **Perfil Regional / Multi-Moneda Global** (moneda base seleccionable y activación opcional de módulos locales como doble tasa / IGTF).
 - [ ] Modelo de seguridad **BYOK (Bring Your Own Key)** Read-Only para integraciones de API y IA.
 - [ ] Definición de plan gratuito (Local-First) vs Supporter/Pro (`PLAYSTORE_FEASIBILITY.md`).
