@@ -8,6 +8,7 @@ import {
   calculateEnvelopeSummaries,
   calculateFundSummaries,
   calculateReadyToAssignAndRunway,
+  getInstallmentPaymentHistory,
 } from '../utils/calculations';
 import { useBudgetStore } from './budgetStore';
 
@@ -534,5 +535,184 @@ describe('budget/store & monthEndEngine invariants', () => {
     useBudgetStore.getState().removeCustomAccount(bancamigaId);
     const afterDeleteEnvs = calculateEnvelopeSummaries(useBudgetStore.getState().movements);
     expect(afterDeleteEnvs.find((e) => e.id === 'disfrute')!.available).toBeCloseTo(10.2, 2);
+  });
+
+  it('records off-ledger in-kind debt settlements with date & notes without touching envelopes or net worth, and supports Undo', () => {
+    const store = useBudgetStore.getState();
+    store.addMovement({
+      date: '2026-11-01',
+      bucket: 'ahorro_inversion',
+      type: 'Ingreso a Sobre',
+      amountUsd: 100,
+      paymentMethod: 'efectivo_usd',
+    });
+    store.addInstallment({
+      name: 'Deuda Hermano',
+      direction: 'receivable',
+      installmentAmount: 50,
+      frequency: 'semanal',
+      maxCap: 300,
+      paidTotal: 0,
+      paymentsCount: 0,
+      nextDueDate: '2026-11-25',
+    });
+
+    const plan = useBudgetStore.getState().installments[0];
+    const movCountBefore = useBudgetStore.getState().movements.length;
+    const fundsBefore = calculateFundSummaries(useBudgetStore.getState().movements);
+    const envsBefore = calculateEnvelopeSummaries(useBudgetStore.getState().movements);
+
+    useBudgetStore.getState().recordInstallmentPayment(plan.id, {
+      amountOverride: 120,
+      settlementKind: 'in_kind',
+      date: '2026-11-20',
+      notes: 'Trueque reloj',
+    });
+
+    let afterState = useBudgetStore.getState();
+    let updatedPlan = afterState.installments[0];
+    expect(updatedPlan.paidTotal).toBeCloseTo(120, 2);
+    expect(updatedPlan.paymentsCount).toBe(1);
+    expect(updatedPlan.lastPaidDate).toBe('2026-11-20');
+    expect(updatedPlan.nextDueDate).toBe('2026-11-25'); // in_kind preserves nextDueDate by default
+    expect(updatedPlan.paymentHistory).toHaveLength(1);
+    expect(updatedPlan.paymentHistory![0]).toMatchObject({
+      date: '2026-11-20',
+      amountUsd: 120,
+      settlementKind: 'in_kind',
+      notes: 'Trueque reloj',
+    });
+
+    // Movements, Net Worth, and Envelopes remain 100% invariant
+    expect(afterState.movements).toHaveLength(movCountBefore);
+    const fundsAfter = calculateFundSummaries(afterState.movements);
+    const envsAfter = calculateEnvelopeSummaries(afterState.movements);
+    expect(fundsAfter.totalNetWorth).toBeCloseTo(fundsBefore.totalNetWorth, 2);
+    expect(envsAfter.find((e) => e.id === 'ahorro_inversion')!.available).toBeCloseTo(
+      envsBefore.find((e) => e.id === 'ahorro_inversion')!.available,
+      2,
+    );
+
+    // Memento Undo reverts in-kind settlement completely
+    useBudgetStore.getState().undoLastAction();
+    afterState = useBudgetStore.getState();
+    updatedPlan = afterState.installments[0];
+    expect(updatedPlan.paidTotal).toBeCloseTo(0, 2);
+    expect(updatedPlan.paymentsCount).toBe(0);
+    expect(updatedPlan.lastPaidDate).toBeUndefined();
+    expect(updatedPlan.paymentHistory ?? []).toHaveLength(0);
+
+    // Opt-in advanceDueDate: true advances nextDueDate on in_kind too
+    useBudgetStore.getState().recordInstallmentPayment(plan.id, {
+      amountOverride: 120,
+      settlementKind: 'in_kind',
+      date: '2026-11-20',
+      notes: 'Trueque reloj',
+      advanceDueDate: true,
+    });
+    expect(useBudgetStore.getState().installments[0].nextDueDate).toBe('2026-12-02');
+  });
+
+  it('merges plan paymentHistory & legacy ledger movements, syncs note edits, deletes bidirectionally, and preserves history across snapshot roundtrip', () => {
+    const store = useBudgetStore.getState();
+    store.addInstallment({
+      name: 'Préstamo Amigo',
+      direction: 'receivable',
+      installmentAmount: 50,
+      frequency: 'semanal',
+      maxCap: 400,
+      paidTotal: 100, // $100 pre-existing unlogged prior balance across 2 payments
+      paymentsCount: 2,
+      nextDueDate: '2026-11-25',
+    });
+
+    const planId = useBudgetStore.getState().installments[0].id;
+
+    // Simulate a legacy ledger-linked payment already present without paymentHistory
+    store.addMovement({
+      date: '2026-11-12',
+      bucket: 'ahorro_inversion',
+      type: 'Ingreso a Sobre',
+      amountUsd: 40,
+      paymentMethod: 'efectivo_usd',
+      notes: 'Cobro #1: Préstamo Amigo',
+      linkedInstallment: {
+        id: planId,
+        amount: 40,
+      },
+    });
+    // Adjust plan paidTotal/paymentsCount as legacy data would look
+    useBudgetStore.getState().updateInstallment(planId, {
+      paidTotal: 140,
+      paymentsCount: 3,
+    });
+
+    // Record a new monetary payment with note + an in-kind payment
+    useBudgetStore.getState().recordInstallmentPayment(planId, {
+      amountOverride: 60,
+      settlementKind: 'monetary',
+      date: '2026-11-18',
+      notes: 'Efectivo entregado en mano',
+      envelopeId: 'ahorro_inversion',
+      paymentMethod: 'efectivo_usd',
+    });
+    useBudgetStore.getState().recordInstallmentPayment(planId, {
+      amountOverride: 120,
+      settlementKind: 'in_kind',
+      date: '2026-11-20',
+      notes: 'Trueque reloj',
+    });
+
+    let current = useBudgetStore.getState();
+    const summary = getInstallmentPaymentHistory(current.installments[0], current.movements);
+    expect(summary.records).toHaveLength(3); // No duplicate counting between paymentHistory & legacy mov
+    expect(summary.inKindTotalUsd).toBeCloseTo(120, 2);
+    expect(summary.monetaryTotalUsd).toBeCloseTo(100, 2); // 60 + 40 legacy
+    expect(summary.loggedTotalUsd).toBeCloseTo(220, 2);
+    expect(summary.unloggedTotalUsd).toBeCloseTo(100, 2); // 320 total - 220 logged = 100
+    expect(summary.unloggedCount).toBe(2); // 5 count - 3 logged = 2
+
+    // Edit note on monetary plan payment -> updates both paymentHistory & linked ledger movement
+    const monetaryRecord = summary.records.find((r) => r.amountUsd === 60)!;
+    useBudgetStore
+      .getState()
+      .updateInstallmentPaymentNote(planId, monetaryRecord.id, 'Efectivo verificado');
+    current = useBudgetStore.getState();
+    expect(
+      current.installments[0].paymentHistory!.find((r) => r.id === monetaryRecord.id)!.notes,
+    ).toBe('Efectivo verificado');
+    const linkedMov = current.movements.find((m) => m.id === monetaryRecord.linkedMovementId)!;
+    expect(linkedMov.notes).toContain('Efectivo verificado');
+    expect(linkedMov.linkedInstallment?.note).toBe('Efectivo verificado');
+
+    // Edit note on legacy ledger-only movement
+    const legacyRecord = summary.records.find((r) => r.source === 'legacy_ledger')!;
+    useBudgetStore
+      .getState()
+      .updateInstallmentPaymentNote(planId, legacyRecord.id, 'Abono inicial noviembre');
+    current = useBudgetStore.getState();
+    expect(current.movements.find((m) => m.id === legacyRecord.id)!.notes).toContain(
+      'Abono inicial noviembre',
+    );
+
+    // Export/import snapshot roundtrip preserves paymentHistory
+    const snap = useBudgetStore.getState().exportSnapshot();
+    useBudgetStore.getState().clearAllData();
+    expect(useBudgetStore.getState().importSnapshot(snap)).toBe(true);
+    expect(useBudgetStore.getState().installments[0].paymentHistory).toHaveLength(2);
+
+    // Removing the monetary payment removes both paymentHistory record and linked movement without double-decrement
+    useBudgetStore.getState().removeInstallmentPayment(planId, monetaryRecord.id);
+    current = useBudgetStore.getState();
+    expect(current.installments[0].paidTotal).toBeCloseTo(260, 2); // 320 - 60
+    expect(current.installments[0].paymentsCount).toBe(4);
+    expect(current.installments[0].nextDueDate).toBe('2026-11-25'); // Reverted from 2026-12-02
+    expect(current.movements.some((m) => m.id === monetaryRecord.linkedMovementId)).toBe(false);
+
+    // Deleting the legacy ledger movement directly via removeMovement also updates plan counts safely
+    useBudgetStore.getState().removeMovement(legacyRecord.id);
+    current = useBudgetStore.getState();
+    expect(current.installments[0].paidTotal).toBeCloseTo(220, 2); // 260 - 40
+    expect(current.installments[0].paymentsCount).toBe(3);
   });
 });

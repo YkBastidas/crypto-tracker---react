@@ -11,6 +11,7 @@ import type {
   EnvelopeRule,
   EnvelopeSummary,
   FundSummary,
+  InstallmentPaymentRecord,
   InstallmentPlan,
   LedgerMovement,
   LiveCryptoBalances,
@@ -1062,5 +1063,85 @@ export function calculateEligibleInvestmentCapital(movements: LedgerMovement[]):
     unassignedUsdtUsd,
     totalEligibleUsd,
     excludedPhysicalCashUsd,
+  };
+}
+
+export interface ResolvedInstallmentPayment extends InstallmentPaymentRecord {
+  source: 'plan' | 'legacy_ledger';
+}
+
+export interface InstallmentHistorySummary {
+  records: ResolvedInstallmentPayment[];
+  loggedTotalUsd: number;
+  unloggedTotalUsd: number;
+  unloggedCount: number;
+  inKindTotalUsd: number;
+  monetaryTotalUsd: number;
+}
+
+export function getInstallmentPaymentHistory(
+  plan: InstallmentPlan,
+  movements: LedgerMovement[],
+): InstallmentHistorySummary {
+  const planRecords: ResolvedInstallmentPayment[] = (plan.paymentHistory ?? []).map((r) => ({
+    ...r,
+    source: 'plan' as const,
+  }));
+
+  const linkedMovIds = new Set(
+    planRecords.map((r) => r.linkedMovementId).filter((id): id is string => Boolean(id)),
+  );
+  const knownPaymentIds = new Set(planRecords.map((r) => r.id));
+
+  const legacyRecords: ResolvedInstallmentPayment[] = [];
+  for (const m of movements) {
+    const link = m.linkedInstallment;
+    if (!link || link.id !== plan.id) continue;
+    if (linkedMovIds.has(m.id)) continue;
+    if (link.paymentId && knownPaymentIds.has(link.paymentId)) continue;
+
+    legacyRecords.push({
+      id: m.id,
+      date: m.date,
+      amountUsd: roundCurrency(Math.abs(link.amount ?? m.amountUsd)),
+      settlementKind: 'monetary',
+      notes: link.note?.trim() || undefined,
+      envelopeId: ENVELOPE_IDS.includes(m.bucket as EnvelopeId)
+        ? (m.bucket as EnvelopeId)
+        : undefined,
+      paymentMethod: m.paymentMethod,
+      amountBs: m.amountBs,
+      bcvRateUsed: m.bcvRateUsed,
+      linkedMovementId: m.id,
+      previousDueDate: link.previousDueDate,
+      source: 'legacy_ledger',
+    });
+  }
+
+  const records = [...planRecords, ...legacyRecords].sort((a, b) =>
+    b.date.localeCompare(a.date),
+  );
+
+  const inKindTotalUsd = roundCurrency(
+    records
+      .filter((r) => r.settlementKind === 'in_kind')
+      .reduce((acc, r) => acc + r.amountUsd, 0),
+  );
+  const monetaryTotalUsd = roundCurrency(
+    records
+      .filter((r) => r.settlementKind !== 'in_kind')
+      .reduce((acc, r) => acc + r.amountUsd, 0),
+  );
+  const loggedTotalUsd = roundCurrency(inKindTotalUsd + monetaryTotalUsd);
+  const unloggedTotalUsd = roundCurrency(Math.max(0, plan.paidTotal - loggedTotalUsd));
+  const unloggedCount = Math.max(0, plan.paymentsCount - records.length);
+
+  return {
+    records,
+    loggedTotalUsd,
+    unloggedTotalUsd,
+    unloggedCount,
+    inKindTotalUsd,
+    monetaryTotalUsd,
   };
 }

@@ -91,8 +91,10 @@ export interface LedgerMovement {
   };
   linkedInstallment?: {
     id: string;
+    paymentId?: string;
     amount: number;
     previousDueDate?: string;
+    note?: string;
   };
 }
 
@@ -125,6 +127,22 @@ export interface RecurringExpense {
 
 export type InstallmentFrequency = 'semanal' | 'quincenal' | 'mensual' | 'anual';
 export type InstallmentDirection = 'receivable' | 'payable';
+export type InstallmentSettlementKind = 'monetary' | 'in_kind';
+
+export interface InstallmentPaymentRecord {
+  id: string;
+  date: string; // YYYY-MM-DD
+  amountUsd: number;
+  settlementKind: InstallmentSettlementKind;
+  notes?: string;
+  envelopeId?: EnvelopeId;
+  paymentMethod?: PaymentMethod;
+  amountBs?: number;
+  bcvRateUsed?: number;
+  linkedMovementId?: string;
+  previousDueDate?: string;
+  advancedDueDate?: boolean;
+}
 
 export interface InstallmentPlan {
   id: string;
@@ -139,6 +157,7 @@ export interface InstallmentPlan {
   nextDueDate?: string; // YYYY-MM-DD próximo pago/cobro
   lastPaidDate?: string;
   notes?: string;
+  paymentHistory?: InstallmentPaymentRecord[];
 }
 
 export type EmergencyGoalMode = 'months_of_essentials' | 'custom';

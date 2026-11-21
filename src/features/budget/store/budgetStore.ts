@@ -11,7 +11,9 @@ import type {
   EmergencyGoalConfig,
   EnvelopeId,
   EnvelopeSummary,
+  InstallmentPaymentRecord,
   InstallmentPlan,
+  InstallmentSettlementKind,
   LedgerMovement,
   MonthEndSimulationResult,
   NativeAccountOverride,
@@ -58,6 +60,10 @@ export interface PayInstallmentOptions {
   paymentMethod?: PaymentMethod;
   amountBs?: number;
   bcvRateUsed?: number;
+  settlementKind?: InstallmentSettlementKind;
+  date?: string;
+  notes?: string;
+  advanceDueDate?: boolean;
 }
 
 interface BudgetState {
@@ -176,6 +182,8 @@ interface BudgetState {
   updateInstallment: (id: string, patch: Partial<InstallmentPlan>) => void;
   removeInstallment: (id: string) => void;
   recordInstallmentPayment: (id: string, options?: PayInstallmentOptions) => void;
+  updateInstallmentPaymentNote: (planId: string, paymentId: string, notes: string) => void;
+  removeInstallmentPayment: (planId: string, paymentId: string) => void;
 
   // Backup & reset
   exportSnapshot: () => BudgetSnapshot;
@@ -354,6 +362,54 @@ function createUndoSnapshot(
     installments: state.installments,
     customAccounts: state.customAccounts,
     nativeAccountOverrides: state.nativeAccountOverrides,
+  };
+}
+
+function computeNextLastPaidDate(
+  remainingHistory: InstallmentPaymentRecord[],
+  remainingMovements: LedgerMovement[],
+  planId: string,
+  remainingCount: number,
+  fallbackLastPaidDate?: string,
+): string | undefined {
+  const dates: string[] = [];
+  for (const r of remainingHistory) {
+    if (r.date) dates.push(r.date);
+  }
+  for (const m of remainingMovements) {
+    if (m.linkedInstallment?.id === planId && m.date) {
+      dates.push(m.date);
+    }
+  }
+  if (dates.length > 0) {
+    dates.sort((a, b) => b.localeCompare(a));
+    return dates[0];
+  }
+  return remainingCount > 0 ? fallbackLastPaidDate : undefined;
+}
+
+function applyNoteToLinkedMovement(
+  movement: LedgerMovement,
+  nextNote: string | undefined,
+): LedgerMovement {
+  const prevNote = movement.linkedInstallment?.note?.trim();
+  let updatedMovNotes = movement.notes ?? '';
+  if (prevNote) {
+    const token = ` · ${prevNote}`;
+    const idx = updatedMovNotes.lastIndexOf(token);
+    if (idx !== -1) {
+      updatedMovNotes = updatedMovNotes.slice(0, idx) + updatedMovNotes.slice(idx + token.length);
+    }
+  }
+  if (nextNote) {
+    updatedMovNotes = updatedMovNotes ? `${updatedMovNotes} · ${nextNote}` : nextNote;
+  }
+  return {
+    ...movement,
+    notes: updatedMovNotes || undefined,
+    linkedInstallment: movement.linkedInstallment
+      ? { ...movement.linkedInstallment, note: nextNote }
+      : movement.linkedInstallment,
   };
 }
 
@@ -820,20 +876,40 @@ export const useBudgetStore = create<BudgetState>()(
           );
         }
 
+        const nextMovements = state.movements.filter((m) => !removedIds.has(m.id));
         const instLink = targetGroup.find((m) => m.linkedInstallment)?.linkedInstallment;
         let nextInstallments = state.installments;
         if (instLink) {
-          const { id: instId, amount, previousDueDate } = instLink;
-          nextInstallments = state.installments.map((p) =>
-            p.id === instId
-              ? {
-                  ...p,
-                  paidTotal: Math.max(0, Number((p.paidTotal - amount).toFixed(2))),
-                  paymentsCount: Math.max(0, p.paymentsCount - 1),
-                  nextDueDate: previousDueDate ?? p.nextDueDate,
-                }
-              : p,
-          );
+          const { id: instId, paymentId: linkedPayId, amount, previousDueDate } = instLink;
+          nextInstallments = state.installments.map((p) => {
+            if (p.id !== instId) return p;
+            const prevHistory = p.paymentHistory ?? [];
+            const nextHistory = prevHistory.filter(
+              (r) =>
+                !(linkedPayId && r.id === linkedPayId) &&
+                !(r.linkedMovementId && removedIds.has(r.linkedMovementId)),
+            );
+            const nextCount = Math.max(0, p.paymentsCount - 1);
+            const expectedAdvanced =
+              previousDueDate ? advanceDueDate(previousDueDate, p.frequency) : undefined;
+            const shouldRevertDue =
+              Boolean(previousDueDate) &&
+              (!expectedAdvanced || !p.nextDueDate || p.nextDueDate === expectedAdvanced);
+            return {
+              ...p,
+              paidTotal: Math.max(0, Number((p.paidTotal - amount).toFixed(2))),
+              paymentsCount: nextCount,
+              nextDueDate: shouldRevertDue ? previousDueDate : p.nextDueDate,
+              lastPaidDate: computeNextLastPaidDate(
+                nextHistory,
+                nextMovements,
+                p.id,
+                nextCount,
+                p.lastPaidDate,
+              ),
+              paymentHistory: nextHistory,
+            };
+          });
         }
 
         set({
@@ -841,7 +917,7 @@ export const useBudgetStore = create<BudgetState>()(
             `Eliminado: ${target.notes || target.type}`,
             state,
           ),
-          movements: state.movements.filter((m) => !removedIds.has(m.id)),
+          movements: nextMovements,
           expenses: nextExpenses,
           installments: nextInstallments,
         });
@@ -1070,11 +1146,61 @@ export const useBudgetStore = create<BudgetState>()(
         if (amount <= 0) return;
 
         const isReceivable = (plan.direction ?? 'receivable') === 'receivable';
+        const cleanAmount = Number(Math.abs(amount).toFixed(2));
+        const settlementKind: InstallmentSettlementKind = options?.settlementKind ?? 'monetary';
+        const isInKind = settlementKind === 'in_kind';
+        const paymentDate = options?.date?.trim() || new Date().toISOString().slice(0, 10);
+        const cleanNotes = options?.notes?.trim() || undefined;
+        const shouldAdvanceDue = options?.advanceDueDate ?? !isInKind;
+
+        const previousDueDate = plan.nextDueDate;
+        const nextDueDate =
+          shouldAdvanceDue && previousDueDate
+            ? advanceDueDate(previousDueDate, plan.frequency)
+            : previousDueDate;
+        const didAdvanceDue = Boolean(shouldAdvanceDue && previousDueDate);
+        const nextLastPaidDate =
+          !plan.lastPaidDate || paymentDate >= plan.lastPaidDate
+            ? paymentDate
+            : plan.lastPaidDate;
+        const paymentId = makeId('instpay');
+
+        if (isInKind) {
+          const paymentRecord: InstallmentPaymentRecord = {
+            id: paymentId,
+            date: paymentDate,
+            amountUsd: cleanAmount,
+            settlementKind: 'in_kind',
+            notes: cleanNotes,
+            previousDueDate: didAdvanceDue ? previousDueDate : undefined,
+            advancedDueDate: didAdvanceDue,
+          };
+
+          const labelPrefix = isReceivable ? 'Abono en especie' : 'Compensación';
+          set({
+            undoEntry: createUndoSnapshot(
+              `${labelPrefix} #${plan.paymentsCount + 1}: ${plan.name}`,
+              state,
+            ),
+            installments: state.installments.map((p) =>
+              p.id === id
+                ? {
+                    ...p,
+                    paidTotal: Number((p.paidTotal + cleanAmount).toFixed(2)),
+                    paymentsCount: p.paymentsCount + 1,
+                    lastPaidDate: nextLastPaidDate,
+                    nextDueDate: nextDueDate ?? p.nextDueDate,
+                    paymentHistory: [paymentRecord, ...(p.paymentHistory ?? [])],
+                  }
+                : p,
+            ),
+          });
+          return;
+        }
+
         const envelopeId = options?.envelopeId ?? 'ahorro_inversion';
         const targetBucket: AssetBucketId = options?.bucketOverride ?? envelopeId;
         const paymentMethod = options?.paymentMethod ?? 'efectivo_usd';
-        const todayIso = new Date().toISOString().slice(0, 10);
-        const cleanAmount = Number(Math.abs(amount).toFixed(2));
 
         const movementType = isReceivable
           ? targetBucket === 'binance_usdt' ||
@@ -1092,30 +1218,47 @@ export const useBudgetStore = create<BudgetState>()(
           options?.amountBs ??
           (isBs && rate ? Number((cleanAmount * rate).toFixed(2)) : undefined);
 
-        const previousDueDate = plan.nextDueDate;
-        const nextDueDate = previousDueDate
-          ? advanceDueDate(previousDueDate, plan.frequency)
-          : undefined;
+        const baseLabel = `${isReceivable ? 'Cobro' : 'Cuota'} #${plan.paymentsCount + 1}: ${plan.name}`;
+        const movementNotes = cleanNotes ? `${baseLabel} · ${cleanNotes}` : baseLabel;
 
         const baseInstallmentMov: Omit<LedgerMovement, 'id'> = {
-          date: todayIso,
+          date: paymentDate,
           bucket: targetBucket,
           type: movementType,
           amountUsd: cleanAmount,
           amountBs,
           bcvRateUsed: rate,
           paymentMethod,
-          notes: `${isReceivable ? 'Cobro' : 'Cuota'} #${plan.paymentsCount + 1}: ${plan.name}`,
+          notes: movementNotes,
           linkedInstallment: {
             id: plan.id,
+            paymentId,
             amount: cleanAmount,
-            previousDueDate,
+            previousDueDate: didAdvanceDue ? previousDueDate : undefined,
+            note: cleanNotes,
           },
         };
 
         const routedMovs = isReceivable
           ? [{ ...baseInstallmentMov, id: makeId('mov') }]
           : routeBsOutflowMovements(state, baseInstallmentMov);
+
+        const paymentRecord: InstallmentPaymentRecord = {
+          id: paymentId,
+          date: paymentDate,
+          amountUsd: cleanAmount,
+          settlementKind: 'monetary',
+          notes: cleanNotes,
+          envelopeId: ENVELOPE_BUCKET_SET.has(targetBucket)
+            ? (targetBucket as EnvelopeId)
+            : undefined,
+          paymentMethod,
+          amountBs,
+          bcvRateUsed: rate,
+          linkedMovementId: routedMovs[0]?.id,
+          previousDueDate: didAdvanceDue ? previousDueDate : undefined,
+          advancedDueDate: didAdvanceDue,
+        };
 
         set({
           undoEntry: createUndoSnapshot(
@@ -1128,12 +1271,133 @@ export const useBudgetStore = create<BudgetState>()(
                   ...p,
                   paidTotal: Number((p.paidTotal + cleanAmount).toFixed(2)),
                   paymentsCount: p.paymentsCount + 1,
-                  lastPaidDate: todayIso,
+                  lastPaidDate: nextLastPaidDate,
                   nextDueDate: nextDueDate ?? p.nextDueDate,
+                  paymentHistory: [paymentRecord, ...(p.paymentHistory ?? [])],
                 }
               : p,
           ),
           movements: [...routedMovs, ...state.movements],
+        });
+      },
+
+      updateInstallmentPaymentNote: (planId, paymentId, notes) => {
+        const state = get();
+        const plan = state.installments.find((p) => p.id === planId);
+        if (!plan) return;
+
+        const cleanNotes = notes.trim() || undefined;
+        const targetRec = (plan.paymentHistory ?? []).find((r) => r.id === paymentId);
+
+        if (targetRec) {
+          const nextInstallments = state.installments.map((p) =>
+            p.id !== planId
+              ? p
+              : {
+                  ...p,
+                  paymentHistory: (p.paymentHistory ?? []).map((r) =>
+                    r.id === paymentId ? { ...r, notes: cleanNotes } : r,
+                  ),
+                },
+          );
+          const nextMovements = targetRec.linkedMovementId
+            ? state.movements.map((m) =>
+                m.id === targetRec.linkedMovementId
+                  ? applyNoteToLinkedMovement(m, cleanNotes)
+                  : m,
+              )
+            : state.movements;
+          set({
+            undoEntry: createUndoSnapshot(`Nota actualizada: ${plan.name}`, state),
+            installments: nextInstallments,
+            movements: nextMovements,
+          });
+          return;
+        }
+
+        const legacyMov = state.movements.find(
+          (m) => m.id === paymentId && m.linkedInstallment?.id === planId,
+        );
+        if (!legacyMov) return;
+        set({
+          undoEntry: createUndoSnapshot(`Nota actualizada: ${plan.name}`, state),
+          movements: state.movements.map((m) =>
+            m.id === paymentId ? applyNoteToLinkedMovement(m, cleanNotes) : m,
+          ),
+        });
+      },
+
+      removeInstallmentPayment: (planId, paymentId) => {
+        const state = get();
+        const plan = state.installments.find((p) => p.id === planId);
+        if (!plan) return;
+
+        const record = (plan.paymentHistory ?? []).find((r) => r.id === paymentId);
+        if (!record) {
+          const isLegacyMov = state.movements.some(
+            (m) => m.id === paymentId && m.linkedInstallment?.id === planId,
+          );
+          if (isLegacyMov) {
+            get().removeMovement(paymentId);
+          }
+          return;
+        }
+
+        const removedIds = new Set<string>();
+        if (record.linkedMovementId) {
+          const primaryMov = state.movements.find((m) => m.id === record.linkedMovementId);
+          if (primaryMov) {
+            const group = primaryMov.splitGroupId
+              ? state.movements.filter((m) => m.splitGroupId === primaryMov.splitGroupId)
+              : [primaryMov];
+            for (const m of group) removedIds.add(m.id);
+          }
+        }
+
+        const nextMovements =
+          removedIds.size > 0
+            ? state.movements.filter((m) => !removedIds.has(m.id))
+            : state.movements;
+        const nextHistory = (plan.paymentHistory ?? []).filter((r) => r.id !== paymentId);
+        const nextPaidTotal = Math.max(0, Number((plan.paidTotal - record.amountUsd).toFixed(2)));
+        const nextCount = Math.max(0, plan.paymentsCount - 1);
+
+        const shouldRevertDue =
+          Boolean(record.previousDueDate) &&
+          record.advancedDueDate !== false &&
+          plan.nextDueDate ===
+            advanceDueDate(record.previousDueDate as string, plan.frequency);
+
+        const nextLastPaid = computeNextLastPaidDate(
+          nextHistory,
+          nextMovements,
+          plan.id,
+          nextCount,
+          plan.lastPaidDate,
+        );
+
+        const nextInstallments = state.installments.map((p) =>
+          p.id !== planId
+            ? p
+            : {
+                ...p,
+                paidTotal: nextPaidTotal,
+                paymentsCount: nextCount,
+                nextDueDate: shouldRevertDue ? record.previousDueDate : p.nextDueDate,
+                lastPaidDate: nextLastPaid,
+                paymentHistory: nextHistory,
+              },
+        );
+
+        const actionLabel =
+          record.settlementKind === 'in_kind'
+            ? `Eliminado abono en especie: ${plan.name}`
+            : `Eliminado ${(plan.direction ?? 'receivable') === 'receivable' ? 'cobro' : 'pago'}: ${plan.name}`;
+
+        set({
+          undoEntry: createUndoSnapshot(actionLabel, state),
+          installments: nextInstallments,
+          movements: nextMovements,
         });
       },
 

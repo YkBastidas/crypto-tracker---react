@@ -2,11 +2,17 @@ import { useMemo, useState } from 'react';
 import {
   CalendarClock,
   Check,
+  ChevronDown,
+  ChevronUp,
+  History,
   Layers,
+  Package,
   Pencil,
   Plus,
   Repeat,
+  StickyNote,
   Trash2,
+  X,
 } from 'lucide-react';
 import { usePortfolioStore } from '../../../shared/store/portfolioStore';
 import { PrivacyValue } from '../../../shared/ui/PrivacyValue';
@@ -24,11 +30,13 @@ import type {
 
 import {
   calculateDaysLeft,
+  formatBs,
   formatUsd,
   getActiveCustodyOptions,
   getExpenseBiweeklyQuota,
   getInstallmentArrears,
   getInstallmentBiweeklyQuota,
+  getInstallmentPaymentHistory,
   getPaymentMethodLabel,
 } from '../utils/calculations';
 import { PayExpenseModal } from './PayExpenseModal';
@@ -37,6 +45,7 @@ import { RecordInstallmentModal } from './RecordInstallmentModal';
 export function ExpensesAndPayments() {
   const isPrivate = usePortfolioStore((s) => s.isPrivate);
   const {
+    movements,
     expenses,
     installments,
     customAccounts,
@@ -47,6 +56,8 @@ export function ExpensesAndPayments() {
     addInstallment,
     updateInstallment,
     removeInstallment,
+    updateInstallmentPaymentNote,
+    removeInstallmentPayment,
   } = useBudgetStore();
 
   const custodyOptions = useMemo(
@@ -61,6 +72,12 @@ export function ExpensesAndPayments() {
   const [editingInstallmentId, setEditingInstallmentId] = useState<string | null>(null);
   const [payingExpense, setPayingExpense] = useState<RecurringExpense | null>(null);
   const [recordingPlan, setRecordingPlan] = useState<InstallmentPlan | null>(null);
+  const [expandedHistoryIds, setExpandedHistoryIds] = useState<Record<string, boolean>>({});
+  const [editingNoteTarget, setEditingNoteTarget] = useState<{
+    planId: string;
+    paymentId: string;
+  } | null>(null);
+  const [editingNoteDraft, setEditingNoteDraft] = useState('');
 
   // New Expense form state
   const [expName, setExpName] = useState('');
@@ -664,6 +681,8 @@ export function ExpensesAndPayments() {
             const biweekly = getInstallmentBiweeklyQuota(plan);
             const arrears = getInstallmentArrears(plan);
             const dueDaysLeft = plan.nextDueDate ? calculateDaysLeft(plan.nextDueDate) : null;
+            const history = getInstallmentPaymentHistory(plan, movements);
+            const isHistoryExpanded = Boolean(expandedHistoryIds[plan.id]);
 
             return (
               <div
@@ -687,6 +706,16 @@ export function ExpensesAndPayments() {
                       >
                         {isReceivable ? 'Por Cobrar' : 'Por Pagar'}
                       </span>
+                      {history.inKindTotalUsd > 0 && (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-purple-500/15 border border-purple-500/30 text-purple-300">
+                          <Package size={11} />
+                          En especie:{' '}
+                          <PrivacyValue
+                            value={formatUsd(history.inKindTotalUsd)}
+                            isPrivate={isPrivate}
+                          />
+                        </span>
+                      )}
                       {dueDaysLeft !== null && !isCompleted && (
                         <span
                           className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
@@ -812,25 +841,241 @@ export function ExpensesAndPayments() {
                       </>
                     )}
                   </span>
-                  <button
-                    type="button"
-                    disabled={isCompleted}
-                    onClick={() => setRecordingPlan(plan)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold border disabled:opacity-40 cursor-pointer ${
-                      isReceivable
-                        ? 'bg-accent-green/15 border-accent-green/40 text-accent-green hover:bg-accent-green/25'
-                        : 'bg-accent-blue/20 border-accent-blue/40 text-accent-blue hover:bg-accent-blue/30'
-                    }`}
-                  >
-                    {isCompleted
-                      ? isReceivable
-                        ? 'Cobrado 100%'
-                        : 'Completado'
-                      : isReceivable
-                        ? '+ Registrar Cobro'
-                        : '+ Registrar Cuota'}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedHistoryIds((prev) => ({
+                          ...prev,
+                          [plan.id]: !prev[plan.id],
+                        }))
+                      }
+                      className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border cursor-pointer transition-colors ${
+                        isHistoryExpanded
+                          ? 'bg-accent-blue/15 border-accent-blue/40 text-accent-blue'
+                          : 'bg-bg-input border-border text-text-muted hover:text-text-primary'
+                      }`}
+                    >
+                      <History size={13} />
+                      <span>Historial ({history.records.length})</span>
+                      {isHistoryExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isCompleted}
+                      onClick={() => setRecordingPlan(plan)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold border disabled:opacity-40 cursor-pointer ${
+                        isReceivable
+                          ? 'bg-accent-green/15 border-accent-green/40 text-accent-green hover:bg-accent-green/25'
+                          : 'bg-accent-blue/20 border-accent-blue/40 text-accent-blue hover:bg-accent-blue/30'
+                      }`}
+                    >
+                      {isCompleted
+                        ? isReceivable
+                          ? 'Cobrado 100%'
+                          : 'Completado'
+                        : isReceivable
+                          ? '+ Registrar Cobro'
+                          : '+ Registrar Cuota'}
+                    </button>
+                  </div>
                 </div>
+
+                {isHistoryExpanded && (
+                  <div className="border-t border-border/70 pt-3 space-y-2">
+                    {history.monetaryTotalUsd > 0 && history.inKindTotalUsd > 0 && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-text-muted">
+                        <span>Desglose registrado:</span>
+                        <span>
+                          Dinero:{' '}
+                          <strong className="text-text-primary">
+                            <PrivacyValue
+                              value={formatUsd(history.monetaryTotalUsd)}
+                              isPrivate={isPrivate}
+                            />
+                          </strong>{' '}
+                          · En especie:{' '}
+                          <strong className="text-purple-300">
+                            <PrivacyValue
+                              value={formatUsd(history.inKindTotalUsd)}
+                              isPrivate={isPrivate}
+                            />
+                          </strong>
+                        </span>
+                      </div>
+                    )}
+
+                    {history.records.length === 0 ? (
+                      <p className="text-[11px] text-text-muted italic">
+                        Aún no hay abonos individuales registrados con fecha.
+                      </p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {history.records.map((rec) => {
+                          const isEditingNote =
+                            editingNoteTarget?.planId === plan.id &&
+                            editingNoteTarget?.paymentId === rec.id;
+
+                          const custodyLabel = rec.paymentMethod
+                            ? getPaymentMethodLabel(
+                                rec.paymentMethod,
+                                customAccounts,
+                                nativeAccountOverrides,
+                              )
+                            : 'Sin custodia';
+                          const envLabel = rec.envelopeId
+                            ? (ENVELOPE_META[rec.envelopeId]?.shortName ?? rec.envelopeId)
+                            : null;
+
+                          return (
+                            <div
+                              key={rec.id}
+                              className="bg-bg-card/70 border border-border/80 rounded-lg px-2.5 py-2 space-y-1.5"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                                  <span className="text-[11px] font-mono text-text-muted">
+                                    {rec.date}
+                                  </span>
+                                  <span className="text-xs font-bold text-text-primary">
+                                    <PrivacyValue
+                                      value={formatUsd(rec.amountUsd)}
+                                      isPrivate={isPrivate}
+                                    />
+                                  </span>
+                                  {typeof rec.amountBs === 'number' && rec.amountBs > 0 && (
+                                    <span className="text-[10px] text-cyan-300">
+                                      (
+                                      <PrivacyValue
+                                        value={formatBs(rec.amountBs)}
+                                        isPrivate={isPrivate}
+                                      />
+                                      )
+                                    </span>
+                                  )}
+                                  {rec.settlementKind === 'in_kind' ? (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-purple-500/15 border border-purple-500/30 text-purple-300">
+                                      <Package size={10} /> En especie · Sin cuentas
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-input border border-border text-text-muted">
+                                      {custodyLabel}
+                                      {envLabel ? ` · ${envLabel}` : ''}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    type="button"
+                                    title={rec.notes ? 'Editar nota' : 'Agregar nota'}
+                                    onClick={() => {
+                                      setEditingNoteTarget({
+                                        planId: plan.id,
+                                        paymentId: rec.id,
+                                      });
+                                      setEditingNoteDraft(rec.notes ?? '');
+                                    }}
+                                    className="p-1 rounded text-text-muted hover:text-accent-blue bg-transparent border-none cursor-pointer"
+                                  >
+                                    {rec.notes ? <Pencil size={12} /> : <StickyNote size={12} />}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    title="Eliminar este abono"
+                                    onClick={() => {
+                                      if (
+                                        editingNoteTarget?.planId === plan.id &&
+                                        editingNoteTarget?.paymentId === rec.id
+                                      ) {
+                                        setEditingNoteTarget(null);
+                                      }
+                                      removeInstallmentPayment(plan.id, rec.id);
+                                    }}
+                                    className="p-1 rounded text-text-muted hover:text-accent-red bg-transparent border-none cursor-pointer"
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </div>
+                              </div>
+
+                              {isEditingNote ? (
+                                <div className="flex items-center gap-1.5">
+                                  <input
+                                    type="text"
+                                    value={editingNoteDraft}
+                                    onChange={(e) => setEditingNoteDraft(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') {
+                                        e.preventDefault();
+                                        updateInstallmentPaymentNote(
+                                          plan.id,
+                                          rec.id,
+                                          editingNoteDraft,
+                                        );
+                                        setEditingNoteTarget(null);
+                                      } else if (e.key === 'Escape') {
+                                        setEditingNoteTarget(null);
+                                      }
+                                    }}
+                                    placeholder="Ej. Trueque reloj"
+                                    className="flex-1 px-2 py-1 rounded text-[11px] bg-bg-input border border-accent-blue/50 text-text-primary focus:outline-none"
+                                  />
+                                  <button
+                                    type="button"
+                                    title="Guardar nota"
+                                    onClick={() => {
+                                      updateInstallmentPaymentNote(
+                                        plan.id,
+                                        rec.id,
+                                        editingNoteDraft,
+                                      );
+                                      setEditingNoteTarget(null);
+                                    }}
+                                    className="p-1 rounded bg-accent-green/20 text-accent-green border border-accent-green/40 cursor-pointer"
+                                  >
+                                    <Check size={12} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    title="Cancelar"
+                                    onClick={() => setEditingNoteTarget(null)}
+                                    className="p-1 rounded bg-bg-input text-text-muted border border-border cursor-pointer"
+                                  >
+                                    <X size={12} />
+                                  </button>
+                                </div>
+                              ) : (
+                                rec.notes && (
+                                  <p className="text-[11px] text-text-muted flex items-center gap-1.5">
+                                    <StickyNote
+                                      size={11}
+                                      className="shrink-0 text-accent-gold"
+                                    />
+                                    <span>{rec.notes}</span>
+                                  </p>
+                                )
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {history.unloggedTotalUsd > 0.01 && (
+                      <p className="text-[11px] text-text-muted/90 bg-bg-input/60 rounded-lg px-2.5 py-1.5">
+                        Saldo previo sin desglose individual:{' '}
+                        <strong className="text-text-primary">
+                          <PrivacyValue
+                            value={formatUsd(history.unloggedTotalUsd)}
+                            isPrivate={isPrivate}
+                          />
+                        </strong>{' '}
+                        ({history.unloggedCount} abono(s)).
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
